@@ -35,9 +35,7 @@ pub(super) fn write_strided_values(
     let stride = array_stride as usize;
     let expected = values
         .len()
-        .checked_sub(1)
-        .and_then(|count| count.checked_mul(stride))
-        .and_then(|offset| offset.checked_add(size_of::<f32>()))
+        .checked_mul(stride)
         .ok_or_else(|| "scene-owned uniform array byte count overflows".to_owned())?;
     if stride < size_of::<f32>() || destination.len() != expected {
         return Err(format!(

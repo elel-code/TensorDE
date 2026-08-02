@@ -217,6 +217,7 @@ pub struct WeIrObject {
     pub origin: SceneVec3,
     pub angles: SceneVec3,
     pub scale: SceneVec3,
+    pub camera_zoom: f32,
     pub color: SceneVec3,
     pub alpha: f32,
     pub visible: bool,
@@ -232,6 +233,7 @@ pub struct WeIrObject {
 pub enum WeIrUtilityLayerKind {
     SolidColor,
     FramebufferComposite,
+    ProjectLayer,
     FullscreenPostprocess,
 }
 
@@ -239,7 +241,7 @@ impl WeIrUtilityLayerKind {
     pub const fn samples_scene_color(self) -> bool {
         matches!(
             self,
-            Self::FramebufferComposite | Self::FullscreenPostprocess
+            Self::FramebufferComposite | Self::ProjectLayer | Self::FullscreenPostprocess
         )
     }
 }
@@ -272,6 +274,7 @@ pub enum WeIrObjectTransformProperty {
     Origin,
     Angles,
     Scale,
+    CameraZoom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

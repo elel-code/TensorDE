@@ -97,7 +97,7 @@ fn validate_stage_io(
         if item.rows == 0
             || item.columns == 0
             || item.location_count == 0
-            || item.location_count != item.columns
+            || !item.location_count.is_multiple_of(item.columns)
         {
             return invalid(program, "shader stage-I/O shape is invalid");
         }

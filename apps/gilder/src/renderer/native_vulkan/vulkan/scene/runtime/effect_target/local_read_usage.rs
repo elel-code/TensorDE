@@ -1,15 +1,14 @@
 //! Image-usage planning for retained dynamic-rendering local-read scopes.
 
-use super::*;
 use super::super::input_attachment_binding::{
     SceneInputAttachmentBindingPlan, SceneInputAttachmentSource,
 };
 use super::super::local_read::SceneLocalReadScopePlan;
 use super::super::sampled_binding::{
-    SceneSampledImageBindingPlan,
-    logical_target_references as sampled_logical_target_references,
+    SceneSampledImageBindingPlan, logical_target_references as sampled_logical_target_references,
     reference_physical_slot,
 };
+use super::*;
 
 pub(in crate::renderer::native_vulkan) fn apply_scene_effect_target_input_attachment_usage(
     plans: &mut [SceneEffectTargetImagePlan],
@@ -72,14 +71,13 @@ pub(in crate::renderer::native_vulkan) fn apply_scene_effect_target_local_read_c
             (consumer.graph_index, consumer.target, consumer.target_name),
             (producer.graph_index, producer.target, producer.target_name),
         ] {
-            if graph
-                .target_allocations
-                .iter()
-                .all(|allocation| {
-                    (allocation.graph_index, allocation.target, allocation.target_name)
-                        != (graph_index, target, target_name)
-                })
-            {
+            if graph.target_allocations.iter().all(|allocation| {
+                (
+                    allocation.graph_index,
+                    allocation.target,
+                    allocation.target_name,
+                ) != (graph_index, target, target_name)
+            }) {
                 continue;
             }
             mark_logical_target_usage_for_cycle(

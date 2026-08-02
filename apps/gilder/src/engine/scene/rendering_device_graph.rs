@@ -15,6 +15,7 @@ use super::storage::SceneStorage;
 
 mod draw_support;
 mod effect_batch;
+mod projection;
 mod queries;
 mod types;
 
@@ -27,6 +28,9 @@ pub use effect_batch::{
     SceneRenderingDeviceEffectBatch, SceneRenderingDeviceEffectBatchFamily,
     SceneRenderingDeviceEffectBatchInstance,
 };
+use projection::pass_projection_domain;
+#[cfg(test)]
+use projection::{authored_texture_clip_transform, scene_clip_transform};
 pub use types::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,12 +111,16 @@ impl SceneRenderingDeviceGraphPlan {
                             else {
                                 continue;
                             };
-                            let clip_transform = scene_clip_transform(
-                                storage.project(),
+                            let projection_domain =
+                                pass_projection_domain(storage, graph_index as u32, pass);
+                            let clip_transform = projection_domain.clip_transform(
+                                storage,
+                                semantic_frame,
                                 pass_object_state.render_world_matrix,
                             );
                             mesh_draws.push(SceneRenderingDeviceMeshDraw {
                                 primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+                                projection_domain,
                                 shader_key: pass.shader_key,
                                 mesh_index: mesh_index as u32,
                                 resolved_object_index,
@@ -125,6 +133,13 @@ impl SceneRenderingDeviceGraphPlan {
                                     storage,
                                     pass.object,
                                 ),
+                                uv_inset_texels: if pass.draw_primitive
+                                    == SceneRenderPassDrawPrimitive::ObjectCompositeMesh
+                                {
+                                    SCENE_OBJECT_COMPOSITE_UV_INSET_TEXELS
+                                } else {
+                                    0.0
+                                },
                                 skinning_palette_start: skinning_palette_start(
                                     &puppet_bone_palettes,
                                     mesh.object,
@@ -159,6 +174,8 @@ impl SceneRenderingDeviceGraphPlan {
                 {
                     mesh_draws.push(utility_primitive_draw(
                         storage,
+                        semantic_frame,
+                        graph_index as u32,
                         pass,
                         pass_object_state,
                         primitive,
@@ -249,7 +266,11 @@ impl SceneRenderingDeviceGraphPlan {
 
 fn pass_draws_object_mesh(pass: &SceneRenderPassRecord) -> bool {
     pass.object.0 != INVALID_OBJECT_ID
-        && pass.draw_primitive == SceneRenderPassDrawPrimitive::ObjectMesh
+        && matches!(
+            pass.draw_primitive,
+            SceneRenderPassDrawPrimitive::ObjectMesh
+                | SceneRenderPassDrawPrimitive::ObjectCompositeMesh
+        )
 }
 
 fn pass_mesh_index_range(
@@ -316,12 +337,15 @@ fn pass_utility_primitive(
         }
         SceneRenderPassDrawPrimitive::None
         | SceneRenderPassDrawPrimitive::ObjectMesh
+        | SceneRenderPassDrawPrimitive::ObjectCompositeMesh
         | SceneRenderPassDrawPrimitive::ParticleBillboard => None,
     }
 }
 
 fn utility_primitive_draw(
     storage: &SceneStorage,
+    semantic_frame: &ResolvedSemanticFrame,
+    graph_index: u32,
     pass: &SceneRenderPassRecord,
     pass_object_state: Option<&ResolvedObjectState>,
     primitive: SceneRenderingDeviceDrawPrimitive,
@@ -333,11 +357,13 @@ fn utility_primitive_draw(
         SceneRenderingDeviceDrawPrimitive::ObjectMesh
         | SceneRenderingDeviceDrawPrimitive::FullscreenTriangle => 3,
     };
+    let projection_domain = pass_projection_domain(storage, graph_index, pass);
     let clip_transform = pass_object_state.map_or_else(identity_clip_transform, |object| {
-        scene_clip_transform(storage.project(), object.render_world_matrix)
+        projection_domain.clip_transform(storage, semantic_frame, object.render_world_matrix)
     });
     SceneRenderingDeviceMeshDraw {
         primitive,
+        projection_domain,
         shader_key: pass.shader_key,
         mesh_index: INVALID_OBJECT_ID,
         resolved_object_index: pass_object_state
@@ -349,6 +375,7 @@ fn utility_primitive_draw(
         clip_transform,
         effect_model_view_projection_matrix: clip_transform,
         authored_source_extent: authored_source_extent(storage, pass.object),
+        uv_inset_texels: 0.0,
         skinning_palette_start: INVALID_OBJECT_ID,
         skinning_palette_count: 0,
         resolved_color: pass_object_state.map_or(
@@ -476,40 +503,6 @@ fn source_texture_for_material(
         .flat_map(|pass| storage.material_pass_textures(pass))
         .find(|binding| binding.slot == 0)
         .and_then(|binding| storage.texture(binding.resource))
-}
-
-pub(crate) fn scene_clip_transform(
-    project: &SceneProjectRecord,
-    world_matrix: [f32; 16],
-) -> [[f32; 4]; 4] {
-    let width = project.logical_width.max(1) as f32;
-    let height = project.logical_height.max(1) as f32;
-    [
-        [
-            2.0 * world_matrix[0] / width - world_matrix[3],
-            2.0 * world_matrix[4] / width - world_matrix[7],
-            2.0 * world_matrix[8] / width - world_matrix[11],
-            2.0 * world_matrix[12] / width - world_matrix[15],
-        ],
-        [
-            -2.0 * world_matrix[1] / height + world_matrix[3],
-            -2.0 * world_matrix[5] / height + world_matrix[7],
-            -2.0 * world_matrix[9] / height + world_matrix[11],
-            -2.0 * world_matrix[13] / height + world_matrix[15],
-        ],
-        [
-            world_matrix[2],
-            world_matrix[6],
-            world_matrix[10],
-            world_matrix[14],
-        ],
-        [
-            world_matrix[3],
-            world_matrix[7],
-            world_matrix[11],
-            world_matrix[15],
-        ],
-    ]
 }
 
 fn identity_clip_transform() -> [[f32; 4]; 4] {
@@ -648,28 +641,12 @@ fn target_allocation_compatibility(
     storage: &SceneStorage,
     state: TargetAllocationState,
 ) -> TargetAllocationCompatibility {
-    let image_layer_composite = state.target == SceneRenderTargetKind::FirstClassEffectTarget
-        && storage
-            .string(state.target_name)
-            .is_some_and(|name| name.starts_with("_rt_imageLayerComposite_"));
-    let authored_texture_space = matches!(
+    let authored_extent = authored_texture_space_target_extent(
+        storage,
+        state.graph_index,
         state.target,
-        SceneRenderTargetKind::ImageLocalMain | SceneRenderTargetKind::ImageLocalSub
-    ) || image_layer_composite;
-    let authored_extent = if image_layer_composite {
-        storage
-            .render_graphs()
-            .get(state.graph_index as usize)
-            .map(|graph| authored_source_extent(storage, graph.object))
-            .filter(|[width, height]| {
-                width.is_finite() && height.is_finite() && *width >= 1.0 && *height >= 1.0
-            })
-            .map(|[width, height]| [width.round() as u32, height.round() as u32])
-    } else if authored_texture_space {
-        authored_graph_extent(storage, state.graph_index)
-    } else {
-        None
-    }
+        state.target_name,
+    )
     .unwrap_or([0, 0]);
     storage
         .document()
@@ -692,6 +669,27 @@ fn target_allocation_compatibility(
             authored_height: authored_extent[1],
             authored_texture_space: authored_extent != [0, 0],
         })
+}
+
+pub(super) fn authored_texture_space_target_extent(
+    storage: &SceneStorage,
+    graph_index: u32,
+    target: SceneRenderTargetKind,
+    target_name: SceneStringId,
+) -> Option<[u32; 2]> {
+    let image_layer_composite = target == SceneRenderTargetKind::FirstClassEffectTarget
+        && storage
+            .string(target_name)
+            .is_some_and(|name| name.starts_with("_rt_imageLayerComposite_"));
+    if matches!(
+        target,
+        SceneRenderTargetKind::ImageLocalMain | SceneRenderTargetKind::ImageLocalSub
+    ) || image_layer_composite
+    {
+        authored_graph_extent(storage, graph_index)
+    } else {
+        None
+    }
 }
 
 fn authored_graph_extent(storage: &SceneStorage, graph_index: u32) -> Option<[u32; 2]> {
@@ -772,5 +770,9 @@ fn graph_target_is_allocatable(target: SceneRenderTargetKind) -> bool {
     )
 }
 
+#[cfg(test)]
+mod camera_tests;
+#[cfg(test)]
+mod projection_tests;
 #[cfg(test)]
 mod tests;

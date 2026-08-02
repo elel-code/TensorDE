@@ -12,7 +12,7 @@ pub struct NativeVulkanVideoInteropContract {
     pub target_memory_flow: &'static str,
     pub current_baseline: &'static str,
     pub vulkan_binding_policy: &'static str,
-    pub vulkanalia_primary_policy: &'static str,
+    pub renderer_ownership_policy: &'static str,
     pub vulkan_1_4_value: &'static str,
     pub target_sampling: &'static str,
     pub avoids_default_rgba_upload: bool,
@@ -23,18 +23,18 @@ pub struct NativeVulkanVideoInteropContract {
 
 pub fn video_interop_contract() -> NativeVulkanVideoInteropContract {
     NativeVulkanVideoInteropContract {
-        target_memory_flow: "FFmpeg AVVkFrame image -> descriptor heap sampled YUV planes -> Vulkan composition/present",
-        current_baseline: "FFmpeg Vulkan hwdecode owns demux/parser/codec state and yields AV_PIX_FMT_VULKAN frames for Gilder descriptor-heap present",
-        vulkan_binding_policy: "vulkanalia is the native Vulkan binding; the ash dependency and runtime baseline are removed, and zero-copy evidence comes from device extension/capability/import telemetry rather than the binding choice alone",
-        vulkanalia_primary_policy: "vulkanalia owns the native-vulkan-renderer surface for instance/device ownership, FFmpeg device borrowing, AVVkFrame descriptor sampling and present telemetry",
+        target_memory_flow: "renderer-owned FFmpeg AVVkFrame image -> opaque retained Y/UV plane leases -> descriptor heap sampled composition/present",
+        current_baseline: "vulkan-renderer owns FFmpeg Vulkan decode, AV_PIX_FMT_VULKAN validation, plane views, synchronization, descriptor heaps and presentation; Gilder never borrows FFmpeg or Vulkan handles",
+        vulkan_binding_policy: "vulkan-renderer contains Vulkanalia behind typed ownership; zero-copy evidence comes from exact plane leases, synchronization and command scope rather than binding spelling",
+        renderer_ownership_policy: "vulkan-renderer owns the surface/device, FFmpeg device integration, AVVkFrame plane leases, descriptor sampling and presentation transaction",
         vulkan_1_4_value: "Vulkan 1.4.328 plus VP_KHR_roadmap_2026 revision 11 is the mandatory device baseline for every native Vulkan route",
         target_sampling: "NV12/P010/YUV planes sampled directly in Vulkan before RGB composition",
         avoids_default_rgba_upload: true,
-        decoder_policy: "FFmpeg Vulkan hwdecode is the sole H.264/H.265/AV1 decode runtime and requires AV_PIX_FMT_VULKAN output",
-        audio_strategy: "keep audio pipeline separate from the video texture path so decoder choice does not block playback support",
+        decoder_policy: "renderer-owned FFmpeg Vulkan decode is the sole H.264/H.265/AV1 runtime and rejects non-AV_PIX_FMT_VULKAN output",
+        audio_strategy: "scene audio spectrum remains independent; the removed standalone raw audio clock cannot hold video-frame ownership",
         known_blockers: &[
-            "FFmpeg Vulkan hwdecode must keep 4K240 FPS stable while Gilder-side AVFrame retention and descriptor heaps remain bounded",
-            "audio clock/output must stay modular and expose only pacing state to video present",
+            "renderer-owned FFmpeg Vulkan decode must keep 4K240 FPS stable while retained plane leases and descriptor heaps remain bounded",
+            "typed audio policy must be added independently before standalone video audio output is reintroduced",
             "descriptor heap must remain the only shader resource binding model",
         ],
     }

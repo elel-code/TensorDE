@@ -102,8 +102,7 @@ fn build_scene_backend_plan(
     renderer_scene_render: RendererSceneRenderPlan,
     rendering_device_graph: SceneRenderingDeviceGraphPlan,
 ) -> NativeVulkanSceneBackendPlan {
-    let utility_vertex_count =
-        usize::from(rendering_device_graph.uses_fullscreen_utility_primitive()) * 3;
+    let utility_vertex_count = rendering_device_graph.fullscreen_utility_draw_count() * 3;
     let mesh_upload_vertex_count = renderer_scene_render
         .mesh_vertex_count
         .saturating_add(utility_vertex_count);
@@ -161,11 +160,11 @@ fn build_scene_backend_plan(
 pub fn native_vulkan_scene_backend_plan_from_render_item(
     item: &NativeVulkanRenderItem,
 ) -> Result<Option<NativeVulkanSceneBackendPlan>, String> {
-    let NativeVulkanRenderItem::Scene {
-        scene_source: Some(scene_source),
-        ..
-    } = item
+    let NativeVulkanRenderItem::Scene { scene } = item
     else {
+        return Ok(None);
+    };
+    let Some(scene_source) = scene.scene_source.as_ref() else {
         return Ok(None);
     };
     if !scene_source
@@ -231,6 +230,7 @@ mod tests {
                     y: 1.0,
                     z: 1.0,
                 },
+                camera_zoom: 1.0,
                 color: SceneVec3 {
                     x: 1.0,
                     y: 1.0,
@@ -364,6 +364,7 @@ mod tests {
         write_scene_binary(&document, &mut bytes).expect("write scene binary");
         std::fs::write(&scene_path, bytes).expect("scene file");
         let item = NativeVulkanRenderItem::Scene {
+            scene: Box::new(crate::renderer::native_vulkan::NativeVulkanSceneRenderItem {
             output_name: "HDMI-A-1".to_owned(),
             scene_source: Some(scene_path.clone()),
             display: None,
@@ -395,7 +396,8 @@ mod tests {
             scene_size: None,
             scene_fit: FitMode::Cover,
             target_max_fps: None,
-            renderer_status: "scene-engine-binary-ready-for-rendering-device-graph",
+                renderer_status: "scene-engine-binary-ready-for-rendering-device-graph",
+            }),
         };
 
         let plan = native_vulkan_scene_backend_plan_from_render_item(&item)
@@ -470,6 +472,7 @@ mod tests {
                     y: 1.0,
                     z: 1.0,
                 },
+                camera_zoom: 1.0,
                 color: SceneVec3 {
                     x: 1.0,
                     y: 1.0,

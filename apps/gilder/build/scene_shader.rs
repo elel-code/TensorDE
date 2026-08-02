@@ -14,10 +14,14 @@ mod final_effect;
 mod flat_rounded_hsl;
 #[path = "scene_shader/local_read.rs"]
 mod local_read;
+#[path = "scene_shader/native_slang.rs"]
+mod native_slang;
 #[path = "scene_shader/particle.rs"]
 mod particle;
 #[path = "scene_shader/particle_compute.rs"]
 mod particle_compute;
+#[path = "scene_shader/scene_color_blend.rs"]
+mod scene_color_blend;
 #[path = "scene_shader/shimmer.rs"]
 mod shimmer;
 #[path = "scene_shader/spin.rs"]
@@ -28,6 +32,8 @@ mod swing;
 mod tint;
 #[path = "scene_shader/vertex_primitive.rs"]
 mod vertex_primitive;
+#[path = "scene_shader/waterflow.rs"]
+mod waterflow;
 #[path = "scene_shader/waterwaves_composite.rs"]
 mod waterwaves_composite;
 #[path = "scene_shader/waterwaves_direct.rs"]
@@ -46,13 +52,19 @@ pub(super) use final_effect::{
 };
 use flat_rounded_hsl::flat_rounded_hsl_source_sources;
 pub(crate) use local_read::{
-    input_attachment_catalog_type_source, input_attachment_fragment_source,
+    flat_passthrough_input_attachment_source, input_attachment_catalog_type_source,
+};
+pub(super) use native_slang::{
+    composelayer_sources, generic_image_sources, image_effect_source_sources, mesh_vertex_source,
+    waterripple_slots_5_sources,
 };
 pub(super) use particle::generic_particle_vertex_source;
 pub(super) use particle_compute::particle_compute_source;
+pub(super) use scene_color_blend::scene_color_blend_sources;
 pub(super) use spin::spin_fragment_source;
 pub(super) use tint::tint_fragment_source;
 pub(crate) use vertex_primitive::scene_shader_vertex_primitive;
+pub(super) use waterflow::{waterflow_object_mesh_vertex_source, waterflow_sources};
 pub(super) use waterwaves_composite::{
     image_waterwaves_composite_sources, image_waterwaves_multiply_composite_sources,
     puppet_waterwaves_composite_sources, waterwaves_uv_field_sources,
@@ -166,10 +178,6 @@ void main() {
     (vertex.to_owned(), fragment.to_owned())
 }
 
-pub(super) fn puppet_effect_source_sources() -> (String, String) {
-    image_effect_source_sources()
-}
-
 pub(super) fn screen_group_composite_sources() -> (String, String) {
     let vertex = r#"#version 450
 layout(location = 0) out vec2 v_TexCoord;
@@ -194,33 +202,6 @@ void main() {
     vec4 color = texture(g_Texture0, v_TexCoord);
     color.rgb *= g_Material.g_Color4.rgb;
     color.a *= g_Material.g_Color4.a;
-    o_Color = color;
-}
-"#;
-    (vertex.to_owned(), fragment.to_owned())
-}
-
-pub(super) fn image_effect_source_sources() -> (String, String) {
-    let vertex = r#"#version 450
-layout(location = 0) in vec2 a_Position;
-layout(location = 1) in vec2 a_TexCoord;
-layout(location = 2) in float a_Opacity;
-layout(location = 0) out vec2 v_TexCoord;
-layout(location = 1) out float v_VertexAlpha;
-void main() {
-    v_TexCoord = a_TexCoord;
-    v_VertexAlpha = a_Opacity;
-    gl_Position = vec4(a_TexCoord * 2.0 - 1.0, 0.0, 1.0);
-}
-"#;
-    let fragment = r#"#version 450
-layout(location = 0) in vec2 v_TexCoord;
-layout(location = 1) in float v_VertexAlpha;
-layout(location = 0) out vec4 o_Color;
-layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
-void main() {
-    vec4 color = texture(g_Texture0, v_TexCoord);
-    color.a *= v_VertexAlpha;
     o_Color = color;
 }
 "#;

@@ -4,11 +4,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::engine::scene::{SceneAudioSource, SceneAudioState, StereoSpectrum64};
 
-use super::clock::native_vulkan_audio_spectrum64;
 use super::spectrum::SpectrumNormalizer;
 use super::system_monitor::system_audio_monitor_spectrum_status;
 
 static DIAGNOSTIC_SPECTRUM64: OnceLock<Option<StereoSpectrum64>> = OnceLock::new();
+static PUBLISHED_SPECTRUM64: OnceLock<Mutex<Option<StereoSpectrum64>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy)]
 struct NativeVulkanAudioEventChannelSample {
@@ -101,7 +101,7 @@ impl NativeVulkanAudioEventSource {
                 ..SceneAudioState::default()
             };
         }
-        let raw_spectrum = native_vulkan_audio_spectrum64();
+        let raw_spectrum = published_audio_spectrum64();
         let source = if system_audio_monitor_spectrum_status().is_some() {
             SceneAudioSource::SystemOutput
         } else if raw_spectrum.is_some() {
@@ -129,12 +129,35 @@ impl NativeVulkanAudioEventSource {
             ("diagnostic-stereo64-override", true)
         } else if let Some(status) = system_audio_monitor_spectrum_status() {
             status
-        } else if native_vulkan_audio_spectrum64().is_some() {
+        } else if published_audio_spectrum64().is_some() {
             ("decoded-audio-canonical-stereo64", true)
         } else {
             ("zero-spectrum-no-publisher", false)
         }
     }
+}
+
+pub(super) fn publish_audio_spectrum64(spectrum: StereoSpectrum64) {
+    if let Ok(mut published) = published_spectrum64().lock() {
+        *published = Some(spectrum);
+    }
+}
+
+pub(super) fn clear_published_audio_spectrum64() {
+    if let Ok(mut published) = published_spectrum64().lock() {
+        *published = None;
+    }
+}
+
+fn published_audio_spectrum64() -> Option<StereoSpectrum64> {
+    published_spectrum64()
+        .lock()
+        .ok()
+        .and_then(|published| *published)
+}
+
+fn published_spectrum64() -> &'static Mutex<Option<StereoSpectrum64>> {
+    PUBLISHED_SPECTRUM64.get_or_init(|| Mutex::new(None))
 }
 
 fn frame_delta_seconds(last: &mut Option<u64>, current: u64) -> f32 {

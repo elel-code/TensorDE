@@ -26,10 +26,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_render_item_clear_color(
     fallback: NativeVulkanClearColor,
 ) -> NativeVulkanClearColor {
     match render_item {
-        NativeVulkanRenderItem::Scene {
-            display: Some(SceneDisplayPlan::Color { color }),
-            ..
-        } => native_vulkan_clear_color_from_hex(color).unwrap_or(fallback),
+        NativeVulkanRenderItem::Scene { scene } => match &scene.display {
+            Some(SceneDisplayPlan::Color { color }) => {
+                native_vulkan_clear_color_from_hex(color).unwrap_or(fallback)
+            }
+            _ => fallback,
+        },
         _ => fallback,
     }
 }
@@ -153,25 +155,17 @@ impl NativeVulkanSceneDrawPlan {
 pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_draw_plan(
     render_item: &NativeVulkanRenderItem,
 ) -> Option<NativeVulkanSceneDrawPlan> {
-    let NativeVulkanRenderItem::Scene {
-        layers,
-        display,
-        snapshot_time_ms,
-        scene_size,
-        scene_fit,
-        dynamic_topology_required,
-        ..
-    } = render_item
+    let NativeVulkanRenderItem::Scene { scene } = render_item
     else {
         return None;
     };
     Some(native_vulkan_scene_draw_plan_from_layers(
-        *snapshot_time_ms,
-        *scene_size,
-        *scene_fit,
-        *dynamic_topology_required,
-        display.is_some(),
-        layers,
+        scene.snapshot_time_ms,
+        scene.scene_size,
+        scene.scene_fit,
+        scene.dynamic_topology_required,
+        scene.display.is_some(),
+        &scene.layers,
     ))
 }
 

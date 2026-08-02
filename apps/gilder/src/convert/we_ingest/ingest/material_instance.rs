@@ -163,7 +163,9 @@ fn combo_default(defaults: &BTreeMap<String, i64>, name: &str) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::convert::we_ingest::ingest_wallpaper_engine_project;
-    use crate::convert::we_ingest::ir::{WeIrImageTargetRole, WeIrShaderOrigin};
+    use crate::convert::we_ingest::ir::{
+        WeIrImageTargetRole, WeIrShaderOrigin, WeIrUtilityLayerKind,
+    };
     use crate::engine::render_graph::RenderPassRole;
     use std::fs;
 
@@ -513,6 +515,71 @@ uniform sampler2D g_Texture2; // {"default":"_rt_FullFrameBuffer","hidden":true,
             target.name == "_rt_FullFrameBuffer"
                 && target.role == WeIrImageTargetRole::FirstClassEffectTarget
         }));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_layer_base_draw_consumes_a_typed_scene_snapshot() {
+        let root = std::env::temp_dir().join(format!(
+            "gilder-we-project-layer-snapshot-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("test directory");
+        fs::write(
+            root.join("project.json"),
+            r#"{"type":"scene","file":"scene.json","title":"Project layer"}"#,
+        )
+        .expect("project");
+        fs::write(
+            root.join("scene.pkg"),
+            scene_package(&[
+                (
+                    "scene.json",
+                    br#"{"objects":[{"id":7,"image":"models/util/projectlayer.json","size":"3840 2160","effects":[{"file":"effects/opacity/effect.json"}]}]}"#,
+                ),
+                (
+                    "effects/opacity/effect.json",
+                    br#"{"passes":[{"material":"materials/effects/opacity.json"}]}"#,
+                ),
+                (
+                    "materials/effects/opacity.json",
+                    br#"{"passes":[{"shader":"effects/opacity","blending":"normal"}]}"#,
+                ),
+            ]),
+        )
+        .expect("scene package");
+
+        let ir = ingest_wallpaper_engine_project(&root).expect("project-layer IR");
+        assert_eq!(
+            ir.objects[0].utility_layer,
+            Some(WeIrUtilityLayerKind::ProjectLayer)
+        );
+        let graph = &ir.render_graphs[0];
+        assert_eq!(graph.passes[0].role, RenderPassRole::CopyTarget);
+        assert!(graph.passes[0].bindings.contains(
+            &crate::engine::render_graph::TextureBindingRole::GraphTarget {
+                slot: 0,
+                role: crate::engine::render_graph::RenderTargetRole::SceneColor,
+                name: None,
+            }
+        ));
+        let base = graph
+            .passes
+            .iter()
+            .find(|pass| pass.role == RenderPassRole::BaseMaterial)
+            .expect("project-layer base draw");
+        assert_eq!(
+            base.draw_primitive,
+            crate::engine::render_graph::RenderPassDrawPrimitive::ObjectMesh
+        );
+        assert!(base.bindings.contains(
+            &crate::engine::render_graph::TextureBindingRole::EffectTarget {
+                slot: 0,
+                name: "_rt_FullFrameBuffer".to_owned(),
+            }
+        ));
 
         let _ = fs::remove_dir_all(root);
     }

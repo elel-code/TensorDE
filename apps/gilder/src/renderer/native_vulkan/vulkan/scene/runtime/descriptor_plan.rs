@@ -4,10 +4,8 @@ use crate::engine::scene::{
     SceneParticleGpuEmitterPlan, SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceMeshDraw,
     SceneStorage,
 };
-use crate::renderer::native_vulkan::{
-    NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES,
-    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
-};
+use crate::renderer::native_vulkan::NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES;
+use vulkan_renderer::DescriptorSlotKind;
 
 use super::{SceneGpuDrawCommand, ScenePipelineDescriptorLayout};
 
@@ -19,41 +17,61 @@ pub(super) fn scene_descriptor_plan_inputs(
     pipeline_indices: &[u32],
     disabled_pipeline_indices: &[Option<u32>],
 ) -> (
-    Vec<NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind>,
+    Vec<DescriptorSlotKind>,
     Vec<SceneGpuDrawCommand>,
 ) {
     let per_draw_resource_count = layout.per_draw_resource_count();
     let mut resources = Vec::with_capacity(draws.len().saturating_mul(per_draw_resource_count));
     let mut commands = Vec::with_capacity(draws.len());
+    let fullscreen_utility_count = draws
+        .iter()
+        .filter(|draw| draw.primitive == SceneRenderingDeviceDrawPrimitive::FullscreenTriangle)
+        .count();
+    let mut fullscreen_utility_index = 0usize;
+    let mut object_composite_vertex_start = 0usize;
     for (index, draw) in draws.iter().enumerate() {
         let base = index * per_draw_resource_count;
-        resources.push(NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer);
+        resources.push(super::NATIVE_SLANG_CONSTANT_BUFFER_DESCRIPTOR_KIND);
         if layout.material_uniform_enabled {
-            resources
-                .push(NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer);
+            resources.push(super::NATIVE_SLANG_CONSTANT_BUFFER_DESCRIPTOR_KIND);
         }
         let (skinning_byte_offset, skinning_byte_count) = if layout.skinning_storage_enabled {
             resources
-                .push(NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer);
+                .push(DescriptorSlotKind::StorageBuffer);
             scene_draw_skinning_range(draw)
         } else {
             (0, 0)
         };
-        resources
-            .extend((0..layout.scene_owned_uniform_count).map(|_| {
-                NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer
-            }));
+        resources.extend(
+            (0..layout.scene_owned_uniform_count)
+                .map(|_| super::NATIVE_SLANG_CONSTANT_BUFFER_DESCRIPTOR_KIND),
+        );
         resources.extend(
             layout
                 .sampled_slots
                 .iter()
-                .map(|_| NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage),
+                .map(|_| DescriptorSlotKind::SampledImage),
         );
         resources.extend(
-            layout.input_attachment_slots.iter().map(|_| {
-                NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::InputAttachment
-            }),
+            layout
+                .input_attachment_slots
+                .iter()
+                .map(|_| DescriptorSlotKind::InputAttachment),
         );
+        let vertex_buffer_byte_offset = scene_draw_vertex_buffer_byte_offset(
+            storage,
+            draw,
+            fullscreen_utility_count,
+            fullscreen_utility_index,
+            object_composite_vertex_start,
+        );
+        if draw.primitive == SceneRenderingDeviceDrawPrimitive::FullscreenTriangle {
+            fullscreen_utility_index += 1;
+        }
+        if draw.uv_inset_texels > 0.0 {
+            object_composite_vertex_start =
+                object_composite_vertex_start.saturating_add(draw.vertex_count as usize);
+        }
         commands.push(SceneGpuDrawCommand {
             enabled: true,
             primitive: draw.primitive,
@@ -62,7 +80,12 @@ pub(super) fn scene_descriptor_plan_inputs(
             disabled_pipeline_index: disabled_pipeline_indices.get(index).copied().flatten(),
             first_index: draw.index_start,
             index_count: draw.index_count,
-            vertex_offset: draw.vertex_start as i32,
+            vertex_offset: if draw.uv_inset_texels > 0.0 {
+                0
+            } else {
+                draw.vertex_start as i32
+            },
+            vertex_buffer_byte_offset,
             vertex_count: draw.vertex_count,
             instance_count: draw.instance_count,
             instance_capacity: draw.instance_count,
@@ -76,6 +99,8 @@ pub(super) fn scene_descriptor_plan_inputs(
                 && storage
                     .string(draw.shader_key)
                     .is_some_and(|key| key == "gilder/dynamic-text"),
+            video_media_instance: None,
+            video_vertex_byte_offset: None,
             particle_indirect_index: particle_emitters
                 .iter()
                 .find(|emitter| {
@@ -104,6 +129,63 @@ pub(super) fn scene_descriptor_plan_inputs(
         });
     }
     (resources, commands)
+}
+
+fn scene_draw_vertex_buffer_byte_offset(
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    fullscreen_utility_count: usize,
+    fullscreen_utility_index: usize,
+    object_composite_vertex_start: usize,
+) -> Option<u64> {
+    if draw.uv_inset_texels > 0.0 {
+        return Some(object_composite_vertex_buffer_byte_offset(
+            storage.document().mesh_vertices.len(),
+            fullscreen_utility_count,
+            object_composite_vertex_start,
+        ));
+    }
+    let scene_owned_vertex = storage
+        .shader_program(
+            draw.shader_key,
+            crate::engine::scene::SceneShaderStage::Vertex,
+        )
+        .is_some();
+    vertex_buffer_byte_offset(
+        storage.document().mesh_vertices.len(),
+        fullscreen_utility_index,
+        draw.primitive,
+        scene_owned_vertex,
+    )
+}
+
+pub(super) fn object_composite_vertex_buffer_byte_offset(
+    mesh_vertex_count: usize,
+    fullscreen_utility_count: usize,
+    object_composite_vertex_start: usize,
+) -> u64 {
+    mesh_vertex_count
+        .saturating_add(fullscreen_utility_count.saturating_mul(3))
+        .saturating_add(object_composite_vertex_start) as u64
+        * u64::from(super::SCENE_MESH_VERTEX_STRIDE_BYTES)
+}
+
+pub(super) fn vertex_buffer_byte_offset(
+    mesh_vertex_count: usize,
+    fullscreen_utility_index: usize,
+    primitive: SceneRenderingDeviceDrawPrimitive,
+    scene_owned_vertex: bool,
+) -> Option<u64> {
+    match primitive {
+        SceneRenderingDeviceDrawPrimitive::ObjectMesh => Some(0),
+        SceneRenderingDeviceDrawPrimitive::FullscreenTriangle if scene_owned_vertex => Some(
+            mesh_vertex_count.saturating_add(fullscreen_utility_index.saturating_mul(3)) as u64
+                * u64::from(super::SCENE_MESH_VERTEX_STRIDE_BYTES),
+        ),
+        SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
+        | SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad
+        | SceneRenderingDeviceDrawPrimitive::ParticleBillboard => None,
+    }
 }
 
 fn scene_draw_skinning_range(draw: &SceneRenderingDeviceMeshDraw) -> (u64, u64) {

@@ -20,21 +20,62 @@ struct ScenePipelineVertexSelection<'a> {
     attributes: Option<Vec<SceneVertexAttributePlan>>,
 }
 
+pub(in crate::renderer::native_vulkan) struct ScenePipelineResourceCreateInputs<'a> {
+    pub device: &'a vulkan_renderer::Backend,
+    pub target_format: vulkan_renderer::TextureFormat,
+    pub extent: vulkan_renderer::Extent2D,
+    pub storage: &'a SceneStorage,
+    pub graph: &'a SceneRenderingDeviceGraphPlan,
+    pub resource_descriptor_kinds: &'a [vulkan_renderer::DescriptorSlotKind],
+    pub particle_global_descriptor_base: Option<usize>,
+    pub effect_target_plans: &'a [SceneEffectTargetImagePlan],
+    pub advanced_blend_enabled: bool,
+    pub advanced_blend_coherent: bool,
+    pub scene_color_msaa_enabled: bool,
+    pub local_read_scopes: &'a [SceneLocalReadScopePlan],
+    pub pipeline_binary_cache: &'a vulkan_renderer::PipelineBinaryArchiveCache,
+}
+
+pub(super) struct SceneGraphicsPipelineCreateInputs<'a> {
+    pub device: &'a vulkan_renderer::Backend,
+    pub target_format: vulkan_renderer::TextureFormat,
+    pub extent: vulkan_renderer::Extent2D,
+    pub vertex_spirv: &'a [u32],
+    pub fragment_spirv: &'a [u32],
+    pub vertex_entry_point: &'a str,
+    pub fragment_entry_point: &'a str,
+    pub vertex_attributes: Option<&'a [SceneVertexAttributePlan]>,
+    pub local_read_metadata: Option<&'a SceneLocalReadPipelineMetadata<'a>>,
+    pub blend: SceneGpuBlend,
+    pub cull_mode: SceneCullMode,
+    pub color_write_mask: SceneColorWriteMask,
+    pub advanced_source_premultiplied: bool,
+    pub advanced_blend_overlap: vulkan_renderer::BlendOverlap,
+    pub samples: ScenePipelineSamples,
+    pub topology: vulkan_renderer::PrimitiveTopology,
+    pub default_mesh_vertex_input: bool,
+    pub dynamic_text: bool,
+    pub pipeline_binary_cache: &'a vulkan_renderer::PipelineBinaryArchiveCache,
+}
+
 pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
-    device: &Device,
-    target_format: vk::Format,
-    extent: vk::Extent2D,
-    storage: &SceneStorage,
-    graph: &SceneRenderingDeviceGraphPlan,
-    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
-    particle_global_descriptor_base: Option<usize>,
-    effect_target_plans: &[SceneEffectTargetImagePlan],
-    advanced_blend_enabled: bool,
-    advanced_blend_coherent: bool,
-    scene_color_msaa_enabled: bool,
-    local_read_scopes: &[SceneLocalReadScopePlan],
-    local_read_limits: SceneLocalReadDeviceLimits,
+    inputs: ScenePipelineResourceCreateInputs<'_>,
 ) -> Result<ScenePipelineResources, String> {
+    let ScenePipelineResourceCreateInputs {
+        device,
+        target_format,
+        extent,
+        storage,
+        graph,
+        resource_descriptor_kinds,
+        particle_global_descriptor_base,
+        effect_target_plans,
+        advanced_blend_enabled,
+        advanced_blend_coherent,
+        scene_color_msaa_enabled,
+        local_read_scopes,
+        pipeline_binary_cache,
+    } = inputs;
     let keys = drawn_pass_pipeline_keys(
         storage,
         graph,
@@ -57,6 +98,10 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
         );
     }
     let mut entries = Vec::with_capacity(keys.len());
+    let mut machine_code_binary_count = 0usize;
+    let mut machine_code_bytes = 0usize;
+    let mut machine_code_cache_hits = 0usize;
+    let mut machine_code_cache_misses = 0usize;
     for key in keys {
         let program = select_scene_pipeline_program(storage, key)?;
         let descriptor_access = match key.shader {
@@ -85,7 +130,6 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
                     SceneLocalReadScopePassRole::Producer,
                     &descriptor_access,
                     None,
-                    local_read_limits,
                 )?)
             }
             Some(ScenePipelineLocalReadRole::Consumer(scope_index)) => {
@@ -96,18 +140,19 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
                     SceneLocalReadScopePassRole::Consumer,
                     &descriptor_access,
                     program.fragment_local_read_shader,
-                    local_read_limits,
                 )?)
             }
             None => {
                 if !descriptor_access.input_attachment_slots.is_empty() {
-                    destroy_scene_pipelines(
-                        device,
-                        ScenePipelineResources {
-                            entries,
-                            particle_compute: None,
-                        },
-                    );
+                    destroy_scene_pipelines(ScenePipelineResources {
+                        entries,
+                        video: None,
+                        particle_compute: None,
+                        machine_code_binary_count,
+                        machine_code_bytes,
+                        machine_code_cache_hits,
+                        machine_code_cache_misses,
+                    });
                     return Err(format!(
                         "scene shader {:?} declares input attachments outside a planned local-read scope",
                         program.fragment_key
@@ -121,66 +166,116 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
         if pipeline_debug {
             eprintln!(
                 "gilder-scene-pipeline-create: begin vertex={:?} fragment={:?} primitive={:?}",
-                program.vertex_key,
-                program.fragment_key,
-                key.primitive
+                program.vertex_key, program.fragment_key, key.primitive
             );
         }
-        match create_scene_pipeline(
+        match create_scene_pipeline(SceneGraphicsPipelineCreateInputs {
             device,
-            key.target_format,
+            target_format: key
+                .target_format
+                .ok_or_else(|| "drawable scene pipeline has no target format".to_owned())?,
             extent,
-            program.vertex_spirv,
-            program.fragment_spirv,
-            program.vertex_entry_point,
-            program.fragment_entry_point,
-            program.vertex_attributes.as_deref(),
-            local_read_metadata.as_ref(),
-            key.blend,
-            key.cull_mode,
-            key.color_write_mask,
-            key.advanced_source_premultiplied,
-            key.advanced_blend_overlap,
-            key.samples,
-            if key.primitive == SceneRenderingDeviceDrawPrimitive::ParticleBillboard {
-                vk::PrimitiveTopology::TRIANGLE_STRIP
+            vertex_spirv: program.vertex_spirv,
+            fragment_spirv: program.fragment_spirv,
+            vertex_entry_point: program.vertex_entry_point,
+            fragment_entry_point: program.fragment_entry_point,
+            vertex_attributes: program.vertex_attributes.as_deref(),
+            local_read_metadata: local_read_metadata.as_ref(),
+            blend: key.blend,
+            cull_mode: key.cull_mode,
+            color_write_mask: key.color_write_mask,
+            advanced_source_premultiplied: key.advanced_source_premultiplied,
+            advanced_blend_overlap: key.advanced_blend_overlap,
+            samples: key.samples,
+            topology: if key.primitive == SceneRenderingDeviceDrawPrimitive::ParticleBillboard {
+                vulkan_renderer::PrimitiveTopology::TriangleStrip
             } else {
-                vk::PrimitiveTopology::TRIANGLE_LIST
+                vulkan_renderer::PrimitiveTopology::TriangleList
             },
-            program.vertex_key == "gilder/dynamic-text",
-        ) {
-            Ok(pipeline) => {
+            default_mesh_vertex_input: key.primitive == SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+            dynamic_text: program.vertex_key == "gilder/dynamic-text",
+            pipeline_binary_cache,
+        }) {
+            Ok(prepared) => {
                 if pipeline_debug {
                     eprintln!(
                         "gilder-scene-pipeline-create: complete vertex={:?} fragment={:?} primitive={:?}",
-                        program.vertex_key,
-                        program.fragment_key,
-                        key.primitive
+                        program.vertex_key, program.fragment_key, key.primitive
                     );
                 }
-                entries.push(ScenePipelineEntry { key, pipeline });
+                machine_code_binary_count += prepared.archive().binaries.len();
+                machine_code_bytes += prepared
+                    .archive()
+                    .binaries
+                    .iter()
+                    .map(|binary| binary.data.len())
+                    .sum::<usize>();
+                if prepared.archive_reused() {
+                    machine_code_cache_hits += 1;
+                } else {
+                    machine_code_cache_misses += 1;
+                }
+                entries.push(ScenePipelineEntry {
+                    key,
+                    pipeline: prepared,
+                });
             }
             Err(err) => {
-                destroy_scene_pipelines(
-                    device,
-                    ScenePipelineResources {
-                        entries,
-                        particle_compute: None,
-                    },
-                );
+                destroy_scene_pipelines(ScenePipelineResources {
+                    entries,
+                    video: None,
+                    particle_compute: None,
+                    machine_code_binary_count,
+                    machine_code_bytes,
+                    machine_code_cache_hits,
+                    machine_code_cache_misses,
+                });
                 return Err(err);
             }
+        }
+    }
+    let video = video::create_optional(
+        device,
+        graph,
+        target_format,
+        scene_color_msaa_enabled,
+        pipeline_binary_cache,
+    )?;
+    if let Some(video) = video.as_ref() {
+        let (binary_count, binary_bytes, archive_reused) = video.machine_code_metrics();
+        machine_code_binary_count += binary_count;
+        machine_code_bytes += binary_bytes;
+        if archive_reused {
+            machine_code_cache_hits += 1;
+        } else {
+            machine_code_cache_misses += 1;
         }
     }
     let particle_compute = particle_compute::create_optional_particle_compute_pipeline(
         device,
         graph,
-        descriptor_heap_plan,
+        resource_descriptor_kinds,
         particle_global_descriptor_base,
+        pipeline_binary_cache,
     )?;
+    if let Some(compute) = particle_compute.as_ref() {
+        let (binary_count, binary_bytes, archive_reused) = compute.machine_code_metrics();
+        machine_code_binary_count += binary_count;
+        machine_code_bytes += binary_bytes;
+        if archive_reused {
+            machine_code_cache_hits += 1;
+        } else {
+            machine_code_cache_misses += 1;
+        }
+    }
     Ok(ScenePipelineResources {
         entries,
+        video,
         particle_compute,
+        machine_code_binary_count,
+        machine_code_bytes,
+        machine_code_cache_hits,
+        machine_code_cache_misses,
     })
 }
 
@@ -201,12 +296,14 @@ fn select_scene_pipeline_program(
                     vertex_key: vertex.key,
                     fragment_key: authored.key(),
                     vertex_entry_point: vertex.entry_point,
-                    fragment_entry_point: storage.string(fragment.entry_point).ok_or_else(|| {
-                        format!(
-                            "scene-owned fragment program {:?} has no entry point",
-                            vertex.key
-                        )
-                    })?,
+                    fragment_entry_point: storage.string(fragment.entry_point).ok_or_else(
+                        || {
+                            format!(
+                                "scene-owned fragment program {:?} has no entry point",
+                                vertex.key
+                            )
+                        },
+                    )?,
                     vertex_spirv: vertex.spirv,
                     fragment_spirv: authored.fragment_spirv(storage),
                     fragment_local_read_shader: None,
@@ -227,17 +324,29 @@ fn select_scene_pipeline_program(
             }
         },
         ScenePipelineShader::EffectPassthrough(_) => {
-            let passthrough = native_vulkan_scene_shader_for_key("we/passthrough")
-                .ok_or_else(|| "engine-owned scene shader \"we/passthrough\" is not built in".to_owned())?;
+            let passthrough =
+                native_vulkan_scene_shader_for_key("we/passthrough").ok_or_else(|| {
+                    "engine-owned scene shader \"we/passthrough\" is not built in".to_owned()
+                })?;
+            let passthrough_vertex = native_vulkan_scene_vertex_shader_for_primitive(
+                passthrough,
+                key.primitive,
+            )
+            .ok_or_else(|| {
+                format!(
+                    "engine-owned scene shader \"we/passthrough\" has no {:?} vertex program",
+                    key.primitive
+                )
+            })?;
             Ok(ScenePipelineProgramSelection {
-                vertex_key: vertex.key,
+                vertex_key: passthrough.key,
                 fragment_key: passthrough.key,
-                vertex_entry_point: vertex.entry_point,
+                vertex_entry_point: "main",
                 fragment_entry_point: "main",
-                vertex_spirv: vertex.spirv,
+                vertex_spirv: passthrough_vertex.spirv,
                 fragment_spirv: passthrough.fragment_spirv,
                 fragment_local_read_shader: passthrough.local_read_shader.as_ref(),
-                vertex_attributes: vertex.attributes,
+                vertex_attributes: None,
             })
         }
     }
@@ -251,9 +360,9 @@ fn select_scene_pipeline_vertex<'a>(
         SceneResolvedGraphicsProgram::SceneOwned { vertex, .. } => {
             let attributes = scene_owned_vertex_attributes(storage, vertex)?;
             let key = program.key();
-            let entry_point = storage.string(vertex.entry_point).ok_or_else(|| {
-                format!("scene-owned vertex program {key:?} has no entry point")
-            })?;
+            let entry_point = storage
+                .string(vertex.entry_point)
+                .ok_or_else(|| format!("scene-owned vertex program {key:?} has no entry point"))?;
             Ok(ScenePipelineVertexSelection {
                 key,
                 entry_point,
@@ -261,131 +370,35 @@ fn select_scene_pipeline_vertex<'a>(
                 attributes: Some(attributes),
             })
         }
-        SceneResolvedGraphicsProgram::EngineBuiltIn { .. } => {
-            Ok(ScenePipelineVertexSelection {
-                key: program.key(),
-                entry_point: "main",
-                spirv: program.vertex_spirv(storage),
-                attributes: None,
-            })
-        }
+        SceneResolvedGraphicsProgram::EngineBuiltIn { .. } => Ok(ScenePipelineVertexSelection {
+            key: program.key(),
+            entry_point: "main",
+            spirv: program.vertex_spirv(storage),
+            attributes: None,
+        }),
     }
 }
 
 pub(in crate::renderer::native_vulkan) fn destroy_scene_pipelines(
-    device: &Device,
     resources: ScenePipelineResources,
 ) {
-    particle_compute::destroy_optional_particle_compute_pipeline(
-        device,
-        resources.particle_compute,
-    );
-    unsafe {
-        for entry in resources.entries {
-            device.destroy_pipeline(entry.pipeline, None);
-        }
-    }
+    particle_compute::destroy_optional_particle_compute_pipeline(resources.particle_compute);
+    drop(resources.entries);
 }
 
-fn create_scene_pipeline(
-    device: &Device,
-    target_format: vk::Format,
-    extent: vk::Extent2D,
-    vertex_spirv: &[u32],
-    fragment_spirv: &[u32],
-    vertex_entry_point: &str,
-    fragment_entry_point: &str,
-    vertex_attributes: Option<&[SceneVertexAttributePlan]>,
-    local_read_metadata: Option<&SceneLocalReadPipelineMetadata<'_>>,
-    blend: SceneGpuBlend,
-    cull_mode: SceneCullMode,
-    color_write_mask: SceneColorWriteMask,
-    advanced_source_premultiplied: bool,
-    advanced_blend_overlap: vk::BlendOverlapEXT,
-    samples: ScenePipelineSamples,
-    topology: vk::PrimitiveTopology,
-    dynamic_text: bool,
-) -> Result<vk::Pipeline, String> {
-    if extent.width == 0 || extent.height == 0 {
-        return Err("scene pipeline requires non-zero extent".to_owned());
-    }
-    let vertex_entry = std::ffi::CString::new(vertex_entry_point)
-        .map_err(|_| "scene vertex entry point contains an embedded NUL".to_owned())?;
-    let vertex_module = create_shader_module(device, vertex_spirv, "scene vertex")?;
-    let result = (|| -> Result<vk::Pipeline, String> {
-        let local_read_fragment_spirv = local_read_metadata
-            .and_then(SceneLocalReadPipelineMetadata::local_read_fragment_spirv);
-        let (fragment_spirv, fragment_entry_point) =
-            if let Some(local_read_fragment_spirv) = local_read_fragment_spirv {
-                (local_read_fragment_spirv, "main")
-            } else {
-                (fragment_spirv, fragment_entry_point)
-            };
-        let fragment_entry = std::ffi::CString::new(fragment_entry_point)
-            .map_err(|_| "scene fragment entry point contains an embedded NUL".to_owned())?;
-        let fragment_module = create_shader_module(device, fragment_spirv, "scene fragment")?;
-        let result = create_scene_pipeline_with_modules(
-            device,
-            target_format,
-            vertex_module,
-            fragment_module,
-            vertex_entry.as_bytes_with_nul(),
-            fragment_entry.as_bytes_with_nul(),
-            vertex_attributes,
-            local_read_metadata,
-            blend,
-            cull_mode,
-            color_write_mask,
-            advanced_source_premultiplied,
-            advanced_blend_overlap,
-            samples,
-            topology,
-            dynamic_text,
-        );
-        unsafe {
-            device.destroy_shader_module(fragment_module, None);
-        }
-        result
-    })();
-    unsafe {
-        device.destroy_shader_module(vertex_module, None);
-    }
-    result
-}
-
-fn create_scene_pipeline_with_modules(
-    device: &Device,
-    target_format: vk::Format,
-    vertex_module: vk::ShaderModule,
-    fragment_module: vk::ShaderModule,
-    vertex_entry_point: &[u8],
-    fragment_entry_point: &[u8],
-    vertex_attributes: Option<&[SceneVertexAttributePlan]>,
-    local_read_metadata: Option<&SceneLocalReadPipelineMetadata<'_>>,
-    blend: SceneGpuBlend,
-    cull_mode: SceneCullMode,
-    color_write_mask: SceneColorWriteMask,
-    advanced_source_premultiplied: bool,
-    advanced_blend_overlap: vk::BlendOverlapEXT,
-    samples: ScenePipelineSamples,
-    topology: vk::PrimitiveTopology,
-    dynamic_text: bool,
-) -> Result<vk::Pipeline, String> {
-    let vertex_stage = vk::PipelineShaderStageCreateInfo::builder()
-        .stage(vk::ShaderStageFlags::VERTEX)
-        .module(vertex_module)
-        .name(vertex_entry_point)
-        .build();
-
-    let fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
-        .stage(vk::ShaderStageFlags::FRAGMENT)
-        .module(fragment_module)
-        .name(fragment_entry_point)
-        .build();
-    create_graphics_pipeline(
+pub(super) fn create_scene_pipeline(
+    inputs: SceneGraphicsPipelineCreateInputs<'_>,
+) -> Result<vulkan_renderer::MachineCodeGraphicsPipeline, String> {
+    let SceneGraphicsPipelineCreateInputs {
         device,
         target_format,
-        [vertex_stage, fragment_stage],
+        extent,
+        vertex_spirv,
+        fragment_spirv,
+        vertex_entry_point,
+        fragment_entry_point,
+        vertex_attributes,
+        local_read_metadata,
         blend,
         cull_mode,
         color_write_mask,
@@ -393,9 +406,56 @@ fn create_scene_pipeline_with_modules(
         advanced_blend_overlap,
         samples,
         topology,
+        default_mesh_vertex_input,
+        dynamic_text,
+        pipeline_binary_cache,
+    } = inputs;
+    if extent.width == 0 || extent.height == 0 {
+        return Err("scene pipeline requires non-zero extent".to_owned());
+    }
+    let vertex_entry = std::ffi::CString::new(vertex_entry_point)
+        .map_err(|_| "scene vertex entry point contains an embedded NUL".to_owned())?;
+    let vertex_module = device
+        .create_shader_module(vulkan_renderer::ShaderModuleDescriptor {
+            label: Some("gilder-scene-vertex".into()),
+            spirv: vertex_spirv.to_vec(),
+        })
+        .map_err(|error| format!("create shared scene vertex shader module: {error}"))?;
+    let local_read_fragment_spirv =
+        local_read_metadata.and_then(SceneLocalReadPipelineMetadata::local_read_fragment_spirv);
+    let (fragment_spirv, fragment_entry_point) =
+        if let Some(local_read_fragment_spirv) = local_read_fragment_spirv {
+            (local_read_fragment_spirv, "main")
+        } else {
+            (fragment_spirv, fragment_entry_point)
+        };
+    let fragment_entry = std::ffi::CString::new(fragment_entry_point)
+        .map_err(|_| "scene fragment entry point contains an embedded NUL".to_owned())?;
+    let fragment_module = device
+        .create_shader_module(vulkan_renderer::ShaderModuleDescriptor {
+            label: Some("gilder-scene-fragment".into()),
+            spirv: fragment_spirv.to_vec(),
+        })
+        .map_err(|error| format!("create shared scene fragment shader module: {error}"))?;
+    create_graphics_pipeline(
+        device,
+        target_format,
+        &vertex_module,
+        &fragment_module,
+        vertex_entry.as_c_str(),
+        fragment_entry.as_c_str(),
+        blend,
+        cull_mode,
+        color_write_mask,
+        advanced_source_premultiplied,
+        advanced_blend_overlap,
+        samples,
+        topology,
+        default_mesh_vertex_input,
         dynamic_text,
         vertex_attributes,
         local_read_metadata,
+        pipeline_binary_cache,
     )
 }
 
@@ -424,12 +484,12 @@ mod tests {
             vec![
                 SceneVertexAttributePlan {
                     location: 0,
-                    format: vk::Format::R32G32_SFLOAT,
+                    format: vulkan_renderer::VertexFormat::Float32x2,
                     offset: 8,
                 },
                 SceneVertexAttributePlan {
                     location: 1,
-                    format: vk::Format::R32G32_SFLOAT,
+                    format: vulkan_renderer::VertexFormat::Float32x2,
                     offset: 0,
                 },
             ]
@@ -447,6 +507,22 @@ mod tests {
         assert_eq!(selection.fragment_entry_point, "fragmentMain");
     }
 
+    #[test]
+    fn effect_passthrough_uses_the_complete_engine_owned_material_program() {
+        let storage = scene_owned_storage(true);
+        let mut key = authored_key();
+        key.shader = ScenePipelineShader::EffectPassthrough(SceneStringId(0));
+
+        let selection =
+            select_scene_pipeline_program(&storage, key).expect("engine passthrough program");
+
+        assert_eq!(selection.vertex_key, "we/passthrough");
+        assert_eq!(selection.fragment_key, "we/passthrough");
+        assert_eq!(selection.vertex_entry_point, "main");
+        assert_eq!(selection.fragment_entry_point, "main");
+        assert!(selection.vertex_attributes.is_none());
+    }
+
     fn authored_key() -> ScenePipelineKey {
         ScenePipelineKey {
             shader: ScenePipelineShader::Authored(SceneStringId(0)),
@@ -455,8 +531,8 @@ mod tests {
             cull_mode: SceneCullMode::None,
             color_write_mask: SceneColorWriteMask::Rgba,
             advanced_source_premultiplied: false,
-            advanced_blend_overlap: vk::BlendOverlapEXT::UNCORRELATED,
-            target_format: vk::Format::R8G8B8A8_UNORM,
+            advanced_blend_overlap: vulkan_renderer::BlendOverlap::Uncorrelated,
+            target_format: Some(vulkan_renderer::TextureFormat::Rgba8Unorm),
             samples: ScenePipelineSamples::Single,
             local_read_role: None,
         }
@@ -520,10 +596,7 @@ mod tests {
                 })
                 .into_iter()
                 .collect(),
-            shader_stage_io: vec![
-                vertex_input(3, 0, 2),
-                vertex_input(4, 1, 3),
-            ],
+            shader_stage_io: vec![vertex_input(3, 0, 2), vertex_input(4, 1, 3)],
             shader_spirv: spirv,
             ..SceneBinaryDocument::default()
         })

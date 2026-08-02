@@ -76,10 +76,11 @@ fn particle_texture_decode_mode(
     storage: &SceneStorage,
     draw: &SceneRenderingDeviceMeshDraw,
 ) -> f32 {
-    particle_texture(storage, draw)
-        .is_some_and(|texture| texture.source_runtime_format == 8)
-        .then_some(1.0)
-        .unwrap_or(0.0)
+    if particle_texture(storage, draw).is_some_and(|texture| texture.source_runtime_format == 8) {
+        1.0
+    } else {
+        0.0
+    }
 }
 
 fn particle_texture<'storage>(
@@ -125,6 +126,12 @@ fn inverse_linear_2d([m00, m01, m10, m11]: [f32; 4]) -> Option<[f32; 4]> {
     Some([m11 * inverse, -m01 * inverse, -m10 * inverse, m00 * inverse])
 }
 
+fn write_vec3(values: &mut [f32], start: usize, value: crate::engine::scene::SceneVec3) {
+    values[start] = value.x;
+    values[start + 1] = value.y;
+    values[start + 2] = value.z;
+}
+
 #[cfg(test)]
 mod tests {
     use super::inverse_linear_2d;
@@ -134,10 +141,4 @@ mod tests {
         let inverse = inverse_linear_2d([0.0, -3.0, 2.0, 0.0]).expect("invertible");
         assert_eq!(inverse, [0.0, 0.5, -1.0 / 3.0, 0.0]);
     }
-}
-
-fn write_vec3(values: &mut [f32], start: usize, value: crate::engine::scene::SceneVec3) {
-    values[start] = value.x;
-    values[start + 1] = value.y;
-    values[start + 2] = value.z;
 }

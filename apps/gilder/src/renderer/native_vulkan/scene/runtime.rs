@@ -17,8 +17,8 @@ use serde_json::{Map, Value};
 use crate::engine::scene::{SceneScriptRuntime, SceneStorage};
 use crate::renderer::native_vulkan::{
     NativeVulkanClearColor, NativeVulkanError, NativeVulkanOptions,
-    NativeVulkanVulkanaliaScenePresentOptions, NativeVulkanVulkanaliaScenePresentSnapshot,
-    run_native_vulkan_vulkanalia_scene_present,
+    NativeVulkanScenePresentOptions, NativeVulkanScenePresentSnapshot,
+    run_native_vulkan_scene_present,
 };
 
 use super::NativeVulkanSceneBackendPlan;
@@ -31,6 +31,16 @@ pub struct NativeVulkanSceneRunOptions {
     pub clear_color_override: Option<NativeVulkanClearColor>,
     pub surface_extent: Option<(u32, u32)>,
     pub gpu_timing: bool,
+    pub semantic_diagnostics: bool,
+    pub video_sources: Vec<NativeVulkanSceneVideoSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVulkanSceneVideoSource {
+    pub media_instance: u32,
+    pub source: PathBuf,
+    pub codec: crate::renderer::native_vulkan::NativeVulkanVideoSessionCodec,
+    pub loop_playback: bool,
 }
 
 impl Default for NativeVulkanSceneRunOptions {
@@ -42,6 +52,8 @@ impl Default for NativeVulkanSceneRunOptions {
             clear_color_override: None,
             surface_extent: None,
             gpu_timing: false,
+            semantic_diagnostics: false,
+            video_sources: Vec::new(),
         }
     }
 }
@@ -51,7 +63,7 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub binding: &'static str,
     pub route: &'static str,
     pub source: PathBuf,
-    pub present: NativeVulkanVulkanaliaScenePresentSnapshot,
+    pub present: NativeVulkanScenePresentSnapshot,
     pub frames_presented: u64,
     pub average_present_fps: f64,
     pub present_delta_min_micros: Option<u64>,
@@ -111,7 +123,7 @@ pub fn run_scene_with_options(
     host.input_passthrough = !scene_options.pointer_events;
 
     let present =
-        run_native_vulkan_vulkanalia_scene_present(NativeVulkanVulkanaliaScenePresentOptions {
+        run_native_vulkan_scene_present(NativeVulkanScenePresentOptions {
             host,
             wait_configure_roundtrips: options.wait_configure_roundtrips,
             duration,
@@ -121,7 +133,9 @@ pub fn run_scene_with_options(
             user_property_overrides: scene_options.user_property_overrides,
             surface_extent: scene_options.surface_extent,
             gpu_timing: scene_options.gpu_timing,
+            semantic_diagnostics: scene_options.semantic_diagnostics,
             pointer_replay_normalized: scene_options.pointer_replay_normalized,
+            video_sources: scene_options.video_sources,
         })
         .map_err(NativeVulkanError::Scene)?;
     let render_graph_draw_count = present.mesh_draw_count;
@@ -132,7 +146,7 @@ pub fn run_scene_with_options(
         && present.index_buffer_bytes > 0;
 
     Ok(NativeVulkanSceneRuntimeSnapshot {
-        binding: "vulkanalia",
+        binding: "vulkan-renderer",
         route: "scene-engine-vulkan-present-runtime",
         source,
         frames_presented: present.frames_presented,

@@ -16,8 +16,23 @@ pub(in super::super) fn pack_scene_skinning_palette(
             .saturating_add(1)
             .saturating_mul(NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES),
     );
+    pack_scene_skinning_palette_into(&mut payload, graph);
+    payload
+}
+
+pub(in super::super) fn pack_scene_skinning_palette_into(
+    payload: &mut Vec<u8>,
+    graph: &SceneRenderingDeviceGraphPlan,
+) {
+    let byte_count = graph
+        .puppet_bone_matrices
+        .len()
+        .saturating_add(1)
+        .saturating_mul(NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES);
+    payload.clear();
+    payload.reserve(byte_count.saturating_sub(payload.capacity()));
     push_scene_puppet_bone(
-        &mut payload,
+        payload,
         [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
@@ -27,9 +42,9 @@ pub(in super::super) fn pack_scene_skinning_palette(
         1.0,
     );
     for bone in &graph.puppet_bone_matrices {
-        push_scene_puppet_bone(&mut payload, bone.matrix, bone.alpha);
+        push_scene_puppet_bone(payload, bone.matrix, bone.alpha);
     }
-    payload
+    debug_assert_eq!(payload.len(), byte_count);
 }
 
 pub(super) fn resolved_draw_effect_visibility_mask(

@@ -1,7 +1,52 @@
 //! Strict typed sources for package-owned shader uniforms.
 
-use super::SceneOwnedUniformSource;
 use crate::engine::scene::{SceneShaderScalarType, SceneShaderUniformMemberRecord};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in super::super) enum SceneAudioSpectrumChannel {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in super::super) enum SceneAudioSpectrumResolution {
+    Bands16,
+    Bands32,
+    Bands64,
+}
+
+impl SceneAudioSpectrumResolution {
+    pub(in super::super) const fn band_count(self) -> u32 {
+        match self {
+            Self::Bands16 => 16,
+            Self::Bands32 => 32,
+            Self::Bands64 => 64,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in super::super) enum SceneOwnedUniformSource<'a> {
+    SceneTime,
+    FrameDelta,
+    AudioSpectrum {
+        channel: SceneAudioSpectrumChannel,
+        resolution: SceneAudioSpectrumResolution,
+    },
+    ModelViewProjectionMatrix,
+    EffectModelViewProjectionMatrix,
+    LayerModelMatrix,
+    SampledTextureResolution {
+        slot: u32,
+    },
+    MaterialParameter {
+        authored_name: &'a str,
+    },
+}
+
+pub(in super::super) fn is_scene_audio_spectrum_uniform_name(name: &str) -> bool {
+    scene_audio_spectrum_source(name).is_some()
+}
 
 pub(super) fn scene_owned_uniform_source<'a>(
     key: &str,
@@ -12,6 +57,20 @@ pub(super) fn scene_owned_uniform_source<'a>(
     if let Some(authored_name) = material_parameter {
         return Ok(SceneOwnedUniformSource::MaterialParameter { authored_name });
     }
+    if let Some((channel, resolution)) = scene_audio_spectrum_source(name) {
+        require_uniform_array_shape(
+            key,
+            name,
+            member,
+            SceneShaderScalarType::F32,
+            resolution.band_count(),
+            16,
+        )?;
+        return Ok(SceneOwnedUniformSource::AudioSpectrum {
+            channel,
+            resolution,
+        });
+    }
     match name {
         "g_Time" => {
             require_uniform_shape(key, name, member, SceneShaderScalarType::F32, 1, 1, 4)?;
@@ -20,22 +79,6 @@ pub(super) fn scene_owned_uniform_source<'a>(
         "g_FrameTime" => {
             require_uniform_shape(key, name, member, SceneShaderScalarType::F32, 1, 1, 4)?;
             Ok(SceneOwnedUniformSource::FrameDelta)
-        }
-        "g_AudioSpectrum64Left" | "g_AudioSpectrum64Right" => {
-            require_uniform_array_shape(
-                key,
-                name,
-                member,
-                SceneShaderScalarType::F32,
-                64,
-                16,
-                1012,
-            )?;
-            Ok(if name.ends_with("Left") {
-                SceneOwnedUniformSource::AudioSpectrum64Left
-            } else {
-                SceneOwnedUniformSource::AudioSpectrum64Right
-            })
         }
         "g_ModelViewProjectionMatrix" => {
             require_uniform_shape(key, name, member, SceneShaderScalarType::F32, 4, 4, 64)?;
@@ -54,9 +97,7 @@ pub(super) fn scene_owned_uniform_source<'a>(
             let slot = name["g_Texture".len()..name.len() - "Resolution".len()]
                 .parse::<u32>()
                 .map_err(|_| {
-                    format!(
-                        "scene-owned uniform {name:?} in {key:?} has an invalid texture slot"
-                    )
+                    format!("scene-owned uniform {name:?} in {key:?} has an invalid texture slot")
                 })?;
             Ok(SceneOwnedUniformSource::SampledTextureResolution { slot })
         }
@@ -103,8 +144,10 @@ fn require_uniform_array_shape(
     scalar_type: SceneShaderScalarType,
     array_count: u32,
     array_stride: u32,
-    byte_size: u32,
 ) -> Result<(), String> {
+    let byte_size = array_count
+        .checked_mul(array_stride)
+        .ok_or_else(|| format!("scene-owned uniform {name:?} in {key:?} size overflows"))?;
     if member.scalar_type != scalar_type
         || member.rows != 1
         || member.columns != 1
@@ -119,10 +162,55 @@ fn require_uniform_array_shape(
     Ok(())
 }
 
+fn scene_audio_spectrum_source(
+    name: &str,
+) -> Option<(SceneAudioSpectrumChannel, SceneAudioSpectrumResolution)> {
+    use SceneAudioSpectrumChannel::{Left, Right};
+    use SceneAudioSpectrumResolution::{Bands16, Bands32, Bands64};
+
+    match name {
+        "g_AudioSpectrum16Left" => Some((Left, Bands16)),
+        "g_AudioSpectrum16Right" => Some((Right, Bands16)),
+        "g_AudioSpectrum32Left" => Some((Left, Bands32)),
+        "g_AudioSpectrum32Right" => Some((Right, Bands32)),
+        "g_AudioSpectrum64Left" => Some((Left, Bands64)),
+        "g_AudioSpectrum64Right" => Some((Right, Bands64)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine::scene::SceneStringId;
+
+    #[test]
+    fn fixed_audio_spectrum_arrays_have_typed_sources_at_every_we_resolution() {
+        for (name, array_count) in [
+            ("g_AudioSpectrum16Left", 16),
+            ("g_AudioSpectrum16Right", 16),
+            ("g_AudioSpectrum32Left", 32),
+            ("g_AudioSpectrum32Right", 32),
+            ("g_AudioSpectrum64Left", 64),
+            ("g_AudioSpectrum64Right", 64),
+        ] {
+            let member = SceneShaderUniformMemberRecord {
+                name: SceneStringId::NONE,
+                material_parameter: SceneStringId::NONE,
+                byte_offset: 0,
+                byte_size: array_count * 16,
+                scalar_type: SceneShaderScalarType::F32,
+                rows: 1,
+                columns: 1,
+                array_count,
+                array_stride: 16,
+                matrix_stride: 0,
+            };
+
+            scene_owned_uniform_source("workshop/example/audio", name, None, &member)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+        }
+    }
 
     #[test]
     fn effect_mvp_resolves_to_an_independent_typed_source() {

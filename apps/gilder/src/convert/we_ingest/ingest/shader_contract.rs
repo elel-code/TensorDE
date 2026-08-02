@@ -84,9 +84,7 @@ pub(super) fn build_shader_contract_records(
             })
             .collect::<Vec<_>>();
         let texture_slot_mask = pass.bindings.iter().fold(0u32, |mask, binding| {
-            binding_texture_slot(binding)
-                .filter(|slot| *slot < 32)
-                .map_or(mask, |slot| mask | (1 << slot))
+            mask | binding_texture_slot_mask(binding)
         }) | declared_texture_slot_mask(&shader_key, &[]);
         let pipeline_key = format!(
             "{}|blend={:?}|depth={:?}|depthwrite={}|cull={:?}",
@@ -163,19 +161,28 @@ fn shader_contract(
     }
 }
 
-fn binding_texture_slot(binding: &TextureBindingRole) -> Option<u32> {
+fn binding_texture_slot_mask(binding: &TextureBindingRole) -> u32 {
     match binding {
-        TextureBindingRole::SourceTexture => Some(0),
+        TextureBindingRole::SourceTexture => 1,
         TextureBindingRole::TextureSlot { slot }
         | TextureBindingRole::AlphaTextureSlot { slot }
         | TextureBindingRole::PreviousGraphTarget { slot }
         | TextureBindingRole::GraphTarget { slot, .. }
         | TextureBindingRole::NamedFboBind { slot, .. }
-        | TextureBindingRole::EffectTarget { slot, .. } => Some(*slot),
-        TextureBindingRole::VideoFrame { media_instance } => Some(*media_instance),
+        | TextureBindingRole::EffectTarget { slot, .. } => {
+            if *slot < 32 {
+                1 << *slot
+            } else {
+                0
+            }
+        }
+        // One logical decoded frame is sampled through the production
+        // scene-video shader's fixed t0/t1 Y/UV plane pair. The media
+        // instance selects the decoder, never a shader register.
+        TextureBindingRole::VideoFrame { .. } => 0b11,
         TextureBindingRole::AudioUniform
         | TextureBindingRole::SystemUniform
-        | TextureBindingRole::PassConstant { .. } => None,
+        | TextureBindingRole::PassConstant { .. } => 0,
     }
 }
 
@@ -209,6 +216,9 @@ pub(super) fn declared_texture_slot_mask(
     }
     if key == "we/image-ripple-source" {
         mask |= 0x05;
+    }
+    if key == "we/genericimage4-scene-color-blend" {
+        mask |= 0x11;
     }
     if matches!(
         key,
@@ -255,6 +265,7 @@ fn mesh_shader_uses_slot_zero(key: &str) -> bool {
             | "we/passthrough"
             | "we/composelayer"
     ) || key == "we/objectcomposite"
+        || key == "we/genericimage4-scene-color-blend"
         || key == "gilder/dynamic-text"
         || key == "we/objectcomposite-screen-group"
         || key == "we/image-effect-source"
@@ -279,7 +290,6 @@ fn mesh_shader_uses_slot_zero(key: &str) -> bool {
         || key == "we/puppet-opacity-clipping-final"
         || key == "we/puppet-iris-waterripple-final"
         || key == "we/puppet-iris-waterripple-clipping-final"
-        || key == "we/puppet-effect-source"
         || key == "we/puppet-effect-composite"
         || key == "we/puppet-waterwaves-composite"
         || is_waterwaves_direct_shader(key)
@@ -342,6 +352,7 @@ fn effect_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
 
 fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
     matches!(shader_program(key), "we/genericimage2" | "we/genericimage4")
+        || key == "we/genericimage4-scene-color-blend"
         || key == "we/image-waterwaves-final"
         || key == "we/image-waterripple-final"
         || key == "we/image-waterripple-modulate-final"

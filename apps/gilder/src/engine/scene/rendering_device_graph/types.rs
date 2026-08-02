@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use super::super::abi::*;
 
+pub const SCENE_OBJECT_COMPOSITE_UV_INSET_TEXELS: f32 = 0.15;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SceneRenderingDevicePassNode {
     pub graph_index: u32,
@@ -81,6 +83,8 @@ pub struct SceneRenderingDeviceMaterialSampledBinding {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SceneRenderingDeviceMeshDraw {
     pub primitive: SceneRenderingDeviceDrawPrimitive,
+    /// Coordinate domain used to project this retained draw into its render target.
+    pub projection_domain: SceneRenderingDeviceProjectionDomain,
     /// Shader selected by the actual render pass. Synthetic composites can differ from
     /// the authored material's first pass.
     pub shader_key: SceneStringId,
@@ -93,6 +97,8 @@ pub struct SceneRenderingDeviceMeshDraw {
     /// Effect-local MVP after adapting WE's unit quad to Gilder's pixel-local mesh.
     pub effect_model_view_projection_matrix: [[f32; 4]; 4],
     pub authored_source_extent: [f32; 2],
+    /// Per-edge inset applied to the retained secondary composite mesh during cold upload.
+    pub uv_inset_texels: f32,
     pub skinning_palette_start: u32,
     pub skinning_palette_count: u32,
     pub resolved_color: SceneVec3,
@@ -113,6 +119,13 @@ pub struct SceneRenderingDeviceMeshDraw {
     pub index_start: u32,
     pub index_count: u32,
     pub instance_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneRenderingDeviceProjectionDomain {
+    Scene,
+    AuthoredTexture { width: u32, height: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

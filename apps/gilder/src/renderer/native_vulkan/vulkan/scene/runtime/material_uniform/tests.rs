@@ -2,9 +2,10 @@ use super::*;
 use crate::engine::scene::{
     SceneBinaryDocument, SceneCullMode, SceneDepthTest, SceneMaterialConstantRecord,
     SceneMaterialHandle, SceneMaterialPassRecord, SceneMaterialRecord, SceneMaterialTextureRecord,
-    ScenePipelineBlend, SceneRenderingDeviceDrawPrimitive, SceneResourceId, SceneResourceKind,
-    SceneResourceRecord, SceneStringId, SceneTextureFormat, SceneTextureSamplerAddressMode,
-    SceneTextureSamplerFilter,
+    SceneObjectHandle, SceneObjectKind, SceneObjectRecord, ScenePipelineBlend,
+    SceneRenderingDeviceDrawPrimitive, SceneResourceId, SceneResourceKind, SceneResourceRecord,
+    SceneStringId, SceneTextureFormat, SceneTextureSamplerAddressMode, SceneTextureSamplerFilter,
+    SceneVec3,
 };
 
 #[path = "tests/final_effect_contract.rs"]
@@ -87,6 +88,56 @@ fn standard_material_multiplies_resolved_object_shadow_tint_and_alpha() {
     assert_eq!(f32_from_payload(&payload, 4), 0.3);
     assert!((f32_from_payload(&payload, 8) - 0.3).abs() < f32::EPSILON);
     assert_eq!(f32_from_payload(&payload, 12), 0.15);
+}
+
+#[test]
+fn scene_color_blend_packs_resolved_visual_and_authored_mode() {
+    let mut document = storage_with_constants("we/genericimage4", &[])
+        .document()
+        .clone();
+    document
+        .strings
+        .push("we/genericimage4-scene-color-blend".to_owned());
+    let blend_shader = SceneStringId((document.strings.len() - 1) as u32);
+    document.objects.push(SceneObjectRecord {
+        id: SceneObjectHandle(0),
+        we_id: 7,
+        name: SceneStringId::NONE,
+        kind: SceneObjectKind::Image,
+        resource: SceneResourceId::NONE,
+        material: SceneMaterialHandle(0),
+        parent_we_id: crate::engine::scene::INVALID_OBJECT_ID,
+        attachment: SceneStringId::NONE,
+        origin: SceneVec3::default(),
+        angles: SceneVec3::default(),
+        scale: SceneVec3::ONE,
+        camera_zoom: 1.0,
+        color: SceneVec3::ONE,
+        alpha: 0.55,
+        visible: true,
+        color_blend_mode: 11,
+        sort_order: 0,
+        effect_start: u32::MAX,
+        effect_count: 0,
+        render_graph: u32::MAX,
+    });
+    let storage = SceneStorage::from_document(document).expect("scene color blend storage");
+    let mut draw = draw_with_material(SceneMaterialHandle(0));
+    draw.shader_key = blend_shader;
+    draw.resolved_color = SceneVec3 {
+        x: 0.25,
+        y: 0.5,
+        z: 0.75,
+    };
+    draw.resolved_alpha = 0.55;
+
+    let payload = pack_test_scene_material_uniforms(&storage, &[draw], 0.0);
+
+    assert_eq!(f32_from_payload(&payload, 0), 0.25);
+    assert_eq!(f32_from_payload(&payload, 4), 0.5);
+    assert_eq!(f32_from_payload(&payload, 8), 0.75);
+    assert_eq!(f32_from_payload(&payload, 12), 0.55);
+    assert_eq!(f32_from_payload(&payload, 16), 11.0);
 }
 
 #[test]
@@ -228,8 +279,7 @@ fn cloudmotion_uniform_uses_the_current_source_extent_for_aspect() {
     );
     let draw = draw_with_material(SceneMaterialHandle(0));
 
-    let framebuffer =
-        super::pack_scene_material_uniforms(&storage, &[draw.clone()], 1.1326716, [3856, 2199]);
+    let framebuffer = super::pack_scene_material_uniforms(&storage, &[draw], 1.1326716, [3856, 2199]);
     assert_eq!(
         f32_from_payload(&framebuffer, 6 * size_of::<f32>()),
         3856.0 / 2199.0
@@ -540,6 +590,7 @@ fn storage_with_padded_mask(
 fn draw_with_material(material: SceneMaterialHandle) -> SceneRenderingDeviceMeshDraw {
     SceneRenderingDeviceMeshDraw {
         primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+        projection_domain: crate::engine::scene::SceneRenderingDeviceProjectionDomain::Scene,
         shader_key: SceneStringId::NONE,
         mesh_index: 0,
         resolved_object_index: 0,
@@ -547,6 +598,7 @@ fn draw_with_material(material: SceneMaterialHandle) -> SceneRenderingDeviceMesh
         clip_transform: [[0.0; 4]; 4],
         effect_model_view_projection_matrix: [[0.0; 4]; 4],
         authored_source_extent: [0.0; 2],
+        uv_inset_texels: 0.0,
         skinning_palette_start: crate::engine::scene::INVALID_OBJECT_ID,
         skinning_palette_count: 0,
         resolved_color: crate::engine::scene::SceneVec3 {

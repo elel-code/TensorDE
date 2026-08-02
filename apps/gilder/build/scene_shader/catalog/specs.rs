@@ -226,10 +226,6 @@ pub(super) const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshFlatRoundedMaskComposite,
     },
     SceneShaderSpec {
-        key: "we/puppet-effect-source",
-        family: SceneShaderFamily::MeshPuppetEffectSource,
-    },
-    SceneShaderSpec {
         key: "we/puppet-effect-composite",
         family: SceneShaderFamily::MeshPuppetEffectComposite,
     },
@@ -528,6 +524,10 @@ pub(super) const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
     SceneShaderSpec {
         key: "we/genericimage4",
         family: SceneShaderFamily::MeshGenericImage4,
+    },
+    SceneShaderSpec {
+        key: "we/genericimage4-scene-color-blend",
+        family: SceneShaderFamily::MeshSceneColorBlend,
     },
     SceneShaderSpec {
         key: "we/genericimage4-multiply-composite",

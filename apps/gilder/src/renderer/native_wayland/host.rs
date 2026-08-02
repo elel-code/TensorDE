@@ -239,6 +239,7 @@ impl NativeWaylandHost {
         let scale_factor = self.shell.scale_factor(self.surface).unwrap_or(1.0);
         let handle = self.shell.surface_handle(self.surface)?;
         Ok(NativeWaylandSurfaceHandles {
+            renderer_handle: handle.clone(),
             display: handle.display_ptr(),
             surface: handle.surface_ptr(),
             logical_size,

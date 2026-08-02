@@ -112,11 +112,11 @@ fn retained_payload_applies_cover_only_to_projection_matrices() {
     draw.effect_model_view_projection_matrix[0] = [10.0, 11.0, 12.0, 13.0];
     draw.effect_model_view_projection_matrix[1] = [14.0, 15.0, 16.0, 17.0];
     draw.render_world_matrix[0] = [18.0, 19.0, 20.0, 21.0];
-    let original = draw.clone();
+    let original = draw;
     let mut payload = vec![0; 192];
 
     plan.write_payload(
-        &[draw.clone()],
+        &[draw],
         SceneOwnedUniformFrameInputs::INITIAL,
         &mut payload,
     )
@@ -134,10 +134,61 @@ fn retained_payload_applies_cover_only_to_projection_matrices() {
 }
 
 #[test]
+fn retained_payload_does_not_apply_scene_cover_to_authored_texture_projection() {
+    let plan = SceneOwnedUniformArenaPlan {
+        byte_count: 128,
+        slices: vec![SceneOwnedUniformSlicePlan {
+            draw_index: 0,
+            descriptor_lane: 0,
+            byte_offset: 0,
+            byte_size: 128,
+            members: vec![
+                member(0, 64, SceneOwnedRetainedSource::ModelViewProjectionMatrix),
+                member(
+                    64,
+                    64,
+                    SceneOwnedRetainedSource::EffectModelViewProjectionMatrix,
+                ),
+            ],
+        }],
+        sampled_slots: Vec::new(),
+        phase_resolutions: vec![Vec::new()],
+        scene_cover_clip_scale: [1.013_831_4, 1.0],
+    };
+    let mut draw = draw();
+    draw.projection_domain =
+        crate::engine::scene::SceneRenderingDeviceProjectionDomain::AuthoredTexture {
+            width: 415,
+            height: 405,
+        };
+    draw.clip_transform = [
+        [2.0 / 415.0, 0.0, 0.0, 0.0],
+        [0.0, -2.0 / 405.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0005, 0.5],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    draw.effect_model_view_projection_matrix = draw.clip_transform;
+    let mut payload = vec![0; 128];
+
+    plan.write_payload(
+        &[draw],
+        SceneOwnedUniformFrameInputs::INITIAL,
+        &mut payload,
+    )
+    .expect("authored-texture retained payload");
+
+    assert_eq!(read_f32(&payload, 0), draw.clip_transform[0][0]);
+    assert_eq!(read_f32(&payload, 12), 0.0);
+    assert_eq!(read_f32(&payload, 64), draw.clip_transform[0][0]);
+    assert_eq!(read_f32(&payload, 76), 0.0);
+    assert_eq!(read_f32(&payload, 80), draw.clip_transform[1][0]);
+}
+
+#[test]
 fn retained_payload_preserves_strided_stereo64_channels() {
     let array = |byte_offset, source| SceneOwnedUniformMemberSource {
         byte_offset,
-        byte_size: 1012,
+        byte_size: 1024,
         array_stride: 16,
         source,
     };
@@ -147,10 +198,22 @@ fn retained_payload_preserves_strided_stereo64_channels() {
             draw_index: 0,
             descriptor_lane: 0,
             byte_offset: 0,
-            byte_size: 2036,
+            byte_size: 2048,
             members: vec![
-                array(0, SceneOwnedRetainedSource::AudioSpectrum64Left),
-                array(1024, SceneOwnedRetainedSource::AudioSpectrum64Right),
+                array(
+                    0,
+                    SceneOwnedRetainedSource::AudioSpectrum {
+                        channel: SceneAudioSpectrumChannel::Left,
+                        resolution: SceneAudioSpectrumResolution::Bands64,
+                    },
+                ),
+                array(
+                    1024,
+                    SceneOwnedRetainedSource::AudioSpectrum {
+                        channel: SceneAudioSpectrumChannel::Right,
+                        resolution: SceneAudioSpectrumResolution::Bands64,
+                    },
+                ),
             ],
         }],
         sampled_slots: Vec::new(),
@@ -181,7 +244,86 @@ fn retained_payload_preserves_strided_stereo64_channels() {
     assert_eq!(read_f32(&payload, 1024), 100.0);
     assert_eq!(read_f32(&payload, 2032), 163.0);
     assert!(payload[4..16].iter().all(|byte| *byte == 0));
-    assert!(payload[2036..].iter().all(|byte| *byte == 0xcc));
+    assert!(payload[2036..].iter().all(|byte| *byte == 0));
+}
+
+#[test]
+fn retained_payload_max_pools_stereo64_into_we_32_and_16_band_arrays() {
+    let array = |byte_offset, byte_size, channel, resolution| SceneOwnedUniformMemberSource {
+        byte_offset,
+        byte_size,
+        array_stride: 16,
+        source: SceneOwnedRetainedSource::AudioSpectrum {
+            channel,
+            resolution,
+        },
+    };
+    let plan = SceneOwnedUniformArenaPlan {
+        byte_count: 1536,
+        slices: vec![SceneOwnedUniformSlicePlan {
+            draw_index: 0,
+            descriptor_lane: 0,
+            byte_offset: 0,
+            byte_size: 1536,
+            members: vec![
+                array(
+                    0,
+                    512,
+                    SceneAudioSpectrumChannel::Left,
+                    SceneAudioSpectrumResolution::Bands32,
+                ),
+                array(
+                    512,
+                    512,
+                    SceneAudioSpectrumChannel::Right,
+                    SceneAudioSpectrumResolution::Bands32,
+                ),
+                array(
+                    1024,
+                    256,
+                    SceneAudioSpectrumChannel::Left,
+                    SceneAudioSpectrumResolution::Bands16,
+                ),
+                array(
+                    1280,
+                    256,
+                    SceneAudioSpectrumChannel::Right,
+                    SceneAudioSpectrumResolution::Bands16,
+                ),
+            ],
+        }],
+        sampled_slots: Vec::new(),
+        phase_resolutions: vec![Vec::new()],
+        scene_cover_clip_scale: [1.0, 1.0],
+    };
+    let spectrum = StereoSpectrum64 {
+        left: std::array::from_fn(|index| index as f32),
+        right: std::array::from_fn(|index| 100.0 + index as f32),
+    };
+    let mut payload = vec![0xcc; 1536];
+
+    plan.write_payload(
+        &[draw()],
+        SceneOwnedUniformFrameInputs {
+            scalar_overrides: &[],
+            scene_time_seconds: 0.0,
+            frame_delta_seconds: 0.0,
+            audio_spectrum: &spectrum,
+            sampled_binding_phase: 0,
+        },
+        &mut payload,
+    )
+    .expect("downsampled stereo payload");
+
+    assert_eq!(read_f32(&payload, 0), 1.0);
+    assert_eq!(read_f32(&payload, 496), 63.0);
+    assert_eq!(read_f32(&payload, 512), 101.0);
+    assert_eq!(read_f32(&payload, 1008), 163.0);
+    assert_eq!(read_f32(&payload, 1024), 3.0);
+    assert_eq!(read_f32(&payload, 1264), 63.0);
+    assert_eq!(read_f32(&payload, 1280), 103.0);
+    assert_eq!(read_f32(&payload, 1520), 163.0);
+    assert!(payload[4..16].iter().all(|byte| *byte == 0));
 }
 
 fn member(
@@ -200,6 +342,7 @@ fn member(
 fn draw() -> SceneRenderingDeviceMeshDraw {
     SceneRenderingDeviceMeshDraw {
         primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+        projection_domain: crate::engine::scene::SceneRenderingDeviceProjectionDomain::Scene,
         shader_key: SceneStringId::NONE,
         mesh_index: 0,
         resolved_object_index: 0,
@@ -207,6 +350,7 @@ fn draw() -> SceneRenderingDeviceMeshDraw {
         clip_transform: [[0.0; 4]; 4],
         effect_model_view_projection_matrix: [[0.0; 4]; 4],
         authored_source_extent: [1.0; 2],
+        uv_inset_texels: 0.0,
         skinning_palette_start: 0,
         skinning_palette_count: 0,
         resolved_color: crate::engine::scene::SceneVec3::default(),

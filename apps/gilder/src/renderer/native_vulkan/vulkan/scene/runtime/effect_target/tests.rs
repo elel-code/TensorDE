@@ -1,8 +1,11 @@
-use super::*;
 use super::super::input_attachment_binding::{
     SceneInputAttachmentBindingPlan, SceneInputAttachmentSource,
 };
 use super::super::sampled_binding::SceneSampledImageBindingPlan;
+use super::*;
+use super::scene_color_copy::{
+    graph_copies_scene_color, graph_uses_direct_scene_color_snapshot,
+};
 use crate::engine::scene::{
     INVALID_MATERIAL_ID, INVALID_OBJECT_ID, SceneBinaryDocument, SceneColorWriteMask,
     SceneCompositeBlend, SceneCullMode, SceneDepthTest, SceneMaterialHandle, SceneObjectHandle,
@@ -46,23 +49,18 @@ fn effect_target_image_plan_scales_and_aliases_physical_slots() {
     let plans = scene_effect_target_image_plan(
         &storage,
         &graph,
-        vk::Format::B8G8R8A8_UNORM,
-        vk::Extent2D {
-            width: 1920,
-            height: 1080,
-        },
+        TextureFormat::Bgra8Unorm,
+        Extent2D::new(1920, 1080),
     )
     .expect("effect target plan");
 
     assert_eq!(plans.len(), 1);
     assert_eq!(plans[0].physical_slot, 2);
-    assert_eq!(plans[0].format, vk::Format::R8G8B8A8_UNORM);
-    assert_eq!(plans[0].width, 960);
-    assert_eq!(plans[0].height, 270);
+    assert_eq!(plans[0].format, TextureFormat::Rgba8Unorm);
+    assert_eq!(plans[0].extent, Extent2D::new(960, 270));
     assert!(plans[0].persistent_across_frames);
     assert_eq!(plans[0].aliased_logical_target_count, 2);
 }
-
 
 #[test]
 fn effect_target_image_plan_honors_non_zero_plan_allocation_extent() {
@@ -81,19 +79,14 @@ fn effect_target_image_plan_honors_non_zero_plan_allocation_extent() {
     let plans = scene_effect_target_image_plan(
         &storage,
         &graph,
-        vk::Format::B8G8R8A8_UNORM,
-        vk::Extent2D {
-            width: 3856,
-            height: 2199,
-        },
+        TextureFormat::Bgra8Unorm,
+        Extent2D::new(3856, 2199),
     )
     .expect("effect target plan");
 
     assert_eq!(plans.len(), 1);
-    assert_eq!(plans[0].width, 2318);
-    assert_eq!(plans[0].height, 1794);
+    assert_eq!(plans[0].extent, Extent2D::new(2318, 1794));
 }
-
 
 #[test]
 fn effect_batch_atlas_applies_its_declared_field_resolution_once() {
@@ -128,18 +121,14 @@ fn effect_batch_atlas_applies_its_declared_field_resolution_once() {
     let plans = scene_effect_target_image_plan(
         &storage,
         &graph,
-        vk::Format::B8G8R8A8_UNORM,
-        vk::Extent2D {
-            width: 2560,
-            height: 1600,
-        },
+        TextureFormat::Bgra8Unorm,
+        Extent2D::new(2560, 1600),
     )
     .expect("effect atlas plan");
 
     assert_eq!(plans.len(), 1);
-    assert_eq!(plans[0].format, vk::Format::R16G16_SFLOAT);
-    assert_eq!(plans[0].width, 640);
-    assert_eq!(plans[0].height, 300);
+    assert_eq!(plans[0].format, TextureFormat::Rg16Float);
+    assert_eq!(plans[0].extent, Extent2D::new(640, 300));
     assert_eq!(plans[0].batch_field_count, 11);
 }
 
@@ -155,18 +144,14 @@ fn effect_target_image_plan_uses_backbuffer_format_for_missing_target_records() 
     let plans = scene_effect_target_image_plan(
         &storage,
         &graph,
-        vk::Format::B8G8R8A8_UNORM,
-        vk::Extent2D {
-            width: 1280,
-            height: 720,
-        },
+        TextureFormat::Bgra8Unorm,
+        Extent2D::new(1280, 720),
     )
     .expect("effect target plan");
 
     assert_eq!(plans.len(), 1);
-    assert_eq!(plans[0].format, vk::Format::B8G8R8A8_UNORM);
-    assert_eq!(plans[0].width, 1280);
-    assert_eq!(plans[0].height, 720);
+    assert_eq!(plans[0].format, TextureFormat::Bgra8Unorm);
+    assert_eq!(plans[0].extent, Extent2D::new(1280, 720));
 }
 
 #[test]
@@ -177,9 +162,8 @@ fn input_attachment_usage_covers_every_physical_slot_in_the_reference_cycle() {
             graph_index: 0,
             target: SceneRenderTargetKind::ImageLocalMain,
             target_name: SceneStringId::NONE,
-            format: vk::Format::R8G8B8A8_UNORM,
-            width: 64,
-            height: 64,
+            format: TextureFormat::Rgba8Unorm,
+            extent: Extent2D::new(64, 64),
             batch_field_count: 1,
             batch_atlas_columns: 1,
             batch_atlas_rows: 1,
@@ -192,9 +176,8 @@ fn input_attachment_usage_covers_every_physical_slot_in_the_reference_cycle() {
             graph_index: 0,
             target: SceneRenderTargetKind::ImageLocalSub,
             target_name: SceneStringId::NONE,
-            format: vk::Format::R8G8B8A8_UNORM,
-            width: 64,
-            height: 64,
+            format: TextureFormat::Rgba8Unorm,
+            extent: Extent2D::new(64, 64),
             batch_field_count: 1,
             batch_atlas_columns: 1,
             batch_atlas_rows: 1,
@@ -222,8 +205,7 @@ fn input_attachment_usage_covers_every_physical_slot_in_the_reference_cycle() {
         },
     ];
 
-    apply_scene_effect_target_input_attachment_usage(&mut plans, &cycle)
-        .expect("input usage plan");
+    apply_scene_effect_target_input_attachment_usage(&mut plans, &cycle).expect("input usage plan");
 
     assert!(plans.iter().all(|plan| plan.input_attachment_required));
 }
@@ -235,9 +217,8 @@ fn local_read_candidate_usage_covers_destination_and_reference_permutations() {
         graph_index: 0,
         target: SceneRenderTargetKind::NamedFbo,
         target_name,
-        format: vk::Format::R8G8B8A8_UNORM,
-        width: 64,
-        height: 64,
+        format: TextureFormat::Rgba8Unorm,
+        extent: Extent2D::new(64, 64),
         batch_field_count: 1,
         batch_atlas_columns: 1,
         batch_atlas_rows: 1,
@@ -245,19 +226,9 @@ fn local_read_candidate_usage_covers_destination_and_reference_permutations() {
         aliased_logical_target_count: 1,
         input_attachment_required: false,
     };
-    let mut producer = pass_node(
-        0,
-        SceneRenderPassKind::BaseMaterial,
-        SceneStringId(0),
-        0,
-    );
+    let mut producer = pass_node(0, SceneRenderPassKind::BaseMaterial, SceneStringId(0), 0);
     producer.mesh_draw_count = 1;
-    let mut consumer = pass_node(
-        1,
-        SceneRenderPassKind::EffectMaterial,
-        SceneStringId(1),
-        0,
-    );
+    let mut consumer = pass_node(1, SceneRenderPassKind::EffectMaterial, SceneStringId(1), 0);
     consumer.mesh_draw_start = 1;
     consumer.mesh_draw_count = 1;
     let graph = SceneRenderingDeviceGraphPlan {
@@ -340,11 +311,8 @@ fn effect_target_image_plan_rejects_incompatible_manual_aliases() {
     let error = scene_effect_target_image_plan(
         &storage,
         &graph,
-        vk::Format::B8G8R8A8_UNORM,
-        vk::Extent2D {
-            width: 1920,
-            height: 1080,
-        },
+        TextureFormat::Bgra8Unorm,
+        Extent2D::new(1920, 1080),
     )
     .expect_err("incompatible alias must fail");
 
@@ -358,16 +326,16 @@ fn effect_target_image_plan_rejects_incompatible_manual_aliases() {
     assert_eq!(divided_axis(2160, 2_000), 1080);
     assert_eq!(divided_axis(1, 2_000), 2);
     assert_eq!(
-        target_format("r16f", vk::Format::B8G8R8A8_UNORM).expect("r16f"),
-        vk::Format::R16_SFLOAT
+        target_format("r16f", TextureFormat::Bgra8Unorm).expect("r16f"),
+        TextureFormat::R16Float
     );
     assert_eq!(
-        target_format("rg1616f", vk::Format::B8G8R8A8_UNORM).expect("rg1616f"),
-        vk::Format::R16G16_SFLOAT
+        target_format("rg1616f", TextureFormat::Bgra8Unorm).expect("rg1616f"),
+        TextureFormat::Rg16Float
     );
     assert_eq!(
-        target_format("rgba8888", vk::Format::B8G8R8A8_UNORM).expect("rgba8888"),
-        vk::Format::R8G8B8A8_UNORM
+        target_format("rgba8888", TextureFormat::Bgra8Unorm).expect("rgba8888"),
+        TextureFormat::Rgba8Unorm
     );
 }
 
@@ -520,11 +488,8 @@ fn scene_color_consumer_keeps_copied_snapshot_image_and_command() {
     let images = scene_effect_target_image_plan(
         &storage,
         &graph,
-        vk::Format::B8G8R8A8_UNORM,
-        vk::Extent2D {
-            width: 3840,
-            height: 2160,
-        },
+        TextureFormat::Bgra8Unorm,
+        Extent2D::new(3840, 2160),
     )
     .expect("effect target plan");
     let commands = scene_effect_target_commands(&storage, &graph);
@@ -532,89 +497,12 @@ fn scene_color_consumer_keeps_copied_snapshot_image_and_command() {
 
     assert_eq!(images.len(), 1);
     assert_eq!(images[0].physical_slot, 4);
-    assert_eq!((images[0].width, images[0].height), (3840, 2160));
+    assert_eq!(images[0].extent, Extent2D::new(3840, 2160));
     assert_eq!(commands.len(), 1);
     assert!(!commands[0].direct_scene_color_snapshot);
     assert_eq!(command_plan.copy_command_count, 1);
     assert!(graph_copies_scene_color(&commands, 0));
     assert!(!graph_uses_direct_scene_color_snapshot(&commands, 0));
-}
-
-#[test]
-fn repeated_effect_target_passes_load_after_the_initial_clear() {
-    let mut initialized = Vec::new();
-
-    assert_eq!(
-        effect_target_load_op(&initialized, 4, false, false, false),
-        vk::AttachmentLoadOp::CLEAR
-    );
-    mark_target_initialized(&mut initialized, 4);
-    assert_eq!(
-        effect_target_load_op(&initialized, 4, true, false, false),
-        vk::AttachmentLoadOp::LOAD
-    );
-    assert_eq!(
-        effect_target_load_op(&initialized, 4, true, true, false),
-        vk::AttachmentLoadOp::CLEAR
-    );
-    assert_eq!(
-        effect_target_load_op(&initialized, 4, true, false, true),
-        vk::AttachmentLoadOp::DONT_CARE
-    );
-}
-
-#[test]
-fn interleaved_execution_state_keeps_authored_reference_swaps_between_slices() {
-    let source = LogicalEffectTargetKey {
-        graph_index: 0,
-        target: SceneRenderTargetKind::NamedFbo,
-        name: SceneStringId(0),
-    };
-    let target = LogicalEffectTargetKey {
-        graph_index: 0,
-        target: SceneRenderTargetKind::NamedFbo,
-        name: SceneStringId(1),
-    };
-    let allocations = vec![
-        allocation(0, SceneRenderTargetKind::NamedFbo, source.name),
-        allocation(1, SceneRenderTargetKind::NamedFbo, target.name),
-    ];
-    let mut state = SceneEffectTargetExecutionState::new(&allocations, &[0, 1], &[])
-        .expect("initial reference state");
-    let swap = SceneEffectTargetCommand {
-        kind: SceneEffectTargetCommandKind::SwapReferences,
-        pass_record_index: 0,
-        target,
-        source: Some(SceneEffectTargetCommandSource::LogicalTarget(source)),
-        mesh_draw_start: 0,
-        mesh_draw_count: 0,
-        clear_before_draw: false,
-        fully_overwrites_target: false,
-        direct_scene_color_snapshot: false,
-        scene_color_copy_coverage: SceneColorCopyCoverage::FullTarget,
-        batch_physical_slot: None,
-        batch_atlas_tile: None,
-    };
-
-    swap_logical_references(swap, &mut state.references).expect("authored swap");
-    assert_eq!(
-        state
-            .references
-            .iter()
-            .find(|reference| reference.key == source)
-            .expect("source reference")
-            .physical_slot,
-        1
-    );
-    assert_eq!(
-        state
-            .references
-            .iter()
-            .find(|reference| reference.key == target)
-            .expect("target reference")
-            .physical_slot,
-        0
-    );
 }
 
 fn graph_with_allocations(
@@ -635,8 +523,7 @@ fn pass_node(
 ) -> SceneRenderingDevicePassNode {
     SceneRenderingDevicePassNode {
         graph_index: 0,
-        graph_activation_policy:
-            crate::engine::scene::SceneRenderGraphActivationPolicy::Always,
+        graph_activation_policy: crate::engine::scene::SceneRenderGraphActivationPolicy::Always,
         pass_record_index: 0,
         pass_id,
         role,
@@ -646,8 +533,7 @@ fn pass_node(
         binding_count: u32::from(binding_start < 2),
         effect_binding_start: u32::MAX,
         effect_binding_count: 0,
-        effect_visibility_policy:
-            crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+        effect_visibility_policy: crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
         mesh_draw_start: 0,
         mesh_draw_count: 0,
     }

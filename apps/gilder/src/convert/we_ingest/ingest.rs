@@ -28,7 +28,6 @@ mod pipeline_state;
 mod puppet_clipping;
 mod puppet_material;
 mod puppet_model;
-mod ripple_flow;
 mod script_program;
 mod shader_combo;
 mod shader_contract;
@@ -50,7 +49,7 @@ use serde_json::{Map, Value};
 
 use crate::engine::render_graph::{
     WeEffectPassContract, WeImageGraphContract, we_image_graph,
-    we_image_graph_requires_generated_scene_snapshot,
+    we_image_graph_generated_scene_snapshot_slot, we_image_graph_requires_generated_scene_snapshot,
 };
 use crate::engine::scene::abi::{
     SceneCullMode, SceneDepthTest, SceneObjectKind as SceneAbiObjectKind, SceneResourceKind,
@@ -494,7 +493,11 @@ impl WeIrBuilder {
         let utility_layer = utility_layer_kind(&image_path);
         let mut resource = None;
         let mut material = None;
-        let mut kind = SceneAbiObjectKind::Unsupported;
+        let mut kind = if bound_string(value.get("camera")).is_some() {
+            SceneAbiObjectKind::Camera
+        } else {
+            SceneAbiObjectKind::Unsupported
+        };
 
         if !particle_path.is_empty() {
             kind = SceneAbiObjectKind::ParticleEmitter;
@@ -714,6 +717,9 @@ impl WeIrBuilder {
             origin: parse_vec3(value.get("origin")).unwrap_or_default(),
             angles: parse_vec3(value.get("angles")).unwrap_or_default(),
             scale: parse_vec3(value.get("scale")).unwrap_or(SceneVec3::ONE),
+            camera_zoom: value_f32(value.get("zoom"))
+                .filter(|zoom| zoom.is_finite() && *zoom > 0.0)
+                .unwrap_or(1.0),
             // Retained glyph textures already contain both the glyph and outline colors.
             color: if kind == SceneAbiObjectKind::Text && material.is_some() {
                 SceneVec3::ONE
@@ -776,5 +782,7 @@ impl WeIrBuilder {
     }
 }
 
+#[cfg(test)]
+mod camera_tests;
 #[cfg(test)]
 mod tests;

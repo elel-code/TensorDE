@@ -97,6 +97,81 @@ fn rejects_incompatible_fragment_input() {
 }
 
 #[test]
+fn accepts_fixed_array_stage_io_location_span() {
+    let spirv = vec![0x0723_0203, 0x0001_0600, 0, 2, 0];
+    let mut item = stage_io(SceneShaderIoDirection::Output, 4);
+    item.location_count = 16;
+    let document = SceneBinaryDocument {
+        strings: vec![
+            "program".to_owned(),
+            "main".to_owned(),
+            "audioValue".to_owned(),
+        ],
+        shader_programs: vec![program_record(SceneShaderStage::Vertex, 0, spirv.len())],
+        shader_stage_io: vec![item],
+        shader_spirv: spirv,
+        ..SceneBinaryDocument::default()
+    };
+
+    SceneStorage::from_document(document).expect("fixed array stage-I/O span");
+}
+
+#[test]
+fn rejects_stage_io_span_that_is_not_a_whole_array_of_columns() {
+    let spirv = vec![0x0723_0203, 0x0001_0600, 0, 2, 0];
+    let mut item = stage_io(SceneShaderIoDirection::Output, 4);
+    item.columns = 2;
+    item.location_count = 3;
+    let document = SceneBinaryDocument {
+        strings: vec!["program".to_owned(), "main".to_owned(), "values".to_owned()],
+        shader_programs: vec![program_record(SceneShaderStage::Vertex, 0, spirv.len())],
+        shader_stage_io: vec![item],
+        shader_spirv: spirv,
+        ..SceneBinaryDocument::default()
+    };
+
+    assert!(matches!(
+        SceneStorage::from_document(document),
+        Err(SceneStorageError::InvalidShaderProgram {
+            reason: "shader stage-I/O shape is invalid",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn rejects_stage_io_location_overlap_inside_an_array_span() {
+    let spirv = vec![0x0723_0203, 0x0001_0600, 0, 2, 0];
+    let mut array = stage_io(SceneShaderIoDirection::Output, 4);
+    array.location_count = 16;
+    let mut tail = stage_io(SceneShaderIoDirection::Output, 2);
+    tail.name = SceneStringId(3);
+    tail.location = 15;
+    let mut program = program_record(SceneShaderStage::Vertex, 0, spirv.len());
+    program.stage_io_count = 2;
+    let document = SceneBinaryDocument {
+        strings: vec![
+            "program".to_owned(),
+            "main".to_owned(),
+            "audioValue".to_owned(),
+            "uv".to_owned(),
+        ],
+        shader_programs: vec![program],
+        shader_stage_io: vec![array, tail],
+        shader_spirv: spirv,
+        ..SceneBinaryDocument::default()
+    };
+
+    assert!(matches!(
+        SceneStorage::from_document(document),
+        Err(SceneStorageError::InvalidShaderProgram {
+            reason: "shader stage-I/O locations overlap",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn rejects_scene_spirv_with_legacy_descriptor_decorations() {
     let mut spirv = vec![0x0723_0203, 0x0001_0600, 0, 2, 0];
     spirv.extend(spirv_instruction(71, &[1, 33, 0]));

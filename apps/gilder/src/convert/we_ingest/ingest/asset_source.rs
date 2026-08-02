@@ -81,16 +81,46 @@ impl WeAssetSource {
         Ok(None)
     }
 
-    pub(super) fn shader_include_directories(&self, shader_key: &str) -> Vec<PathBuf> {
-        let mut directories = Vec::new();
-        if let Some(parent) = self.root.join("shaders").join(shader_key).parent() {
-            push_existing_unique(&mut directories, parent.to_path_buf());
+    /// Resolves an active shader include through the same virtual asset order
+    /// as all other project resources. Includes never escape the package/root
+    /// and are returned with their normalized virtual path for cycle checks.
+    pub(super) fn read_shader_include(
+        &self,
+        including_asset: &str,
+        include: &str,
+    ) -> Result<(String, String), WeIngestError> {
+        let including_asset = normalize_we_path(including_asset);
+        let include = normalize_we_path(include);
+        validate_relative_we_path(&including_asset)?;
+        validate_relative_we_path(&include)?;
+
+        let mut candidates = Vec::new();
+        if let Some((parent, _)) = including_asset.rsplit_once('/') {
+            candidates.push(format!("{parent}/{include}"));
         }
-        push_existing_unique(&mut directories, self.root.join("shaders"));
-        for root in &self.builtin_roots {
-            push_existing_unique(&mut directories, root.join("shaders"));
+        candidates.push(format!("shaders/{include}"));
+        if include.starts_with("shaders/") {
+            candidates.push(include.clone());
         }
-        directories
+        let mut unique = Vec::new();
+        for candidate in candidates {
+            if !unique.contains(&candidate) {
+                unique.push(candidate);
+            }
+        }
+        for candidate in unique {
+            if let Some(asset) = self.read_optional_asset(&candidate)? {
+                let text = String::from_utf8(asset.bytes).map_err(|error| {
+                    WeIngestError::InvalidProject(format!(
+                        "shader include {candidate} is not UTF-8: {error}"
+                    ))
+                })?;
+                return Ok((candidate, text));
+            }
+        }
+        Err(WeIngestError::MissingAsset(format!(
+            "shader include {include} from {including_asset}"
+        )))
     }
 }
 

@@ -95,8 +95,7 @@ pub fn native_vulkan_scene_resource_storage_plan(
     rendering_device_graph: &SceneRenderingDeviceGraphPlan,
 ) -> NativeVulkanSceneResourceStoragePlan {
     let shader_heap_slices = shader_heap_slices(storage.document().shader_contracts.as_slice());
-    let utility_vertex_count =
-        usize::from(rendering_device_graph.uses_fullscreen_utility_primitive()) * 3;
+    let utility_vertex_count = rendering_device_graph.fullscreen_utility_draw_count() * 3;
     let vertex_count = renderer_scene_render
         .mesh_vertex_count
         .saturating_add(utility_vertex_count);

@@ -7,8 +7,8 @@ use crate::engine::scene::{
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
 use crate::renderer::native_vulkan::scene::native_vulkan_scene_shader_for_key;
 
-use super::composite_scissor::object_mesh_covers_output;
 use super::composite_scissor::SceneMeshCoveragePlans;
+use super::composite_scissor::object_mesh_covers_output;
 use super::draw_recording::{SceneGpuDrawRange, SceneGpuGraphDrawRange};
 use super::material_uniform::resolved_standard_material_color;
 

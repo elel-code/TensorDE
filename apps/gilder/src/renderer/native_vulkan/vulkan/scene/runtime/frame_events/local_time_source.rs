@@ -26,9 +26,12 @@ impl SceneLocalTimeEventSource {
     }
 
     pub(super) fn capture(&mut self) -> Option<SceneLocalTime> {
+        self.capture_at(Instant::now())
+    }
+
+    fn capture_at(&mut self, now: Instant) -> Option<SceneLocalTime> {
         let precision = self.precision?;
 
-        let now = Instant::now();
         if self.refresh_at.is_none_or(|refresh_at| now >= refresh_at) {
             self.refresh(now, precision);
         }
@@ -82,17 +85,25 @@ mod tests {
     }
 
     #[test]
-    fn enabled_source_reuses_snapshot_until_second_boundary() {
+    fn enabled_source_reuses_snapshot_until_its_deadline() {
         let mut source = SceneLocalTimeEventSource::new(Some(SceneLocalTimePrecision::Second));
+        let now = Instant::now();
+        let snapshot = SceneLocalTime {
+            year: 2026,
+            month: 8,
+            day: 1,
+            hour: 12,
+            minute: 0,
+            second: 0,
+            weekday_sunday_zero: 6,
+        };
+        let refresh_at = now + Duration::from_secs(1);
+        source.cached = Some(snapshot);
+        source.refresh_at = Some(refresh_at);
 
-        let first = source.capture();
-        let refresh_at = source.refresh_at;
-        let second = source.capture();
-
-        assert!(first.is_some());
-        assert_eq!(second, first);
-        assert_eq!(source.refresh_at, refresh_at);
-        assert!(refresh_at.is_some_and(|deadline| deadline > Instant::now()));
+        assert_eq!(source.capture_at(now), Some(snapshot));
+        assert_eq!(source.cached, Some(snapshot));
+        assert_eq!(source.refresh_at, Some(refresh_at));
     }
 
     #[test]

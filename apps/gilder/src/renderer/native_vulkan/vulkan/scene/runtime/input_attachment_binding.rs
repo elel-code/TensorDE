@@ -175,20 +175,17 @@ fn scene_input_attachment_binding_plan_for_phase(
                     binding.pass_node_index, binding.slot, batch_atlas_tile
                 ));
             }
-            let physical_slot = reference_physical_slot(
-                &references,
-                graph_index,
-                target,
-                target_name,
-            )
-            .ok_or_else(|| {
-                format!(
-                    "scene input-attachment binding {:?}:{:?} has no physical allocation",
-                    target, target_name
-                )
-            })?;
-            for draw_index in pass.mesh_draw_start
-                ..pass.mesh_draw_start.saturating_add(pass.mesh_draw_count)
+            let physical_slot =
+                reference_physical_slot(&references, graph_index, target, target_name).ok_or_else(
+                    || {
+                        format!(
+                            "scene input-attachment binding {:?}:{:?} has no physical allocation",
+                            target, target_name
+                        )
+                    },
+                )?;
+            for draw_index in
+                pass.mesh_draw_start..pass.mesh_draw_start.saturating_add(pass.mesh_draw_count)
             {
                 let source_index = draw_index as usize * input_attachment_slots.len() + input_index;
                 let source = sources.get_mut(source_index).ok_or_else(|| {
@@ -261,10 +258,7 @@ fn validate_required_shader_slots(
         };
         for (input_index, slot) in input_attachment_slots.iter().copied().enumerate() {
             let source_index = draw_index * input_attachment_slots.len() + input_index;
-            let source_present = sources
-                .get(source_index)
-                .and_then(Option::as_ref)
-                .is_some();
+            let source_present = sources.get(source_index).and_then(Option::as_ref).is_some();
             if contract.input_attachment_slot_mask & (1u32 << slot) == 0 {
                 if source_present {
                     return Err(format!(

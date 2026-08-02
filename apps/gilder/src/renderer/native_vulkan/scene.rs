@@ -37,8 +37,8 @@ pub use resource_storage::{
     NativeVulkanSceneShaderHeapSlice, native_vulkan_scene_resource_storage_plan,
 };
 pub use runtime::{
-    NativeVulkanSceneRunOptions, NativeVulkanSceneRuntimeSnapshot, run_scene,
-    run_scene_with_options,
+    NativeVulkanSceneRunOptions, NativeVulkanSceneRuntimeSnapshot, NativeVulkanSceneVideoSource,
+    run_scene, run_scene_with_options,
 };
 pub(crate) use runtime::validate_scene_runtime_plan;
 #[allow(unused_imports)]

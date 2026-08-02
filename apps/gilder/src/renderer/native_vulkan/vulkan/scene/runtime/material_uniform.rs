@@ -1,4 +1,4 @@
-//! Scene material/effect constant packing for the Vulkanalia scene runtime.
+//! Scene material/effect constant packing for the shared-renderer scene runtime.
 //!
 //! References:
 //! - `docs/gilder/gilder-scene-engine-architecture.md`
@@ -53,6 +53,7 @@ use crate::renderer::native_vulkan::scene::{
 pub(super) const SCENE_MATERIAL_UNIFORM_BYTES: u64 = 768;
 const SCENE_MATERIAL_UNIFORM_FLOATS: usize =
     SCENE_MATERIAL_UNIFORM_BYTES as usize / size_of::<f32>();
+pub(super) const AUTHORED_CLOUDMOTION_DEFAULT_DIRECTION: f32 = f32::from_bits(0x3FC9_0FDA);
 
 #[derive(Clone, Copy)]
 pub(super) struct SceneMaterialFrameInputs<'a> {
@@ -105,6 +106,31 @@ pub(super) fn pack_scene_material_uniforms_with_frame_inputs(
 ) -> Vec<u8> {
     let mut payload =
         Vec::with_capacity(draws.len() * SCENE_MATERIAL_UNIFORM_FLOATS * size_of::<f32>());
+    pack_scene_material_uniforms_with_frame_inputs_into(
+        &mut payload,
+        storage,
+        draws,
+        scene_time_seconds,
+        output_extent,
+        frame_inputs,
+    );
+    payload
+}
+
+pub(super) fn pack_scene_material_uniforms_with_frame_inputs_into(
+    payload: &mut Vec<u8>,
+    storage: &SceneStorage,
+    draws: &[SceneRenderingDeviceMeshDraw],
+    scene_time_seconds: f32,
+    output_extent: [u32; 2],
+    frame_inputs: SceneMaterialFrameInputs<'_>,
+) {
+    let byte_count = draws
+        .len()
+        .saturating_mul(SCENE_MATERIAL_UNIFORM_FLOATS)
+        .saturating_mul(size_of::<f32>());
+    payload.clear();
+    payload.reserve(byte_count.saturating_sub(payload.capacity()));
     for draw in draws {
         for value in material_uniform_values(
             storage,
@@ -116,7 +142,7 @@ pub(super) fn pack_scene_material_uniforms_with_frame_inputs(
             payload.extend_from_slice(&value.to_le_bytes());
         }
     }
-    payload
+    debug_assert_eq!(payload.len(), byte_count);
 }
 
 fn material_uniform_values(
@@ -174,6 +200,7 @@ fn material_uniform_values(
             };
             standard_material_values(&parameters, resolved_color, resolved_alpha)
         }
+        BuiltinSceneParameterLayout::SceneColorBlend => scene_color_blend_values(storage, draw),
         BuiltinSceneParameterLayout::Caustics => {
             caustics_values(&parameters, storage, scene_time_seconds)
         }
@@ -263,6 +290,23 @@ fn resolved_visual_material_values(
         resolved_color.z,
         resolved_alpha,
     ]);
+    values
+}
+
+fn scene_color_blend_values(
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0] = draw.resolved_color.x;
+    values[1] = draw.resolved_color.y;
+    values[2] = draw.resolved_color.z;
+    values[3] = draw.resolved_alpha;
+    values[4] = storage
+        .document()
+        .objects
+        .get(draw.object.0 as usize)
+        .map_or(0.0, |object| object.color_blend_mode as f32);
     values
 }
 
@@ -422,7 +466,10 @@ fn cloudmotion_values(
     values[0] = scene_time_seconds;
     values[1] = parameters.scalar(&["ui_editor_properties_speed", "speed"], 0.02);
     values[2] = parameters.scalar(&["ui_editor_properties_amount", "amount"], 0.1);
-    values[3] = parameters.scalar(&["ui_editor_properties_direction", "direction"], 1.5707963);
+    values[3] = parameters.scalar(
+        &["ui_editor_properties_direction", "direction"],
+        AUTHORED_CLOUDMOTION_DEFAULT_DIRECTION,
+    );
     values[4] = parameters.scalar(&["ui_editor_properties_granularity", "scale"], 2.0);
     values[5] = parameters.scalar(
         &["ui_editor_properties_granularity_horizontal", "scalex"],

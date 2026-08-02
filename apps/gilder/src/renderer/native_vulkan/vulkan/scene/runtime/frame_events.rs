@@ -10,6 +10,10 @@ use crate::renderer::native_vulkan::audio::event_source::{
     NativeVulkanAudioEventSource, audio_state_summary,
 };
 use crate::renderer::native_vulkan::audio::system_monitor::NativeVulkanSystemAudioMonitor;
+#[cfg(feature = "native-vulkan-video")]
+use crate::renderer::native_vulkan::video::event_source::{
+    NativeVulkanMediaEventSource, NativeVulkanVideoEventSample,
+};
 use crate::renderer::native_wayland::NativeWaylandHost;
 
 use local_time_source::{SceneLocalTimeEventSource, SceneLocalTimePrecision};
@@ -23,6 +27,8 @@ pub(super) struct SceneRuntimeEventSources {
     pointer_replay_normalized: Option<[f64; 2]>,
     pointer_replay_entered: bool,
     pointer_replay_fallback_size: [u32; 2],
+    #[cfg(feature = "native-vulkan-video")]
+    media: NativeVulkanMediaEventSource,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -40,9 +46,7 @@ impl SceneRuntimeEventSources {
         audio_spectrum_required: bool,
     ) -> Self {
         Self {
-            audio_monitor: NativeVulkanSystemAudioMonitor::start_if_needed(
-                audio_spectrum_required,
-            ),
+            audio_monitor: NativeVulkanSystemAudioMonitor::start_if_needed(audio_spectrum_required),
             audio: NativeVulkanAudioEventSource::default(),
             local_time: SceneLocalTimeEventSource::new(local_time_precision(storage)),
             queue: SceneEventQueue::default(),
@@ -53,6 +57,8 @@ impl SceneRuntimeEventSources {
                 storage.project().logical_width.max(1),
                 storage.project().logical_height.max(1),
             ],
+            #[cfg(feature = "native-vulkan-video")]
+            media: NativeVulkanMediaEventSource::next(),
         }
     }
 
@@ -77,6 +83,11 @@ impl SceneRuntimeEventSources {
         self.frame = self.queue.finish_frame();
         self.frame.local_time = self.local_time.capture();
         &self.frame
+    }
+
+    #[cfg(feature = "native-vulkan-video")]
+    pub(super) fn publish_video(&mut self, sample: NativeVulkanVideoEventSample) {
+        self.media.publish_video(&mut self.queue, sample);
     }
 
     fn publish_pointer_replay(&mut self, sample_time_ns: u64, surface_size: Option<(u32, u32)>) {

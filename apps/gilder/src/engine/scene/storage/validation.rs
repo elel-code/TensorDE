@@ -9,46 +9,17 @@ use dynamic_text::validate_dynamic_text;
 mod shader_program;
 use shader_program::validate_shader_programs;
 
+include!("validation/resource_payloads.rs");
+include!("validation/pointer_parallax.rs");
+include!("validation/scalar_fields.rs");
+
 pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), SceneStorageError> {
     validate_project(document)?;
     validate_user_property_bindings(document)?;
     validate_pointer_parallax(document)?;
     validate_shader_programs(document)?;
-    for resource in &document.resources {
-        validate_string(document, "resource.path", resource.path)?;
-        validate_string(document, "resource.source", resource.source)?;
-        validate_payload(document, resource)?;
-    }
-    for texture in &document.textures {
-        validate_resource(document, "texture.resource", texture.resource)?;
-        validate_string(document, "texture.texv_tag", texture.texv_tag)?;
-        validate_string(document, "texture.texb_tag", texture.texb_tag)?;
-        validate_range(
-            "texture.mip_range",
-            texture.mip_start,
-            texture.mip_count,
-            document.texture_mips.len(),
-        )?;
-        validate_texture_payload(
-            document,
-            texture.resource,
-            texture.payload_offset,
-            texture.payload_len,
-        )?;
-        for mip in document
-            .texture_mips
-            .iter()
-            .skip(texture.mip_start as usize)
-            .take(texture.mip_count as usize)
-        {
-            validate_texture_payload(
-                document,
-                texture.resource,
-                mip.payload_offset,
-                mip.payload_len,
-            )?;
-        }
-    }
+    validate_resources_and_textures(document)?;
+    let mut camera_object = None;
     for object in &document.objects {
         validate_string(document, "object.name", object.name)?;
         validate_optional_resource(document, "object.resource", object.resource)?;
@@ -66,6 +37,25 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
             u32::from(object.render_graph != u32::MAX),
             document.render_graphs.len(),
         )?;
+        if object.kind == SceneObjectKind::Camera {
+            if camera_object.replace(object.id).is_some() {
+                return Err(SceneStorageError::InvalidCameraLayer {
+                    object: object.id,
+                    reason: "multiple active camera layers require an authored queue resolver",
+                });
+            }
+            if !object.camera_zoom.is_finite() || object.camera_zoom <= 0.0 {
+                return Err(SceneStorageError::InvalidCameraLayer {
+                    object: object.id,
+                    reason: "base zoom must be finite and positive",
+                });
+            }
+        } else if object.camera_zoom != 1.0 {
+            return Err(SceneStorageError::InvalidCameraLayer {
+                object: object.id,
+                reason: "non-camera objects must not carry camera zoom",
+            });
+        }
     }
     let mut material_scalar_selectors = std::collections::BTreeSet::new();
     for program in &document.script_programs {
@@ -166,11 +156,16 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
                     len: track_index,
                 });
             }
+            let component_count = if track.property == SceneObjectTransformProperty::CameraZoom {
+                1
+            } else {
+                3
+            };
             validate_range(
                 "object_transform_channel.component",
                 channel.component,
                 1,
-                3,
+                component_count,
             )?;
             validate_range(
                 "object_transform_channel.keyframe_range",
@@ -178,6 +173,27 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
                 channel.keyframe_count,
                 document.object_transform_keyframes.len(),
             )?;
+            if track.property == SceneObjectTransformProperty::CameraZoom {
+                let object = &document.objects[track.object.0 as usize];
+                if object.kind != SceneObjectKind::Camera {
+                    return Err(SceneStorageError::InvalidCameraLayer {
+                        object: track.object,
+                        reason: "camera zoom animation belongs to a non-camera object",
+                    });
+                }
+                if document
+                    .object_transform_keyframes
+                    .iter()
+                    .skip(channel.keyframe_start as usize)
+                    .take(channel.keyframe_count as usize)
+                    .any(|keyframe| !keyframe.value.is_finite() || keyframe.value <= 0.0)
+                {
+                    return Err(SceneStorageError::InvalidCameraLayer {
+                        object: track.object,
+                        reason: "zoom keyframes must be finite and positive",
+                    });
+                }
+            }
         }
     }
     for (clip_index, clip) in document.puppet_animation_clips.iter().enumerate() {
@@ -657,6 +673,35 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
         }
     }
     for pass in &document.render_passes {
+        if pass.draw_primitive == SceneRenderPassDrawPrimitive::ObjectCompositeMesh
+            && (pass.role != SceneRenderPassKind::SceneComposite
+                || pass.target != SceneRenderTargetKind::SceneColor
+                || pass.object.0 == INVALID_OBJECT_ID)
+        {
+            return Err(SceneStorageError::InvalidRange {
+                field: "render_pass.object_composite_mesh_contract",
+                start: pass.object.0,
+                count: pass.target.to_u32(),
+                len: document.objects.len(),
+            });
+        }
+        if pass.role == SceneRenderPassKind::ObjectLocalSource
+            && (!matches!(
+                pass.draw_primitive,
+                SceneRenderPassDrawPrimitive::ObjectMesh
+                    | SceneRenderPassDrawPrimitive::ObjectUvSupportQuad
+            ) || !matches!(
+                pass.target,
+                SceneRenderTargetKind::ImageLocalMain | SceneRenderTargetKind::ImageLocalSub
+            ) || pass.object.0 == INVALID_OBJECT_ID)
+        {
+            return Err(SceneStorageError::InvalidRange {
+                field: "render_pass.object_local_source_contract",
+                start: pass.object.0,
+                count: pass.target.to_u32(),
+                len: document.objects.len(),
+            });
+        }
         validate_optional_material(document, "render_pass.material", pass.material)?;
         validate_string(document, "render_pass.shader_key", pass.shader_key)?;
         validate_string(document, "render_pass.target_name", pass.target_name)?;
@@ -737,51 +782,4 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
         validate_string(document, "shader_contract.constant_name", *name)?;
     }
     Ok(())
-}
-
-fn validate_pointer_parallax(document: &SceneBinaryDocument) -> Result<(), SceneStorageError> {
-    let camera = document.camera_parallax;
-    if ![camera.amount, camera.delay, camera.mouse_influence]
-        .into_iter()
-        .all(f32::is_finite)
-        || camera.delay < 0.0
-    {
-        return Err(SceneStorageError::InvalidPointerParallaxBinding {
-            object: SceneObjectHandle(INVALID_OBJECT_ID),
-            reason: "non-finite scalar or negative delay",
-        });
-    }
-    for binding in &document.object_parallax_depths {
-        validate_range(
-            "object_parallax_depth.object",
-            binding.object.0,
-            1,
-            document.objects.len(),
-        )?;
-        if !binding.depth.into_iter().all(f32::is_finite) {
-            return Err(SceneStorageError::InvalidPointerParallaxBinding {
-                object: binding.object,
-                reason: "non-finite depth",
-            });
-        }
-    }
-    if document
-        .object_parallax_depths
-        .windows(2)
-        .any(|pair| pair[0].object.0 >= pair[1].object.0)
-    {
-        return Err(SceneStorageError::InvalidPointerParallaxBinding {
-            object: SceneObjectHandle(INVALID_OBJECT_ID),
-            reason: "records are not strictly ordered by object",
-        });
-    }
-    Ok(())
-}
-
-fn valid_oscillation_range(min: f32, max: f32, lower_bound: f32) -> bool {
-    min.is_finite() && max.is_finite() && min >= lower_bound && max >= min
-}
-
-fn valid_vec3(value: SceneVec3) -> bool {
-    value.x.is_finite() && value.y.is_finite() && value.z.is_finite()
 }

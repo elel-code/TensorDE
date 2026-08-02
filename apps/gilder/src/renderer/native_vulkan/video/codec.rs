@@ -33,6 +33,28 @@ impl NativeVulkanVideoSessionCodec {
             Self::H265Main10 | Self::Av1Main10 => "main-10",
         }
     }
+
+    #[cfg(feature = "native-vulkan-video")]
+    pub(crate) const fn renderer_codec(self) -> vulkan_renderer::FfmpegVideoCodec {
+        match self {
+            Self::H264High8 => vulkan_renderer::FfmpegVideoCodec::H264High8,
+            Self::H265Main8 => vulkan_renderer::FfmpegVideoCodec::H265Main8,
+            Self::H265Main10 => vulkan_renderer::FfmpegVideoCodec::H265Main10,
+            Self::Av1Main8 => vulkan_renderer::FfmpegVideoCodec::Av1Main8,
+            Self::Av1Main10 => vulkan_renderer::FfmpegVideoCodec::Av1Main10,
+        }
+    }
+
+    #[cfg(feature = "native-vulkan-video")]
+    pub(crate) const fn renderer_requirement(self) -> vulkan_renderer::VideoDecodeCodecs {
+        match self {
+            Self::H264High8 => vulkan_renderer::VideoDecodeCodecs::H264_HIGH_8,
+            Self::H265Main8 => vulkan_renderer::VideoDecodeCodecs::H265_MAIN_8,
+            Self::H265Main10 => vulkan_renderer::VideoDecodeCodecs::H265_MAIN_10,
+            Self::Av1Main8 => vulkan_renderer::VideoDecodeCodecs::AV1_MAIN_8,
+            Self::Av1Main10 => vulkan_renderer::VideoDecodeCodecs::AV1_MAIN_10,
+        }
+    }
 }
 
 impl std::str::FromStr for NativeVulkanVideoSessionCodec {
@@ -91,6 +113,19 @@ mod tests {
         assert_eq!(
             NativeVulkanVideoSessionCodec::Av1Main8.profile_label(),
             "main-8"
+        );
+    }
+
+    #[cfg(feature = "native-vulkan-video")]
+    #[test]
+    fn lowers_to_exact_renderer_owned_ffmpeg_profiles() {
+        assert_eq!(
+            NativeVulkanVideoSessionCodec::H265Main10.renderer_codec(),
+            vulkan_renderer::FfmpegVideoCodec::H265Main10
+        );
+        assert_eq!(
+            NativeVulkanVideoSessionCodec::Av1Main8.renderer_requirement(),
+            vulkan_renderer::VideoDecodeCodecs::AV1_MAIN_8
         );
     }
 }

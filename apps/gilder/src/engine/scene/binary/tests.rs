@@ -269,6 +269,7 @@ fn scene_binary_round_trip_keeps_chunked_payloads_and_handles() {
             y: 1.0,
             z: 1.0,
         },
+        camera_zoom: 1.0,
         color: SceneVec3 {
             x: 0.1,
             y: 0.2,
@@ -446,6 +447,7 @@ fn scene_binary_round_trip_keeps_chunked_payloads_and_handles() {
     assert_eq!(decoded.object_transform_channels[0].component, 0);
     assert_eq!(decoded.object_transform_keyframes[0].value, 24.32251);
     assert_eq!(decoded.objects[0].color.x, 0.1);
+    assert_eq!(decoded.objects[0].camera_zoom, 1.0);
     assert_eq!(decoded.objects[0].alpha, 0.4);
     assert_eq!(decoded.camera_parallax.amount, 0.5);
     assert_eq!(decoded.object_parallax_depths[0].depth, [-0.1, 0.0]);
@@ -507,7 +509,7 @@ fn scene_binary_rejects_chunk_table_item_count_mismatch() {
 }
 
 #[test]
-fn scene_binary_round_trip_preserves_typed_draw_primitive_and_composite_blend() {
+fn scene_binary_round_trip_preserves_object_composite_mesh_and_blend() {
     let document = SceneBinaryDocument {
         render_graphs: vec![SceneRenderGraphRecord {
             object: SceneObjectHandle(0),
@@ -520,7 +522,7 @@ fn scene_binary_round_trip_preserves_typed_draw_primitive_and_composite_blend() 
         render_passes: vec![SceneRenderPassRecord {
             id: 0,
             role: SceneRenderPassKind::SceneComposite,
-            draw_primitive: SceneRenderPassDrawPrimitive::ObjectMesh,
+            draw_primitive: SceneRenderPassDrawPrimitive::ObjectCompositeMesh,
             object: SceneObjectHandle(0),
             material: SceneMaterialHandle(INVALID_MATERIAL_ID),
             pass_index: 0,
@@ -553,7 +555,7 @@ fn scene_binary_round_trip_preserves_typed_draw_primitive_and_composite_blend() 
     );
     assert_eq!(
         decoded.render_passes[0].draw_primitive,
-        SceneRenderPassDrawPrimitive::ObjectMesh
+        SceneRenderPassDrawPrimitive::ObjectCompositeMesh
     );
 }
 

@@ -2,30 +2,19 @@
 
 use std::time::Instant;
 
-use vulkanalia::prelude::v1_4::*;
-
-use crate::engine::scene::rendering_device_graph::scene_clip_transform;
-use crate::engine::scene::semantic_world::{ResolvedSemanticFrame, SemanticFrameResolver};
+use crate::engine::scene::semantic_world::ResolvedSemanticFrame;
 use crate::engine::scene::{
-    SceneFrameEvents, SceneMaterialHandle, SceneObjectHandle, SceneRenderingDeviceDrawPrimitive,
-    SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw, SceneSemanticWorld, SceneStorage,
-};
-use crate::renderer::native_vulkan::{
-    NativeVulkanVulkanaliaBuffer, native_vulkan_vulkanalia_write_host_buffer,
+    SceneMaterialHandle, SceneObjectHandle, SceneRenderingDeviceDrawPrimitive,
+    SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw, SceneRenderingDeviceProjectionDomain,
+    SceneStorage,
 };
 
-use super::composite_scissor::SceneMeshCoveragePlans;
-use super::composite_scissor::update_scene_composite_scissors;
 use super::draw_recording::SceneGpuDrawCommand;
-use super::draw_uniform::pack_scene_draw_uniforms_into;
-use super::dynamic_text::SceneDynamicTextRuntime;
-use super::material_uniform::{
-    SceneMaterialFrameInputs, pack_scene_material_uniforms_with_frame_inputs,
-};
-use super::scene_color_clear::{SceneGpuSceneColorClear, resolve_scene_color_attachment_clear};
-use super::scene_owned_uniform::{SceneOwnedUniformArenaPlan, SceneOwnedUniformFrameInputs};
+use super::scene_color_clear::SceneGpuSceneColorClear;
 
+mod shared;
 mod topology;
+pub(super) mod video;
 
 #[cfg(test)]
 mod visibility_tests;
@@ -67,6 +56,7 @@ pub(super) struct SceneFrameTopology {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SceneFrameDrawTopology {
     primitive: SceneRenderingDeviceDrawPrimitive,
+    projection_domain: SceneRenderingDeviceProjectionDomain,
     mesh_index: u32,
     resolved_object_index: u32,
     effect_binding_start: u32,
@@ -139,6 +129,10 @@ impl SceneFrameTopology {
         }
     }
 
+    pub(super) fn graph(&self) -> &SceneRenderingDeviceGraphPlan {
+        &self.graph
+    }
+
     fn update_dynamic_graph(
         &mut self,
         storage: &SceneStorage,
@@ -158,8 +152,11 @@ impl SceneFrameTopology {
             })?;
             draw.resolved_object_index = object.object_index;
             draw.render_world_matrix = rows_from_column_major(object.render_world_matrix);
-            draw.clip_transform =
-                scene_clip_transform(storage.project(), object.render_world_matrix);
+            draw.clip_transform = draw.projection_domain.clip_transform(
+                storage,
+                semantic_frame,
+                object.render_world_matrix,
+            );
             draw.effect_model_view_projection_matrix = draw.clip_transform;
             draw.resolved_color = object.resolved_color;
             draw.resolved_alpha = object.resolved_alpha;
@@ -324,181 +321,6 @@ fn rows_from_column_major(matrix: [f32; 16]) -> [[f32; 4]; 4] {
         [matrix[2], matrix[6], matrix[10], matrix[14]],
         [matrix[3], matrix[7], matrix[11], matrix[15]],
     ]
-}
-
-pub(super) fn write_scene_frame_buffers(
-    device: &Device,
-    storage: &SceneStorage,
-    mesh_coverage: &SceneMeshCoveragePlans,
-    semantic_world: &SceneSemanticWorld<'_>,
-    semantic_resolver: &mut SemanticFrameResolver,
-    topology: &mut SceneFrameTopology,
-    draw_commands: &mut [SceneGpuDrawCommand],
-    transform_scratch: &mut Vec<u8>,
-    transform_buffer: &NativeVulkanVulkanaliaBuffer,
-    material_buffer: Option<&NativeVulkanVulkanaliaBuffer>,
-    skinning_buffer: Option<&NativeVulkanVulkanaliaBuffer>,
-    scene_owned_uniform_plan: &SceneOwnedUniformArenaPlan,
-    scene_owned_uniform_scratch: &mut [u8],
-    scene_owned_uniform_buffer: Option<&NativeVulkanVulkanaliaBuffer>,
-    sampled_binding_phase: usize,
-    dynamic_effect_uniforms: bool,
-    cpu_timing_enabled: bool,
-    graph_execution_order: &[u32],
-    scene_color_attachment_clear_enabled: bool,
-    events: &SceneFrameEvents,
-    scene_time_seconds: f32,
-    frame_delta_seconds: f32,
-    output_extent: [u32; 2],
-    dynamic_text: &mut SceneDynamicTextRuntime,
-) -> Result<SceneFrameBufferUpdate, String> {
-    let semantic_started = cpu_timing_enabled.then(Instant::now);
-    let semantic_frame = semantic_resolver
-        .resolve_frame_with_events_at(
-            semantic_world,
-            scene_time_seconds,
-            frame_delta_seconds,
-            events,
-        )
-        .map_err(|err| {
-            format!(
-                "resolve scene semantic frame at {scene_time_seconds:.6}s for Vulkan buffer update: {err}"
-            )
-        })?;
-    let semantic_resolve_micros = elapsed_optional_micros(semantic_started);
-    let graph_started = cpu_timing_enabled.then(Instant::now);
-    topology.update_dynamic_graph(storage, &semantic_frame, scene_time_seconds)?;
-    update_draw_visibility(
-        &topology.graph,
-        &topology.sampled_target_producers,
-        semantic_frame,
-        draw_commands,
-    );
-    let graph = &topology.graph;
-    update_effect_draw_pipelines(graph, draw_commands)?;
-    let graph_update_micros = elapsed_optional_micros(graph_started);
-
-    let transform_started = cpu_timing_enabled.then(Instant::now);
-    pack_scene_draw_uniforms_into(
-        transform_scratch,
-        storage,
-        &graph.mesh_draws,
-        scene_time_seconds,
-        output_extent,
-    );
-    let mut dynamic_text_instance_updated = false;
-    if !dynamic_text.is_empty() {
-        let (changed, instances, states) = dynamic_text.update(semantic_frame)?;
-        dynamic_text_instance_updated = changed;
-        for (draw, command) in graph.mesh_draws.iter().zip(draw_commands.iter_mut()) {
-            if !command.dynamic_text {
-                continue;
-            }
-            let state = states
-                .iter()
-                .find(|state| state.object == draw.object)
-                .ok_or_else(|| {
-                    format!(
-                        "dynamic text draw object {} has no retained layout",
-                        draw.object.0
-                    )
-                })?;
-            command.first_instance = state.first_instance;
-            command.instance_count = state.instance_count;
-        }
-        transform_scratch.extend_from_slice(instances);
-    }
-    write_exact_frame_payload(device, transform_buffer, transform_scratch)?;
-    let transform_update_micros = elapsed_optional_micros(transform_started);
-
-    let material_started = cpu_timing_enabled.then(Instant::now);
-    let material_uniform_updated = if dynamic_effect_uniforms {
-        let material_buffer = material_buffer.ok_or_else(|| {
-            "scene has dynamic effect uniforms but no material uniform buffer".to_owned()
-        })?;
-        let stereo_spectrum64 = events.audio_spectrum();
-        let average_spectrum32 = stereo_spectrum64.map(|spectrum| spectrum.average32());
-        let material_payload = pack_scene_material_uniforms_with_frame_inputs(
-            storage,
-            &graph.mesh_draws,
-            scene_time_seconds,
-            output_extent,
-            SceneMaterialFrameInputs {
-                average_spectrum32: average_spectrum32.as_ref(),
-                audio_material_values: &semantic_frame.audio_band_material_values,
-                material_scalar_values: &semantic_frame.material_scalar_values,
-            },
-        );
-        write_exact_frame_payload(device, material_buffer, &material_payload)?;
-        true
-    } else {
-        false
-    };
-    let material_update_micros = elapsed_optional_micros(material_started);
-
-    let scene_owned_uniform_started = cpu_timing_enabled.then(Instant::now);
-    let scene_owned_uniform_updated = if scene_owned_uniform_plan.is_empty() {
-        false
-    } else {
-        let buffer = scene_owned_uniform_buffer
-            .ok_or_else(|| "scene-owned uniform plan has no active frame buffer".to_owned())?;
-        scene_owned_uniform_plan.write_payload(
-            &graph.mesh_draws,
-            SceneOwnedUniformFrameInputs {
-                scalar_overrides: &semantic_frame.material_scalar_values,
-                scene_time_seconds,
-                frame_delta_seconds,
-                audio_spectrum: events
-                    .audio_spectrum()
-                    .unwrap_or(&crate::engine::scene::StereoSpectrum64::ZERO),
-                sampled_binding_phase,
-            },
-            scene_owned_uniform_scratch,
-        )?;
-        write_exact_frame_payload(device, buffer, scene_owned_uniform_scratch)?;
-        true
-    };
-    let scene_owned_uniform_update_micros = elapsed_optional_micros(scene_owned_uniform_started);
-
-    let skinning_started = cpu_timing_enabled.then(Instant::now);
-    let skinning_storage_updated = if let Some(skinning_buffer) = skinning_buffer {
-        let skinning_payload = pack_scene_skinning_palette(&graph);
-        write_exact_frame_payload(device, skinning_buffer, &skinning_payload)?;
-        true
-    } else {
-        false
-    };
-    let skinning_update_micros = elapsed_optional_micros(skinning_started);
-
-    let draw_policy_started = cpu_timing_enabled.then(Instant::now);
-    update_scene_composite_scissors(storage, mesh_coverage, graph, output_extent, draw_commands)?;
-    let scene_color_attachment_clear = resolve_scene_color_attachment_clear(
-        storage,
-        mesh_coverage,
-        graph,
-        graph_execution_order,
-        output_extent,
-        scene_color_attachment_clear_enabled,
-    );
-    let draw_policy_update_micros = elapsed_optional_micros(draw_policy_started);
-
-    Ok(SceneFrameBufferUpdate {
-        transform_uniform_updated: true,
-        material_uniform_updated,
-        skinning_storage_updated,
-        scene_owned_uniform_updated,
-        dynamic_text_instance_updated,
-        scene_color_attachment_clear,
-        cpu_timing: SceneFrameCpuTiming {
-            semantic_resolve_micros,
-            graph_update_micros,
-            transform_update_micros,
-            material_update_micros,
-            skinning_update_micros,
-            scene_owned_uniform_update_micros,
-            draw_policy_update_micros,
-        },
-    })
 }
 
 fn update_draw_visibility(
@@ -708,6 +530,7 @@ fn elapsed_optional_micros(started: Option<Instant>) -> u64 {
 fn draw_topology(draw: &SceneRenderingDeviceMeshDraw) -> SceneFrameDrawTopology {
     SceneFrameDrawTopology {
         primitive: draw.primitive,
+        projection_domain: draw.projection_domain,
         mesh_index: draw.mesh_index,
         resolved_object_index: draw.resolved_object_index,
         effect_binding_start: draw.effect_binding_start,
@@ -722,22 +545,6 @@ fn draw_topology(draw: &SceneRenderingDeviceMeshDraw) -> SceneFrameDrawTopology 
         index_start: draw.index_start,
         index_count: draw.index_count,
     }
-}
-
-fn write_exact_frame_payload(
-    device: &Device,
-    buffer: &NativeVulkanVulkanaliaBuffer,
-    payload: &[u8],
-) -> Result<(), String> {
-    if payload.len() as u64 != buffer.snapshot.requested_bytes {
-        return Err(format!(
-            "{} frame payload has {} bytes, but the setup allocation has {} bytes",
-            buffer.snapshot.role,
-            payload.len(),
-            buffer.snapshot.requested_bytes
-        ));
-    }
-    native_vulkan_vulkanalia_write_host_buffer(device, buffer, payload)
 }
 
 #[cfg(test)]

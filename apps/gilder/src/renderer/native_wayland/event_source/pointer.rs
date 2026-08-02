@@ -2,9 +2,7 @@
 
 use wayland_client_runtime::{NativeShellEvent, NativeSurfaceId};
 
-use crate::engine::scene::{
-    ScenePointerEvent, ScenePointerEventKind, ScenePointerSource,
-};
+use crate::engine::scene::{ScenePointerEvent, ScenePointerEventKind, ScenePointerSource};
 
 #[derive(Debug, Default)]
 pub(super) struct PointerState {

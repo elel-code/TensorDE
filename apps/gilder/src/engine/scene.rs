@@ -33,9 +33,9 @@ pub use rendering_device_graph::{
     SceneRenderingDeviceEffectBatchFamily, SceneRenderingDeviceEffectBatchInstance,
     SceneRenderingDeviceGraphPlan, SceneRenderingDeviceImageAccess,
     SceneRenderingDeviceMaterialSampledBinding, SceneRenderingDeviceMeshDraw,
-    SceneRenderingDevicePassNode, SceneRenderingDevicePuppetBoneMatrix,
-    SceneRenderingDevicePuppetBonePalette, SceneRenderingDeviceSampledBinding,
-    SceneRenderingDeviceTargetAllocation,
+    SceneRenderingDevicePassNode, SceneRenderingDeviceProjectionDomain,
+    SceneRenderingDevicePuppetBoneMatrix, SceneRenderingDevicePuppetBonePalette,
+    SceneRenderingDeviceSampledBinding, SceneRenderingDeviceTargetAllocation,
 };
 pub use script::{
     SceneScriptDelta, SceneScriptError, SceneScriptFrameInput, SceneScriptMemorySnapshot,

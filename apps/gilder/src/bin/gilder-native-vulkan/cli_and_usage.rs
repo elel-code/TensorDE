@@ -42,18 +42,6 @@ fn parse_color(value: &str) -> Result<NativeVulkanClearColor, Box<dyn std::error
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
-fn parse_fit_mode(value: &str) -> Result<FitMode, String> {
-    match value {
-        "cover" => Ok(FitMode::Cover),
-        "contain" => Ok(FitMode::Contain),
-        "stretch" => Ok(FitMode::Stretch),
-        "tile" => Ok(FitMode::Tile),
-        "center" => Ok(FitMode::Center),
-        other => Err(format!("unsupported fit mode: {other}")),
-    }
-}
-
-#[cfg(feature = "native-vulkan-renderer")]
 fn parse_scene_pointer_position(value: Option<String>) -> Result<[f64; 2], &'static str> {
     const ERROR: &str = "--scene-pointer-position requires finite normalized X,Y in [0,1]";
     let value = value.ok_or(ERROR)?;
@@ -74,6 +62,34 @@ fn parse_scene_pointer_position(value: Option<String>) -> Result<[f64; 2], &'sta
         }
         _ => Err(ERROR),
     }
+}
+
+#[cfg(all(feature = "native-vulkan-renderer", feature = "native-vulkan-video"))]
+fn parse_scene_video_source(
+    argument: String,
+) -> Result<gilder::renderer::native_vulkan::NativeVulkanSceneVideoSource, String> {
+    let mut fields = argument.splitn(3, ':');
+    let media_instance = fields
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "--scene-video requires MEDIA_INSTANCE:CODEC:PATH".to_owned())?
+        .parse::<u32>()
+        .map_err(|_| "--scene-video MEDIA_INSTANCE must be a u32".to_owned())?;
+    let codec = fields
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "--scene-video requires MEDIA_INSTANCE:CODEC:PATH".to_owned())?
+        .parse::<gilder::renderer::native_vulkan::NativeVulkanVideoSessionCodec>()?;
+    let source = fields
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "--scene-video PATH cannot be empty".to_owned())?;
+    Ok(gilder::renderer::native_vulkan::NativeVulkanSceneVideoSource {
+        media_instance,
+        source: source.into(),
+        codec,
+        loop_playback: true,
+    })
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
@@ -144,14 +160,7 @@ enum NativeVulkanCliMode {
     Capabilities,
     Contract,
     TypeSupport,
-    ProbeSurface,
-    ProbeVideo,
-    ProbeVulkanalia,
-    ProbeVulkanaliaSwapchain,
-    ProbeVulkanaliaVideoPresent,
     SceneBackendPlan,
-    RunClear,
-    RunStatic,
     RunScene,
     RunVideo,
 }
@@ -159,32 +168,28 @@ enum NativeVulkanCliMode {
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--scene-backend-plan|--run-clear|--run-static|--run-scene|--run-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--scene-backend-plan|--run-scene|--run-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
---probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
---probe-video enumerates Vulkan Video decode extensions and queue families, then exits.\n\
---probe-vulkanalia enumerates the vulkanalia Vulkan 1.4 physical-device/video/external-memory gates, then exits.\n\
---probe-vulkanalia-swapchain creates a Wayland VkSurfaceKHR, Vulkanalia device, swapchain and swapchain image list, then exits.\n\
---probe-vulkanalia-video-present creates one Vulkanalia device with video-decode and graphics/present queues plus a Wayland swapchain, then exits.\n\
 --scene-backend-plan reads --source file.gscene and prints the native Vulkan scene storage/pipeline/executor plan, then exits.\n\
---playback-frames N sets the FFmpeg Vulkan HW present frame budget.\n\
---run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
---run-static uses Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
+--playback-frames N bounds the deterministic renderer-owned decoded-frame presentation run.\n\
 --run-scene reads --source file.gscene and runs until the surface closes; --duration sets an explicit second limit.\n\
+--scene-video MEDIA_INSTANCE:CODEC:PATH supplies one exact external VideoFrame source to --run-scene; repeat for distinct media instances.\n\
 --scene-pointer-position X,Y replays a normalized wallpaper-surface pointer position for deterministic scene diagnostics.\n\
+--scene-semantic-diagnostics appends final retained script deltas, resolved object state, and draw activation to --run-scene JSON.\n\
 --scene-property NAME=JSON overrides one exact, case-sensitive authored scene user property for --run-scene or --scene-backend-plan; repeat for distinct names.\n\
 --surface-width/--surface-height override the automatic authored-scene extent (falling back to the Wayland buffer extent) and must be provided together.\n\
 --gpu-timing enables top-of-pipe to bottom-of-pipe Vulkan timestamp queries for --run-scene diagnostics.\n\
 --vulkan-device SELECTOR strictly selects index:N, name:TEXT, uuid:HEX, or pci:DOMAIN:BUS:DEVICE.FUNCTION for every Vulkan route.\n\
 --vulkan-device-preference defaults to discrete; integrated and enumeration are explicit alternatives when no selector is set.\n\
---run-video selects the FFmpeg Vulkan HW decode mainline and requires AV_PIX_FMT_VULKAN/AVVkFrame before descriptor-heap present.\n\
+--run-video uses renderer-owned FFmpeg Vulkan decode with opaque plane leases, descriptor-heap sampling, and a retained presentation transaction.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--fractional-scale-rounding ceil|nearest|floor] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--scene-pointer-position X,Y] [--scene-property NAME=JSON] [--surface-width PX --surface-height PX] [--gpu-timing]\n\
+         [--scene-video MEDIA_INSTANCE:CODEC:PATH]...\n\
+         [--scene-semantic-diagnostics]\n\
          [--vulkan-device SELECTOR] [--vulkan-device-preference discrete|integrated|enumeration]\n\
-         [--source PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
-         [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
+         [--source PATH]\n\
          [--video-codec h264|h265|h265-main-10|av1|av1-main-10] [--playback-frames N]"
     );
 }
@@ -202,7 +207,6 @@ mod tests {
         assert_eq!(options.host.layer, NativeWaylandLayer::Background);
         assert_eq!(options.target_max_fps, None);
         assert_eq!(DEFAULT_SCENE_RUN_DURATION, None);
-        assert_eq!(DEFAULT_BOUNDED_RUN_DURATION, Duration::from_secs(5));
     }
 
     #[test]
@@ -239,6 +243,20 @@ mod tests {
         let mut exact = serde_json::Map::new();
         insert_scene_property_override(&mut exact, Some(" Jia =false".to_owned())).unwrap();
         assert!(exact.contains_key(" Jia "));
+    }
+
+    #[cfg(feature = "native-vulkan-video")]
+    #[test]
+    fn scene_video_cli_preserves_exact_media_codec_and_path() {
+        let source =
+            parse_scene_video_source("7:h265-main-10:/tmp/video:segment.mkv".to_owned()).unwrap();
+        assert_eq!(source.media_instance, 7);
+        assert_eq!(
+            source.codec,
+            gilder::renderer::native_vulkan::NativeVulkanVideoSessionCodec::H265Main10
+        );
+        assert_eq!(source.source, PathBuf::from("/tmp/video:segment.mkv"));
+        assert!(source.loop_playback);
     }
 
     #[test]

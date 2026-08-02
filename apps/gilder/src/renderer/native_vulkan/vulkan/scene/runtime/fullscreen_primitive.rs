@@ -5,21 +5,16 @@
 //! - `reverse-engineered/gilder/docs/exe/composelayer-and-effecttarget.md`
 //! - `reverse-engineered/gilder/docs/effect-format.md`
 
-use crate::engine::scene::SceneRenderingDeviceGraphPlan;
-
-pub(in crate::renderer::native_vulkan) fn graph_uses_fullscreen_utility_primitive(
-    graph: &SceneRenderingDeviceGraphPlan,
-) -> bool {
-    graph.uses_fullscreen_utility_primitive()
-}
-
 pub(in crate::renderer::native_vulkan) fn append_fullscreen_triangle_vertices(
     payload: &mut Vec<u8>,
+    authored_extent: [f32; 2],
 ) {
+    let half_width = authored_extent[0] * 0.5;
+    let half_height = authored_extent[1] * 0.5;
     for (x, y, u, v) in [
-        (-1.0f32, -1.0f32, 0.0f32, 0.0f32),
-        (3.0f32, -1.0f32, 2.0f32, 0.0f32),
-        (-1.0f32, 3.0f32, 0.0f32, 2.0f32),
+        (-half_width, -half_height, 0.0f32, 1.0f32),
+        (half_width * 3.0, -half_height, 2.0f32, 1.0f32),
+        (-half_width, half_height * 3.0, 0.0f32, -1.0f32),
     ] {
         for value in [x, y, u, v, 1.0] {
             payload.extend_from_slice(&value.to_le_bytes());
@@ -39,24 +34,29 @@ pub(in crate::renderer::native_vulkan) fn append_fullscreen_triangle_indices(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::scene::{SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceMeshDraw};
+    use crate::engine::scene::{
+        SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan,
+        SceneRenderingDeviceMeshDraw,
+    };
 
     #[test]
     fn fullscreen_triangle_payload_matches_three_vertex_copyback_primitive() {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
 
-        append_fullscreen_triangle_vertices(&mut vertices);
+        append_fullscreen_triangle_vertices(&mut vertices, [3840.0, 2160.0]);
         append_fullscreen_triangle_indices(&mut indices);
 
         assert_eq!(vertices.len(), 3 * 52);
         assert_eq!(indices.len(), 3 * 4);
-        assert_eq!(f32_at(&vertices, 0), -1.0);
-        assert_eq!(f32_at(&vertices, 52), 3.0);
+        assert_eq!(f32_at(&vertices, 0), -1920.0);
+        assert_eq!(f32_at(&vertices, 4), -1080.0);
+        assert_eq!(f32_at(&vertices, 12), 1.0);
+        assert_eq!(f32_at(&vertices, 52), 5760.0);
         assert_eq!(f32_at(&vertices, 60), 2.0);
-        assert_eq!(f32_at(&vertices, 108), 3.0);
+        assert_eq!(f32_at(&vertices, 108), 3240.0);
         assert_eq!(f32_at(&vertices, 112), 0.0);
-        assert_eq!(f32_at(&vertices, 116), 2.0);
+        assert_eq!(f32_at(&vertices, 116), -1.0);
         assert_eq!(u32_at(&vertices, 20), 0);
         assert_eq!(u32_at(&indices, 8), 2);
     }
@@ -66,6 +66,8 @@ mod tests {
         let graph = SceneRenderingDeviceGraphPlan {
             mesh_draws: vec![SceneRenderingDeviceMeshDraw {
                 primitive: SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+                projection_domain:
+                    crate::engine::scene::SceneRenderingDeviceProjectionDomain::Scene,
                 shader_key: crate::engine::scene::SceneStringId::NONE,
                 mesh_index: crate::engine::scene::INVALID_OBJECT_ID,
                 resolved_object_index: crate::engine::scene::INVALID_OBJECT_ID,
@@ -73,6 +75,7 @@ mod tests {
                 clip_transform: [[0.0; 4]; 4],
                 effect_model_view_projection_matrix: [[0.0; 4]; 4],
                 authored_source_extent: [0.0; 2],
+                uv_inset_texels: 0.0,
                 skinning_palette_start: crate::engine::scene::INVALID_OBJECT_ID,
                 skinning_palette_count: 0,
                 resolved_color: crate::engine::scene::SceneVec3 {
@@ -127,7 +130,7 @@ mod tests {
             fifo_latest_ready_present_required: true,
         };
 
-        assert!(graph_uses_fullscreen_utility_primitive(&graph));
+        assert!(graph.uses_fullscreen_utility_primitive());
     }
 
     fn f32_at(payload: &[u8], offset: usize) -> f32 {

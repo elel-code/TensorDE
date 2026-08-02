@@ -13,9 +13,11 @@ use super::state::{
 };
 use super::target::RenderTargetRole;
 
+mod final_effect;
 mod flat_rounded_mask;
 mod foliage_ripple;
 mod ripple_flow;
+mod scene_color_blend;
 mod waterwaves;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +51,8 @@ pub struct WeImageGraphContract {
     pub base_material_blending: Option<String>,
     pub base_texture_slots: Vec<u32>,
     pub base_pass_constants: Vec<String>,
+    /// Raw WE object `colorBlendMode`; shader blend modes retain their exact integer identity.
+    pub color_blend_mode: i32,
     pub framebuffer_snapshot: Option<WeFramebufferSnapshotContract>,
     pub final_scene_blend: SceneBlendMode,
     /// The authored object color is an unbound literal black value.
@@ -63,17 +67,9 @@ pub struct WeImageGraphContract {
     pub waterwaves_direct_material: Option<WeWaterWavesDirectMaterial>,
     /// Converter-authored material for a compatible direct foliage/ripple composite.
     pub foliage_ripple_material: Option<WeFoliageRippleMaterial>,
-    /// Converter-authored materials for the typed ripple/flow two-stage path.
-    pub ripple_flow_material_indices: Option<WeRippleFlowMaterialIndices>,
     /// Converter-authored material evaluated once in the final object draw.
     pub final_effect_material: Option<WeFinalEffectMaterial>,
     pub effect_passes: Vec<WeEffectPassContract>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WeRippleFlowMaterialIndices {
-    pub ripple_source: usize,
-    pub flow_composite: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,6 +163,13 @@ pub struct WeFinalEffectPrepass {
     pub material_index: usize,
     pub shader: String,
     pub effect_stage_index: usize,
+    pub input: WeFinalEffectPrepassInput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WeFinalEffectPrepassInput {
+    FramebufferSnapshot,
+    ObjectSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,8 +195,17 @@ pub fn we_effect_passes_form_ripple_flow_chain(effect_passes: &[WeEffectPassCont
 }
 
 pub fn we_image_graph_requires_generated_scene_snapshot(contract: &WeImageGraphContract) -> bool {
-    contract.final_scene_blend == SceneBlendMode::HslColor
-        && flat_rounded_mask::supports_direct_chain(contract)
+    scene_color_blend::is_compatible(contract)
+        || (contract.final_scene_blend == SceneBlendMode::HslColor
+            && flat_rounded_mask::supports_direct_chain(contract))
+}
+
+pub fn we_image_graph_generated_scene_snapshot_slot(contract: &WeImageGraphContract) -> u32 {
+    if scene_color_blend::is_compatible(contract) {
+        scene_color_blend::SCENE_SNAPSHOT_SLOT
+    } else {
+        0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,151 +256,23 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
     let puppet_skinning_after_effects =
         authored_texture_effects && contract.puppet_skinning_after_effects;
     let final_pipeline_blend = final_pipeline_blend(contract);
+    if scene_color_blend::is_compatible(contract) {
+        scene_color_blend::append_authored_source_and_composite(&mut graph, contract);
+        return graph;
+    }
     if flat_rounded_mask::is_compatible(contract) {
         flat_rounded_mask::append_direct_composite(&mut graph, contract);
         return graph;
     }
     if ripple_flow::is_compatible(contract) {
-        ripple_flow::append_two_stage_composite(&mut graph, contract);
+        ripple_flow::append_authored_terminal_flow_chain(&mut graph, contract);
         return graph;
     }
     if foliage_ripple::is_compatible(contract) {
         foliage_ripple::append_direct_composite(&mut graph, contract);
         return graph;
     }
-    if let Some(final_effect) = &contract.final_effect_material {
-        if let Some(prepass) = &final_effect.prepass {
-            let snapshot = contract
-                .framebuffer_snapshot
-                .as_ref()
-                .expect("typed final-effect prepass requires a framebuffer snapshot");
-            let effect = contract
-                .effect_passes
-                .get(prepass.effect_stage_index)
-                .expect("typed final-effect prepass references a missing effect stage");
-            graph.passes.push(RenderPassNode {
-                id: 0,
-                role: RenderPassRole::CopyTarget,
-                draw_primitive: RenderPassDrawPrimitive::None,
-                object_index: Some(contract.object_index),
-                material_index: None,
-                pass_index: 0,
-                shader: None,
-                target: RenderTargetRole::FirstClassEffectTarget,
-                target_name: Some(snapshot.target_name.clone()),
-                target_extent: None,
-                target_format: Some("rgba_backbuffer".to_owned()),
-                bindings: vec![TextureBindingRole::GraphTarget {
-                    slot: snapshot.texture_slot,
-                    role: RenderTargetRole::SceneColor,
-                    name: None,
-                }],
-                effect_visibility: RenderPassEffectVisibility::NONE,
-                state: PassState::default(),
-            });
-            graph.passes.push(RenderPassNode {
-                id: 1,
-                role: RenderPassRole::EffectMaterial,
-                draw_primitive: RenderPassDrawPrimitive::FullscreenTriangle,
-                object_index: Some(contract.object_index),
-                material_index: Some(prepass.material_index),
-                pass_index: effect.pass_index,
-                shader: Some(prepass.shader.clone()),
-                target: RenderTargetRole::ImageLocalMain,
-                target_name: None,
-                target_extent: None,
-                target_format: Some("rgba8".to_owned()),
-                bindings: vec![TextureBindingRole::EffectTarget {
-                    slot: 0,
-                    name: snapshot.target_name.clone(),
-                }],
-                effect_visibility: single_effect_visibility(
-                    effect,
-                    RenderPassEffectVisibility::passthrough,
-                ),
-                state: PassState {
-                    pipeline_blend: PipelineBlendMode::Normal,
-                    scene_blend: SceneBlendMode::Normal,
-                    ..PassState::default()
-                },
-            });
-        }
-        if let Some(intermediate) = &final_effect.intermediate {
-            assert!(
-                final_effect.prepass.is_some(),
-                "typed final-effect intermediate requires an earlier prepass"
-            );
-            let effect = contract
-                .effect_passes
-                .get(intermediate.effect_stage_index)
-                .expect("typed final-effect intermediate references a missing effect stage");
-            let pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
-            graph.passes.push(RenderPassNode {
-                id: pass_id,
-                role: RenderPassRole::EffectMaterial,
-                draw_primitive: RenderPassDrawPrimitive::FullscreenTriangle,
-                object_index: Some(contract.object_index),
-                material_index: Some(intermediate.material_index),
-                pass_index: effect.pass_index,
-                shader: Some(intermediate.shader.clone()),
-                target: RenderTargetRole::ImageLocalSub,
-                target_name: None,
-                target_extent: None,
-                target_format: Some("rgba8".to_owned()),
-                bindings: vec![TextureBindingRole::PreviousGraphTarget { slot: 0 }],
-                effect_visibility: material_stage_range_visibility(
-                    &contract.effect_passes,
-                    intermediate.effect_stage_index,
-                    intermediate.effect_stage_count,
-                )
-                .expect("typed final-effect intermediate requires contiguous effect bindings"),
-                state: PassState {
-                    pipeline_blend: PipelineBlendMode::Normal,
-                    scene_blend: SceneBlendMode::Normal,
-                    ..PassState::default()
-                },
-            });
-        }
-        let effect_visibility = material_stage_range_visibility(
-            &contract.effect_passes,
-            final_effect.effect_stage_index,
-            final_effect.effect_stage_count,
-        )
-        .expect("typed final effect requires contiguous effect bindings");
-        let pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
-        graph.passes.push(RenderPassNode {
-            id: pass_id,
-            role: RenderPassRole::SceneComposite,
-            draw_primitive: final_effect.draw_primitive,
-            object_index: Some(contract.object_index),
-            material_index: Some(final_effect.material_index),
-            pass_index: 0,
-            shader: Some(final_effect.shader.clone()),
-            target: RenderTargetRole::SceneColor,
-            target_name: None,
-            target_extent: None,
-            target_format: None,
-            bindings: final_effect
-                .prepass
-                .as_ref()
-                .map(|_| vec![TextureBindingRole::PreviousGraphTarget { slot: 0 }])
-                .unwrap_or_default(),
-            effect_visibility,
-            state: PassState {
-                pipeline_blend: if final_effect.prepass.is_some() {
-                    PipelineBlendMode::Translucent
-                } else {
-                    final_pipeline_blend
-                },
-                scene_blend: contract.final_scene_blend,
-                color_write_mask: if final_effect.prepass.is_some() {
-                    ColorWriteMask::Rgb
-                } else {
-                    ColorWriteMask::Rgba
-                },
-                ..PassState::default()
-            },
-        });
+    if final_effect::append(&mut graph, contract) {
         return graph;
     }
     if let Some(snapshot) = &contract.framebuffer_snapshot {
@@ -423,20 +307,21 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         let base_pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
         graph.passes.push(RenderPassNode {
             id: base_pass_id,
-            role: RenderPassRole::BaseMaterial,
-            draw_primitive: RenderPassDrawPrimitive::ObjectMesh,
+            role: if authored_texture_effects {
+                RenderPassRole::ObjectLocalSource
+            } else {
+                RenderPassRole::BaseMaterial
+            },
+            draw_primitive: if authored_texture_effects {
+                RenderPassDrawPrimitive::ObjectUvSupportQuad
+            } else {
+                RenderPassDrawPrimitive::ObjectMesh
+            },
             object_index: Some(contract.object_index),
             material_index: contract.base_material_index,
             pass_index: 0,
             shader: if authored_texture_effects {
-                Some(
-                    if puppet_skinning_after_effects {
-                        "we/puppet-effect-source"
-                    } else {
-                        "we/image-effect-source"
-                    }
-                    .to_owned(),
-                )
+                Some("we/image-effect-source".to_owned())
             } else if !has_offscreen_chain
                 && contract.final_scene_blend == SceneBlendMode::Multiply
                 && contract
@@ -487,7 +372,7 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
             effect_visibility: RenderPassEffectVisibility::NONE,
             state: PassState {
                 pipeline_blend: if has_offscreen_chain {
-                    if effect_only_layer {
+                    if authored_texture_effects || effect_only_layer {
                         PipelineBlendMode::Normal
                     } else {
                         base_pipeline_blend(contract)
@@ -602,8 +487,17 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
             bindings: vec![TextureBindingRole::PreviousGraphTarget { slot: 0 }],
             effect_visibility: RenderPassEffectVisibility::NONE,
             state: PassState {
-                pipeline_blend: final_pipeline_blend,
+                pipeline_blend: if puppet_skinning_after_effects {
+                    PipelineBlendMode::Translucent
+                } else {
+                    final_pipeline_blend
+                },
                 scene_blend: contract.final_scene_blend,
+                color_write_mask: if puppet_skinning_after_effects {
+                    ColorWriteMask::Rgb
+                } else {
+                    ColorWriteMask::Rgba
+                },
                 ..PassState::default()
             },
         });
@@ -838,8 +732,8 @@ fn texture_binding_uses_slot(binding: &TextureBindingRole, expected: u32) -> boo
         | TextureBindingRole::GraphTarget { slot, .. }
         | TextureBindingRole::NamedFboBind { slot, .. }
         | TextureBindingRole::EffectTarget { slot, .. } => *slot == expected,
-        TextureBindingRole::VideoFrame { .. }
-        | TextureBindingRole::AudioUniform
+        TextureBindingRole::VideoFrame { .. } => expected < 2,
+        TextureBindingRole::AudioUniform
         | TextureBindingRole::SystemUniform
         | TextureBindingRole::PassConstant { .. } => false,
     }
@@ -857,6 +751,9 @@ fn we_render_target_role(name: &str) -> RenderTargetRole {
     }
 }
 
+#[cfg(test)]
+#[path = "we_image/puppet_effect_stream_tests.rs"]
+mod puppet_effect_stream_tests;
 #[cfg(test)]
 #[path = "we_image/tests.rs"]
 mod tests;

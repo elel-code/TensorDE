@@ -6,57 +6,88 @@
 //! - `references/gilder/godot/servers/rendering/renderer_rd/pipeline_hash_map_rd.h`
 //! - `references/gilder/godot/drivers/vulkan/rendering_device_driver_vulkan.*`
 
-use vulkanalia::prelude::v1_4::*;
-use vulkanalia::vk::{self, HasBuilder};
+use vulkan_renderer::{BlendOverlap, TextureFormat};
 
 use crate::engine::scene::{
     SceneColorWriteMask, SceneCompositeBlend, SceneCullMode, ScenePipelineBlend,
     SceneRenderPassKind, SceneRenderPassRecord, SceneRenderTargetKind,
-    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan,
-    SceneRenderingDevicePassNode, SceneStorage, SceneStringId,
+    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan, SceneRenderingDevicePassNode,
+    SceneStorage, SceneStringId,
 };
 use crate::renderer::native_vulkan::scene::{
     BuiltinSceneLocalReadShader, native_vulkan_scene_shader_for_key,
+    native_vulkan_scene_vertex_shader_for_primitive,
 };
-use crate::renderer::native_vulkan::NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot;
 
-use super::effect_target::SceneEffectTargetImagePlan;
 use super::descriptor_layout::{
     ScenePipelineShaderDescriptorAccess, scene_passthrough_descriptor_access,
     scene_pipeline_shader_descriptor_access,
 };
+use super::effect_target::SceneEffectTargetImagePlan;
 use super::local_read::{
-    SceneLocalReadDeviceLimits, SceneLocalReadPipelineMetadata, SceneLocalReadScopePassRole,
-    SceneLocalReadScopePlan,
+    SceneLocalReadPipelineMetadata, SceneLocalReadScopePassRole, SceneLocalReadScopePlan,
 };
 use super::shader_program::{
     SceneResolvedGraphicsProgram, SceneVertexAttributePlan, resolve_scene_graphics_program,
     scene_owned_vertex_attributes,
 };
 
-mod blend;
 mod creation;
 mod diagnostics;
 mod graphics;
 mod local_read_key;
 mod particle_compute;
 mod samples;
-mod shader_module;
+mod video;
 
-pub(in crate::renderer::native_vulkan) use diagnostics::emit_scene_pipeline_diagnostics_if_requested;
 use graphics::create_graphics_pipeline;
 use local_read_key::{ScenePipelineLocalReadRole, local_read_pipeline_role};
 use samples::ScenePipelineSamples;
-use shader_module::create_shader_module;
+
+pub(super) fn create_scene_terminal_present_pipeline(
+    device: &vulkan_renderer::Backend,
+    target_format: TextureFormat,
+    extent: vulkan_renderer::Extent2D,
+    vertex_spirv: &[u32],
+    fragment_spirv: &[u32],
+    pipeline_binary_cache: &vulkan_renderer::PipelineBinaryArchiveCache,
+) -> Result<vulkan_renderer::MachineCodeGraphicsPipeline, String> {
+    creation::create_scene_pipeline(creation::SceneGraphicsPipelineCreateInputs {
+        device,
+        target_format,
+        extent,
+        vertex_spirv,
+        fragment_spirv,
+        vertex_entry_point: "main",
+        fragment_entry_point: "main",
+        vertex_attributes: Some(&[]),
+        local_read_metadata: None,
+        blend: SceneGpuBlend::Replace,
+        cull_mode: SceneCullMode::None,
+        color_write_mask: SceneColorWriteMask::Rgba,
+        advanced_source_premultiplied: false,
+        advanced_blend_overlap: BlendOverlap::Uncorrelated,
+        samples: ScenePipelineSamples::Single,
+        topology: vulkan_renderer::PrimitiveTopology::TriangleList,
+        default_mesh_vertex_input: false,
+        dynamic_text: false,
+        pipeline_binary_cache,
+    })
+}
 
 pub(in crate::renderer::native_vulkan) struct ScenePipelineResources {
     pub entries: Vec<ScenePipelineEntry>,
+    pub video: Option<video::SceneVideoPipeline>,
     pub particle_compute: Option<particle_compute::SceneParticleComputePipeline>,
+    pub machine_code_binary_count: usize,
+    pub machine_code_bytes: usize,
+    pub machine_code_cache_hits: usize,
+    pub machine_code_cache_misses: usize,
 }
 
 pub(in crate::renderer::native_vulkan) struct ScenePipelineEntry {
     key: ScenePipelineKey,
-    pub pipeline: vk::Pipeline,
+    pub pipeline: vulkan_renderer::MachineCodeGraphicsPipeline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,8 +98,8 @@ struct ScenePipelineKey {
     cull_mode: SceneCullMode,
     color_write_mask: SceneColorWriteMask,
     advanced_source_premultiplied: bool,
-    advanced_blend_overlap: vk::BlendOverlapEXT,
-    target_format: vk::Format,
+    advanced_blend_overlap: BlendOverlap,
+    target_format: Option<TextureFormat>,
     samples: ScenePipelineSamples,
     local_read_role: Option<ScenePipelineLocalReadRole>,
 }
@@ -116,10 +147,28 @@ impl SceneGpuBlend {
     }
 }
 
+pub(super) fn scene_requires_coherent_advanced_blend(
+    storage: &SceneStorage,
+    graph: &SceneRenderingDeviceGraphPlan,
+) -> Result<bool, String> {
+    graph
+        .pass_nodes
+        .iter()
+        .filter(|pass| pass.mesh_draw_count != 0)
+        .try_fold(false, |required, pass| {
+            let record = storage
+                .document()
+                .render_passes
+                .get(pass.pass_record_index as usize)
+                .ok_or_else(|| "scene drawable pass references a missing pass record".to_owned())?;
+            Ok(required || scene_gpu_blend(storage, record, pass.target).requires_advanced_operation())
+        })
+}
+
 pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws(
     storage: &SceneStorage,
     graph: &SceneRenderingDeviceGraphPlan,
-    swapchain_format: vk::Format,
+    swapchain_format: TextureFormat,
     effect_target_plans: &[SceneEffectTargetImagePlan],
     scene_color_msaa_enabled: bool,
 ) -> Result<Vec<u32>, String> {
@@ -136,7 +185,7 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws(
 pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws_with_local_read(
     storage: &SceneStorage,
     graph: &SceneRenderingDeviceGraphPlan,
-    swapchain_format: vk::Format,
+    swapchain_format: TextureFormat,
     effect_target_plans: &[SceneEffectTargetImagePlan],
     local_read_scopes: &[SceneLocalReadScopePlan],
     scene_color_msaa_enabled: bool,
@@ -169,7 +218,12 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws_with_
             color_write_mask: pass_record.color_write_mask,
             advanced_source_premultiplied: advanced_source_is_premultiplied(pass_record),
             advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
-            target_format: pass_target_format(graph, pass, swapchain_format, effect_target_plans)?,
+            target_format: Some(pass_target_format(
+                graph,
+                pass,
+                swapchain_format,
+                effect_target_plans,
+            )?),
             samples: pass_pipeline_samples(pass.target, scene_color_msaa_enabled),
             local_read_role: local_read_pipeline_role(local_read_scopes, pass, false)?,
         };
@@ -190,7 +244,7 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws_with_
 pub(in crate::renderer::native_vulkan) fn scene_disabled_pipeline_indices_for_draws(
     storage: &SceneStorage,
     graph: &SceneRenderingDeviceGraphPlan,
-    swapchain_format: vk::Format,
+    swapchain_format: TextureFormat,
     effect_target_plans: &[SceneEffectTargetImagePlan],
     scene_color_msaa_enabled: bool,
 ) -> Result<Vec<Option<u32>>, String> {
@@ -207,7 +261,7 @@ pub(in crate::renderer::native_vulkan) fn scene_disabled_pipeline_indices_for_dr
 pub(in crate::renderer::native_vulkan) fn scene_disabled_pipeline_indices_for_draws_with_local_read(
     storage: &SceneStorage,
     graph: &SceneRenderingDeviceGraphPlan,
-    swapchain_format: vk::Format,
+    swapchain_format: TextureFormat,
     effect_target_plans: &[SceneEffectTargetImagePlan],
     local_read_scopes: &[SceneLocalReadScopePlan],
     scene_color_msaa_enabled: bool,
@@ -239,21 +293,22 @@ pub(in crate::renderer::native_vulkan) fn scene_disabled_pipeline_indices_for_dr
             cull_mode: pass_record.cull_mode,
             color_write_mask: pass_record.color_write_mask,
             advanced_source_premultiplied: false,
-            advanced_blend_overlap: vk::BlendOverlapEXT::UNCORRELATED,
-            target_format: pass_target_format(
+            advanced_blend_overlap: BlendOverlap::Uncorrelated,
+            target_format: Some(pass_target_format(
                 graph,
                 pass,
                 swapchain_format,
                 effect_target_plans,
-            )?,
+            )?),
             samples: pass_pipeline_samples(pass.target, scene_color_msaa_enabled),
             local_read_role: local_read_pipeline_role(local_read_scopes, pass, true)?,
         };
         let pipeline_index = keys
             .iter()
             .position(|candidate| *candidate == key)
-            .ok_or_else(|| "scene disabled effect pass has no passthrough pipeline key".to_owned())?
-            as u32;
+            .ok_or_else(|| {
+                "scene disabled effect pass has no passthrough pipeline key".to_owned()
+            })? as u32;
         let start = pass.mesh_draw_start as usize;
         let end = start.saturating_add(pass.mesh_draw_count as usize);
         for slot in indices.get_mut(start..end).unwrap_or(&mut []) {
@@ -263,15 +318,14 @@ pub(in crate::renderer::native_vulkan) fn scene_disabled_pipeline_indices_for_dr
     Ok(indices)
 }
 
-
 pub(in crate::renderer::native_vulkan) use creation::{
-    create_scene_pipelines, destroy_scene_pipelines,
+    ScenePipelineResourceCreateInputs, create_scene_pipelines,
 };
 
 fn drawn_pass_pipeline_keys(
     storage: &SceneStorage,
     graph: &SceneRenderingDeviceGraphPlan,
-    swapchain_format: vk::Format,
+    swapchain_format: TextureFormat,
     effect_target_plans: &[SceneEffectTargetImagePlan],
     local_read_scopes: &[SceneLocalReadScopePlan],
     scene_color_msaa_enabled: bool,
@@ -300,7 +354,12 @@ fn drawn_pass_pipeline_keys(
             color_write_mask: pass_record.color_write_mask,
             advanced_source_premultiplied: advanced_source_is_premultiplied(pass_record),
             advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
-            target_format: pass_target_format(graph, pass, swapchain_format, effect_target_plans)?,
+            target_format: Some(pass_target_format(
+                graph,
+                pass,
+                swapchain_format,
+                effect_target_plans,
+            )?),
             samples: pass_pipeline_samples(pass.target, scene_color_msaa_enabled),
             local_read_role: local_read_pipeline_role(local_read_scopes, pass, false)?,
         };
@@ -317,7 +376,7 @@ fn drawn_pass_pipeline_keys(
                 cull_mode: pass_record.cull_mode,
                 color_write_mask: pass_record.color_write_mask,
                 advanced_source_premultiplied: false,
-                advanced_blend_overlap: vk::BlendOverlapEXT::UNCORRELATED,
+                advanced_blend_overlap: BlendOverlap::Uncorrelated,
                 target_format: key.target_format,
                 samples: key.samples,
                 local_read_role: local_read_pipeline_role(local_read_scopes, pass, true)?,
@@ -358,7 +417,7 @@ fn drawn_pass_material_keys(
             color_write_mask: pass_record.color_write_mask,
             advanced_source_premultiplied: advanced_source_is_premultiplied(pass_record),
             advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
-            target_format: vk::Format::UNDEFINED,
+            target_format: None,
             samples: ScenePipelineSamples::Single,
             local_read_role: None,
         };
@@ -388,7 +447,12 @@ fn pass_draw_primitive(
     })?;
     let primitive = draws
         .first()
-        .ok_or_else(|| format!("scene drawable pass {} has an empty draw range", pass.pass_id))?
+        .ok_or_else(|| {
+            format!(
+                "scene drawable pass {} has an empty draw range",
+                pass.pass_id
+            )
+        })?
         .primitive;
     if draws.iter().any(|draw| draw.primitive != primitive) {
         return Err(format!(
@@ -478,18 +542,15 @@ fn advanced_source_is_premultiplied(pass: &SceneRenderPassRecord) -> bool {
         )
 }
 
-fn advanced_blend_overlap(
-    storage: &SceneStorage,
-    pass: &SceneRenderPassRecord,
-) -> vk::BlendOverlapEXT {
+fn advanced_blend_overlap(storage: &SceneStorage, pass: &SceneRenderPassRecord) -> BlendOverlap {
     if pass.scene_blend == SceneCompositeBlend::HslColor
         && storage
             .string(pass.shader_key)
             .is_some_and(|shader| shader.eq_ignore_ascii_case("we/flat-rounded-mask-composite"))
     {
-        vk::BlendOverlapEXT::DISJOINT
+        BlendOverlap::Disjoint
     } else {
-        vk::BlendOverlapEXT::UNCORRELATED
+        BlendOverlap::Uncorrelated
     }
 }
 
@@ -521,9 +582,9 @@ fn pass_pipeline_samples(
 fn pass_target_format(
     graph: &SceneRenderingDeviceGraphPlan,
     pass: &crate::engine::scene::SceneRenderingDevicePassNode,
-    swapchain_format: vk::Format,
+    swapchain_format: TextureFormat,
     effect_target_plans: &[SceneEffectTargetImagePlan],
-) -> Result<vk::Format, String> {
+) -> Result<TextureFormat, String> {
     if matches!(
         pass.target,
         crate::engine::scene::SceneRenderTargetKind::SceneColor

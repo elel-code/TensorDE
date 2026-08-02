@@ -10,7 +10,7 @@ export function clamp(value, minimum, maximum) {
 export function mix(left, right, amount) {
     return left + (right - left) * amount;
 }
-export function smoothstep(edge0, edge1, value) {
+export function smoothStep(edge0, edge1, value) {
     const x = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
     return x * x * (3 - 2 * x);
 }

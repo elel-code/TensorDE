@@ -18,6 +18,42 @@ const NATIVE_VULKAN_STATIC_SCENE_RENDERER_STATUS: &str =
     "static-image-lowered-to-scene-sampled-image-layer";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneRenderItem {
+    pub(in crate::renderer::native_vulkan) output_name: String,
+    pub(in crate::renderer::native_vulkan) scene_source: Option<PathBuf>,
+    pub(in crate::renderer::native_vulkan) display: Option<SceneDisplayPlan>,
+    pub(in crate::renderer::native_vulkan) display_image: Option<PathBuf>,
+    pub(in crate::renderer::native_vulkan) display_color: Option<String>,
+    pub(in crate::renderer::native_vulkan) manifest_max_fps: Option<u32>,
+    pub(in crate::renderer::native_vulkan) layer_count: usize,
+    pub(in crate::renderer::native_vulkan) layers: Vec<SceneRenderLayer>,
+    pub(in crate::renderer::native_vulkan) scene_systems: SceneSystems,
+    pub(in crate::renderer::native_vulkan) audio_cue_count: usize,
+    pub(in crate::renderer::native_vulkan) bound_properties: Vec<String>,
+    pub(in crate::renderer::native_vulkan) timeline_animation_count: usize,
+    pub(in crate::renderer::native_vulkan) timeline_animated_layer_count: usize,
+    pub(in crate::renderer::native_vulkan) puppet_animation_layer_count: usize,
+    pub(in crate::renderer::native_vulkan) property_binding_count: usize,
+    pub(in crate::renderer::native_vulkan) cursor_parallax_input_ready: bool,
+    pub(in crate::renderer::native_vulkan) dynamic_topology_required: bool,
+    pub(in crate::renderer::native_vulkan) scene_engine: Option<SceneEngineRenderPlan>,
+    pub(in crate::renderer::native_vulkan) scene_scenescript_binding_count: usize,
+    pub(in crate::renderer::native_vulkan) scene_material_graph_count: usize,
+    pub(in crate::renderer::native_vulkan) scene_material_graph_resource_count: usize,
+    pub(in crate::renderer::native_vulkan) scene_effect_graph_count: usize,
+    pub(in crate::renderer::native_vulkan) scene_mesh_count: usize,
+    pub(in crate::renderer::native_vulkan) scene_mesh_vertex_count: usize,
+    pub(in crate::renderer::native_vulkan) scene_mesh_index_count: usize,
+    pub(in crate::renderer::native_vulkan) scene_audio_response_binding_count: usize,
+    pub(in crate::renderer::native_vulkan) unsupported_scene_features: Vec<String>,
+    pub(in crate::renderer::native_vulkan) snapshot_time_ms: u64,
+    pub(in crate::renderer::native_vulkan) scene_size: Option<SceneSize>,
+    pub(in crate::renderer::native_vulkan) scene_fit: FitMode,
+    pub(in crate::renderer::native_vulkan) target_max_fps: Option<u32>,
+    pub(in crate::renderer::native_vulkan) renderer_status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum NativeVulkanRenderItem {
     Clear {
@@ -46,38 +82,8 @@ pub enum NativeVulkanRenderItem {
         renderer_status: &'static str,
     },
     Scene {
-        output_name: String,
-        scene_source: Option<PathBuf>,
-        display: Option<SceneDisplayPlan>,
-        display_image: Option<PathBuf>,
-        display_color: Option<String>,
-        manifest_max_fps: Option<u32>,
-        layer_count: usize,
-        layers: Vec<SceneRenderLayer>,
-        scene_systems: SceneSystems,
-        audio_cue_count: usize,
-        bound_properties: Vec<String>,
-        timeline_animation_count: usize,
-        timeline_animated_layer_count: usize,
-        puppet_animation_layer_count: usize,
-        property_binding_count: usize,
-        cursor_parallax_input_ready: bool,
-        dynamic_topology_required: bool,
-        scene_engine: Option<SceneEngineRenderPlan>,
-        scene_scenescript_binding_count: usize,
-        scene_material_graph_count: usize,
-        scene_material_graph_resource_count: usize,
-        scene_effect_graph_count: usize,
-        scene_mesh_count: usize,
-        scene_mesh_vertex_count: usize,
-        scene_mesh_index_count: usize,
-        scene_audio_response_binding_count: usize,
-        unsupported_scene_features: Vec<String>,
-        snapshot_time_ms: u64,
-        scene_size: Option<SceneSize>,
-        scene_fit: FitMode,
-        target_max_fps: Option<u32>,
-        renderer_status: &'static str,
+        #[serde(flatten)]
+        scene: Box<NativeVulkanSceneRenderItem>,
     },
 }
 
@@ -110,6 +116,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
     plan: &StaticWallpaperPlan,
 ) -> NativeVulkanRenderItem {
     NativeVulkanRenderItem::Scene {
+        scene: Box::new(NativeVulkanSceneRenderItem {
         output_name: plan.output_name.clone(),
         scene_source: None,
         display: Some(SceneDisplayPlan::Image {
@@ -176,7 +183,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
         scene_size: None,
         scene_fit: plan.fit,
         target_max_fps: None,
-        renderer_status: NATIVE_VULKAN_STATIC_SCENE_RENDERER_STATUS,
+            renderer_status: NATIVE_VULKAN_STATIC_SCENE_RENDERER_STATUS,
+        }),
     }
 }
 
@@ -210,6 +218,94 @@ fn native_vulkan_slideshow_item(plan: &SlideshowWallpaperPlan) -> NativeVulkanRe
     }
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_item(
+    plan: &SceneWallpaperPlan,
+) -> NativeVulkanRenderItem {
+    NativeVulkanRenderItem::Scene {
+        scene: Box::new(NativeVulkanSceneRenderItem {
+            output_name: plan.output_name.clone(),
+            scene_source: plan.source.clone(),
+            display: plan.display.clone(),
+            display_image: match &plan.display {
+                Some(SceneDisplayPlan::Image { source, .. }) => Some(source.clone()),
+                Some(SceneDisplayPlan::Color { .. }) | None => None,
+            },
+            display_color: match &plan.display {
+                Some(SceneDisplayPlan::Color { color }) => Some(color.clone()),
+                Some(SceneDisplayPlan::Image { .. }) | None => None,
+            },
+            manifest_max_fps: plan.manifest_max_fps,
+            layer_count: plan.layers.len(),
+            layers: plan.layers.clone(),
+            scene_systems: plan.scene_systems.clone(),
+            audio_cue_count: plan.audio_cue_count,
+            bound_properties: plan.bound_properties.clone(),
+            timeline_animation_count: plan.timeline_animation_count,
+            timeline_animated_layer_count: plan.timeline_animated_layer_count,
+            puppet_animation_layer_count: plan.puppet_animation_layer_count,
+            property_binding_count: plan.property_binding_count,
+            cursor_parallax_input_ready: plan.cursor_parallax_input_ready,
+            dynamic_topology_required: native_vulkan_scene_plan_requires_dynamic_topology(plan),
+            scene_engine: plan.scene_engine.clone(),
+            scene_scenescript_binding_count: plan.scene_scenescript_binding_count,
+            scene_material_graph_count: plan.scene_material_graph_count,
+            scene_material_graph_resource_count: plan.scene_material_graph_resource_count,
+            scene_effect_graph_count: plan.scene_effect_graph_count,
+            scene_mesh_count: plan.scene_mesh_count,
+            scene_mesh_vertex_count: plan.scene_mesh_vertex_count,
+            scene_mesh_index_count: plan.scene_mesh_index_count,
+            scene_audio_response_binding_count: plan.scene_audio_response_binding_count,
+            unsupported_scene_features: plan.unsupported_scene_features.clone(),
+            snapshot_time_ms: plan.snapshot_time_ms,
+            scene_size: plan.scene_size,
+            scene_fit: plan.scene_fit,
+            target_max_fps: plan.target_max_fps,
+            renderer_status: native_vulkan_scene_renderer_status(plan),
+        }),
+    }
+}
+
+fn native_vulkan_scene_renderer_status(plan: &SceneWallpaperPlan) -> &'static str {
+    if plan.layers.is_empty()
+        && plan
+            .source
+            .as_ref()
+            .and_then(|source| source.extension())
+            .is_some_and(|extension| extension == "gscene")
+    {
+        "scene-engine-binary-ready-for-rendering-device-graph"
+    } else {
+        "deterministic-scene-snapshot-ready-for-vulkan-passes"
+    }
+}
+
+fn native_vulkan_scene_plan_requires_dynamic_topology(plan: &SceneWallpaperPlan) -> bool {
+    let particle_runtime_active = matches!(
+        plan.scene_systems.particles,
+        crate::core::scene::SceneSystemStatus::Detected
+            | crate::core::scene::SceneSystemStatus::Ready
+    );
+    let native_effect_runtime_active = matches!(
+        plan.scene_systems.shader_material_graph,
+        crate::core::scene::SceneSystemStatus::Detected
+            | crate::core::scene::SceneSystemStatus::Ready
+    );
+    plan.timeline_animation_count > 0
+        || plan.timeline_animated_layer_count > 0
+        || plan.puppet_animation_layer_count > 0
+        || particle_runtime_active
+        || native_effect_runtime_active
+        || plan.layers.iter().any(|layer| {
+            layer
+                .texture_region
+                .is_some_and(native_vulkan_scene_texture_region_is_animated)
+        })
+}
+
+fn native_vulkan_scene_texture_region_is_animated(region: SceneTextureRegion) -> bool {
+    region.frame_count > 1 && region.fps.is_some_and(|fps| fps.is_finite() && fps > 0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,38 +327,31 @@ mod tests {
 
         let item = native_vulkan_static_scene_item(&plan);
 
-        let NativeVulkanRenderItem::Scene {
-            output_name,
-            scene_source,
-            display,
-            display_image,
-            layer_count,
-            layers,
-            bound_properties,
-            renderer_status,
-            ..
-        } = item
+        let NativeVulkanRenderItem::Scene { scene } = item
         else {
             panic!("static image should lower to a scene render item");
         };
-        assert_eq!(output_name, "HDMI-A-1");
-        assert_eq!(scene_source, None);
-        assert_eq!(display_image, Some(PathBuf::from("/tmp/static.png")));
+        assert_eq!(scene.output_name, "HDMI-A-1");
+        assert_eq!(scene.scene_source, None);
+        assert_eq!(scene.display_image, Some(PathBuf::from("/tmp/static.png")));
         assert_eq!(
-            display,
+            scene.display,
             Some(SceneDisplayPlan::Image {
                 source: PathBuf::from("/tmp/static.png"),
                 fit: FitMode::Contain,
                 background: Some("#010203".to_owned()),
             })
         );
-        assert_eq!(layer_count, 1);
-        assert_eq!(layers.len(), 1);
-        assert_eq!(layers[0].kind, SceneNodeKind::Image);
-        assert_eq!(layers[0].source, Some(PathBuf::from("/tmp/static.png")));
-        assert_eq!(layers[0].fit, FitMode::Contain);
-        assert!(bound_properties.is_empty());
-        assert_eq!(renderer_status, NATIVE_VULKAN_STATIC_SCENE_RENDERER_STATUS);
+        assert_eq!(scene.layer_count, 1);
+        assert_eq!(scene.layers.len(), 1);
+        assert_eq!(scene.layers[0].kind, SceneNodeKind::Image);
+        assert_eq!(scene.layers[0].source, Some(PathBuf::from("/tmp/static.png")));
+        assert_eq!(scene.layers[0].fit, FitMode::Contain);
+        assert!(scene.bound_properties.is_empty());
+        assert_eq!(
+            scene.renderer_status,
+            NATIVE_VULKAN_STATIC_SCENE_RENDERER_STATUS
+        );
     }
 
     #[test]
@@ -346,6 +435,8 @@ mod tests {
                     material_sampled_bindings: Vec::new(),
                     mesh_draws: vec![SceneRenderingDeviceMeshDraw {
                         primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+                        projection_domain:
+                            crate::engine::scene::SceneRenderingDeviceProjectionDomain::Scene,
                         shader_key: crate::engine::scene::SceneStringId::NONE,
                         mesh_index: 0,
                         resolved_object_index: 0,
@@ -353,6 +444,7 @@ mod tests {
                         clip_transform: identity_clip_transform(),
                         effect_model_view_projection_matrix: identity_clip_transform(),
                         authored_source_extent: [0.0; 2],
+                        uv_inset_texels: 0.0,
                         skinning_palette_start: INVALID_OBJECT_ID,
                         skinning_palette_count: 0,
                         resolved_color: crate::engine::scene::SceneVec3 {
@@ -412,25 +504,18 @@ mod tests {
 
         let item = native_vulkan_scene_item(&plan);
 
-        let NativeVulkanRenderItem::Scene {
-            renderer_status,
-            scene_mesh_count,
-            scene_mesh_vertex_count,
-            scene_mesh_index_count,
-            scene_engine,
-            ..
-        } = item
+        let NativeVulkanRenderItem::Scene { scene } = item
         else {
             panic!("scene plan should lower to a scene render item");
         };
         assert_eq!(
-            renderer_status,
+            scene.renderer_status,
             "scene-engine-binary-ready-for-rendering-device-graph"
         );
-        assert_eq!(scene_mesh_count, 1);
-        assert_eq!(scene_mesh_vertex_count, 4);
-        assert_eq!(scene_mesh_index_count, 6);
-        let scene_engine = scene_engine.expect("scene engine render plan");
+        assert_eq!(scene.scene_mesh_count, 1);
+        assert_eq!(scene.scene_mesh_vertex_count, 4);
+        assert_eq!(scene.scene_mesh_index_count, 6);
+        let scene_engine = scene.scene_engine.expect("scene engine render plan");
         assert_eq!(scene_engine.renderer_scene_render.mesh_count, 1);
         assert_eq!(
             scene_engine
@@ -459,90 +544,4 @@ mod tests {
             [0.0, 0.0, 0.0, 1.0],
         ]
     }
-}
-
-pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_item(
-    plan: &SceneWallpaperPlan,
-) -> NativeVulkanRenderItem {
-    NativeVulkanRenderItem::Scene {
-        output_name: plan.output_name.clone(),
-        scene_source: plan.source.clone(),
-        display: plan.display.clone(),
-        display_image: match &plan.display {
-            Some(SceneDisplayPlan::Image { source, .. }) => Some(source.clone()),
-            Some(SceneDisplayPlan::Color { .. }) | None => None,
-        },
-        display_color: match &plan.display {
-            Some(SceneDisplayPlan::Color { color }) => Some(color.clone()),
-            Some(SceneDisplayPlan::Image { .. }) | None => None,
-        },
-        manifest_max_fps: plan.manifest_max_fps,
-        layer_count: plan.layers.len(),
-        layers: plan.layers.clone(),
-        scene_systems: plan.scene_systems.clone(),
-        audio_cue_count: plan.audio_cue_count,
-        bound_properties: plan.bound_properties.clone(),
-        timeline_animation_count: plan.timeline_animation_count,
-        timeline_animated_layer_count: plan.timeline_animated_layer_count,
-        puppet_animation_layer_count: plan.puppet_animation_layer_count,
-        property_binding_count: plan.property_binding_count,
-        cursor_parallax_input_ready: plan.cursor_parallax_input_ready,
-        dynamic_topology_required: native_vulkan_scene_plan_requires_dynamic_topology(plan),
-        scene_engine: plan.scene_engine.clone(),
-        scene_scenescript_binding_count: plan.scene_scenescript_binding_count,
-        scene_material_graph_count: plan.scene_material_graph_count,
-        scene_material_graph_resource_count: plan.scene_material_graph_resource_count,
-        scene_effect_graph_count: plan.scene_effect_graph_count,
-        scene_mesh_count: plan.scene_mesh_count,
-        scene_mesh_vertex_count: plan.scene_mesh_vertex_count,
-        scene_mesh_index_count: plan.scene_mesh_index_count,
-        scene_audio_response_binding_count: plan.scene_audio_response_binding_count,
-        unsupported_scene_features: plan.unsupported_scene_features.clone(),
-        snapshot_time_ms: plan.snapshot_time_ms,
-        scene_size: plan.scene_size,
-        scene_fit: plan.scene_fit,
-        target_max_fps: plan.target_max_fps,
-        renderer_status: native_vulkan_scene_renderer_status(plan),
-    }
-}
-
-fn native_vulkan_scene_renderer_status(plan: &SceneWallpaperPlan) -> &'static str {
-    if plan.layers.is_empty()
-        && plan
-            .source
-            .as_ref()
-            .and_then(|source| source.extension())
-            .is_some_and(|extension| extension == "gscene")
-    {
-        "scene-engine-binary-ready-for-rendering-device-graph"
-    } else {
-        "deterministic-scene-snapshot-ready-for-vulkan-passes"
-    }
-}
-
-fn native_vulkan_scene_plan_requires_dynamic_topology(plan: &SceneWallpaperPlan) -> bool {
-    let particle_runtime_active = matches!(
-        plan.scene_systems.particles,
-        crate::core::scene::SceneSystemStatus::Detected
-            | crate::core::scene::SceneSystemStatus::Ready
-    );
-    let native_effect_runtime_active = matches!(
-        plan.scene_systems.shader_material_graph,
-        crate::core::scene::SceneSystemStatus::Detected
-            | crate::core::scene::SceneSystemStatus::Ready
-    );
-    plan.timeline_animation_count > 0
-        || plan.timeline_animated_layer_count > 0
-        || plan.puppet_animation_layer_count > 0
-        || particle_runtime_active
-        || native_effect_runtime_active
-        || plan.layers.iter().any(|layer| {
-            layer
-                .texture_region
-                .is_some_and(native_vulkan_scene_texture_region_is_animated)
-        })
-}
-
-fn native_vulkan_scene_texture_region_is_animated(region: SceneTextureRegion) -> bool {
-    region.frame_count > 1 && region.fps.is_some_and(|fps| fps.is_finite() && fps > 0.0)
 }

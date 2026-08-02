@@ -610,6 +610,10 @@ pub enum SceneStorageError {
         object: SceneObjectHandle,
         reason: &'static str,
     },
+    InvalidCameraLayer {
+        object: SceneObjectHandle,
+        reason: &'static str,
+    },
     InvalidShaderAccessMask {
         shader: SceneStringId,
         overlap: u32,
@@ -729,6 +733,11 @@ impl fmt::Display for SceneStorageError {
             Self::InvalidPointerParallaxBinding { object, reason } => write!(
                 f,
                 "scene pointer parallax binding for object {} is invalid: {reason}",
+                object.0
+            ),
+            Self::InvalidCameraLayer { object, reason } => write!(
+                f,
+                "scene camera layer object {} is invalid: {reason}",
                 object.0
             ),
             Self::InvalidShaderAccessMask { shader, overlap } => write!(

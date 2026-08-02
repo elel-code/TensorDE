@@ -10,7 +10,7 @@ use std::mem::size_of;
 
 use crate::engine::scene::{
     INVALID_MATERIAL_ID, INVALID_OBJECT_ID, SceneMaterialHandle, SceneRenderingDeviceMeshDraw,
-    SceneStorage,
+    SceneRenderingDeviceProjectionDomain, SceneStorage,
 };
 use crate::renderer::native_vulkan::scene::{
     BuiltinSceneParameterLayout, native_vulkan_scene_shader_for_key,
@@ -103,13 +103,9 @@ pub(super) fn pack_scene_draw_uniforms_into(
                 }
                 }
                 BuiltinSceneParameterLayout::WaterFlow => {
-                    effect_uv_affine_draw_values(storage, draw, output_extent)
+                    waterflow_draw_values(storage, draw, output_extent)
                 }
-                _ => matrix_draw_values(scene_cover_clip_transform(
-                    storage.project(),
-                    output_extent,
-                    draw.clip_transform,
-                )),
+                _ => matrix_draw_values(draw_projection_matrix(storage, draw, output_extent)),
             }
         };
         if layout == BuiltinSceneParameterLayout::WaterWavesUvField {
@@ -129,6 +125,18 @@ pub(super) fn pack_scene_draw_uniforms_into(
         payload.len(),
         draws.len() * SCENE_DRAW_UNIFORM_BYTES as usize
     );
+}
+
+fn draw_projection_matrix(
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    output_extent: [u32; 2],
+) -> [[f32; 4]; 4] {
+    if draw.projection_domain == SceneRenderingDeviceProjectionDomain::Scene {
+        scene_cover_clip_transform(storage.project(), output_extent, draw.clip_transform)
+    } else {
+        draw.clip_transform
+    }
 }
 
 fn material_shader_key(storage: &SceneStorage, material: SceneMaterialHandle) -> Option<&str> {
@@ -170,6 +178,17 @@ fn waterwaves_draw_values(
     draw: &SceneRenderingDeviceMeshDraw,
     output_extent: [u32; 2],
 ) -> [f32; SCENE_DRAW_UNIFORM_FLOATS] {
+    effect_uv_affine_draw_values(storage, draw, output_extent)
+}
+
+fn waterflow_draw_values(
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    output_extent: [u32; 2],
+) -> [f32; SCENE_DRAW_UNIFORM_FLOATS] {
+    if draw.primitive == crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh {
+        return matrix_draw_values(draw_projection_matrix(storage, draw, output_extent));
+    }
     effect_uv_affine_draw_values(storage, draw, output_extent)
 }
 
@@ -352,7 +371,6 @@ fn object_effects_use_authored_texture_space(
     storage.render_graph_passes(graph).iter().any(|pass| {
         storage.string(pass.shader_key).is_some_and(|shader| {
             shader.eq_ignore_ascii_case("we/image-effect-source")
-                || shader.eq_ignore_ascii_case("we/puppet-effect-source")
                 || shader.eq_ignore_ascii_case("we/waterwaves-uv-field")
         })
     })

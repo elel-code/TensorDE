@@ -48,8 +48,9 @@ pub fn sampled_object_transform(
             else {
                 continue;
             };
-            let property = transform_property_mut(&mut sampled, track.property);
-            let Some(component) = vec3_component_mut(property, channel.component) else {
+            let Some(component) =
+                transform_property_mut(&mut sampled, track.property, channel.component)
+            else {
                 continue;
             };
             if track.flags & SCENE_OBJECT_TRANSFORM_TRACK_RELATIVE != 0 {
@@ -172,42 +173,107 @@ fn interpolate_object_keyframes(
     if !duration.is_finite() || duration <= f32::EPSILON {
         return to.value;
     }
-    let t = ((frame - from_frame) / duration).clamp(0.0, 1.0);
-    let linear_slope = (to.value - from.value) / duration;
-    let from_slope = keyframe_slope(
-        from.front,
-        from.flags & SCENE_OBJECT_TRANSFORM_KEYFRAME_FRONT_ENABLED != 0,
-        linear_slope,
-    );
-    let to_slope = keyframe_slope(
-        to.back,
-        to.flags & SCENE_OBJECT_TRANSFORM_KEYFRAME_BACK_ENABLED != 0,
-        linear_slope,
-    );
-    let t2 = t * t;
-    let t3 = t2 * t;
-    (2.0 * t3 - 3.0 * t2 + 1.0) * from.value
-        + (t3 - 2.0 * t2 + t) * duration * from_slope
-        + (-2.0 * t3 + 3.0 * t2) * to.value
-        + (t3 - t2) * duration * to_slope
+    if frame <= from_frame {
+        return from.value;
+    }
+    if frame >= to_frame {
+        return to.value;
+    }
+
+    // Wallpaper Engine bakes one curve sample for every integral authored frame, then linearly
+    // blends adjacent baked samples for fractional playback positions. Its handle X coordinates
+    // are half-span-relative, while handle Y coordinates are value-relative. The X Bezier is
+    // inverted with a bounded binary refinement before the same parameter is applied to Y.
+    let lower_frame = frame.floor().max(from_frame);
+    let upper_frame = (lower_frame + 1.0).min(to_frame);
+    let lower = sample_object_keyframe_curve(from, from_frame, to, to_frame, lower_frame);
+    if upper_frame <= lower_frame {
+        return lower;
+    }
+    let upper = sample_object_keyframe_curve(from, from_frame, to, to_frame, upper_frame);
+    let fraction = (frame - lower_frame).clamp(0.0, 1.0);
+    lower + (upper - lower) * fraction
 }
 
-fn keyframe_slope(handle: [f32; 2], enabled: bool, fallback: f32) -> f32 {
-    if enabled && handle[0].abs() > f32::EPSILON {
-        handle[1] / handle[0]
-    } else {
-        fallback
+fn sample_object_keyframe_curve(
+    from: &SceneObjectTransformKeyframeRecord,
+    from_frame: f32,
+    to: &SceneObjectTransformKeyframeRecord,
+    to_frame: f32,
+    frame: f32,
+) -> f32 {
+    if frame <= from_frame {
+        return from.value;
     }
+    if frame >= to_frame {
+        return to.value;
+    }
+    let duration = to_frame - from_frame;
+    let from_front = if from.flags & SCENE_OBJECT_TRANSFORM_KEYFRAME_FRONT_ENABLED != 0 {
+        from.front
+    } else {
+        [0.0; 2]
+    };
+    let to_back = if to.flags & SCENE_OBJECT_TRANSFORM_KEYFRAME_BACK_ENABLED != 0 {
+        to.back
+    } else {
+        [0.0; 2]
+    };
+    let control_frame_1 = from_frame + duration * 0.5 * from_front[0];
+    let control_frame_2 = to_frame + duration * 0.5 * to_back[0];
+    let mut parameter = 0.0_f32;
+    let mut refinement = 0.999_f32;
+    for _ in 0..1_000 {
+        let curve_frame = cubic_bezier(
+            from_frame,
+            control_frame_1,
+            control_frame_2,
+            to_frame,
+            parameter,
+        );
+        if (curve_frame - frame).abs() < 0.01 {
+            break;
+        }
+        refinement *= 0.5;
+        if curve_frame > frame {
+            parameter -= refinement;
+        } else {
+            parameter += refinement;
+        }
+    }
+    cubic_bezier(
+        from.value,
+        from.value + from_front[1],
+        to.value + to_back[1],
+        to.value,
+        parameter.clamp(0.0, 1.0),
+    )
+}
+
+fn cubic_bezier(from: f32, control_1: f32, control_2: f32, to: f32, t: f32) -> f32 {
+    let inverse = 1.0 - t;
+    inverse * inverse * inverse * from
+        + 3.0 * inverse * inverse * t * control_1
+        + 3.0 * inverse * t * t * control_2
+        + t * t * t * to
 }
 
 fn transform_property_mut(
     transform: &mut TransformComponent,
     property: SceneObjectTransformProperty,
-) -> &mut SceneVec3 {
+    component: u32,
+) -> Option<&mut f32> {
     match property {
-        SceneObjectTransformProperty::Origin => &mut transform.origin,
-        SceneObjectTransformProperty::Angles => &mut transform.angles,
-        SceneObjectTransformProperty::Scale => &mut transform.scale,
+        SceneObjectTransformProperty::Origin => {
+            vec3_component_mut(&mut transform.origin, component)
+        }
+        SceneObjectTransformProperty::Angles => {
+            vec3_component_mut(&mut transform.angles, component)
+        }
+        SceneObjectTransformProperty::Scale => vec3_component_mut(&mut transform.scale, component),
+        SceneObjectTransformProperty::CameraZoom => {
+            (component == 0).then_some(&mut transform.camera_zoom)
+        }
     }
 }
 
@@ -347,6 +413,7 @@ fn sampled_track_matrix(
         origin: interpolate_vec3(current.translation, next.translation, fraction),
         angles: interpolate_vec3(current.rotation, next.rotation, fraction),
         scale: interpolate_vec3(current.scale, next.scale, fraction),
+        camera_zoom: 1.0,
     }))
 }
 
@@ -500,14 +567,34 @@ mod tests {
             sample_object_keyframes(&track, &keyframes, 180.0),
             Some(24.0)
         );
-        assert_eq!(
-            sample_object_keyframes(&track, &keyframes, 270.0),
-            Some(12.0)
-        );
+        let wrapped_midpoint =
+            sample_object_keyframes(&track, &keyframes, 270.0).expect("wrapped midpoint");
+        assert!((wrapped_midpoint - 12.0).abs() < 5.0e-4);
         assert_eq!(
             sample_object_keyframes(&track, &keyframes, 360.0),
             Some(0.0)
         );
+    }
+
+    #[test]
+    fn object_keyframes_use_half_span_bezier_handles_and_baked_frame_blending() {
+        let from = SceneObjectTransformKeyframeRecord {
+            frame: 0.0,
+            value: 0.0,
+            back: [0.0; 2],
+            front: [0.5, 0.0],
+            flags: SCENE_OBJECT_TRANSFORM_KEYFRAME_FRONT_ENABLED,
+        };
+        let to = SceneObjectTransformKeyframeRecord {
+            frame: 100.0,
+            value: 10.0,
+            back: [-0.5, 0.0],
+            front: [0.0; 2],
+            flags: SCENE_OBJECT_TRANSFORM_KEYFRAME_BACK_ENABLED,
+        };
+
+        let sampled = interpolate_object_keyframes(&from, 0.0, &to, 100.0, 20.25);
+        assert!((sampled - 1.305_890_7).abs() < 1.0e-6);
     }
 
     #[test]

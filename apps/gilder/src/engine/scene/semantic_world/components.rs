@@ -12,6 +12,7 @@ pub struct TransformComponent {
     pub origin: SceneVec3,
     pub angles: SceneVec3,
     pub scale: SceneVec3,
+    pub camera_zoom: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +103,7 @@ pub fn transform_from_object(object: &SceneObjectRecord) -> TransformComponent {
         origin: object.origin,
         angles: object.angles,
         scale: object.scale,
+        camera_zoom: object.camera_zoom,
     }
 }
 

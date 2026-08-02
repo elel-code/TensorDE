@@ -1,12 +1,12 @@
-use super::*;
 use super::super::descriptor_layout::scene_pipeline_descriptor_layout;
-use super::blend::scene_color_blend_attachment;
-use super::graphics::scene_vk_cull_mode;
+use super::graphics::{scene_color_target, scene_cull_mode};
+use super::*;
 use crate::engine::scene::{
     SceneBinaryDocument, SceneRenderPassKind, SceneRenderPassRecord, SceneRenderTargetKind,
     SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode,
     SceneRenderingDeviceTargetAllocation, SceneShaderContractRecord,
 };
+use vulkan_renderer::{BlendFactor, BlendOperation, ColorWrites, CullMode, Extent2D};
 
 #[test]
 fn pipeline_indices_follow_drawn_pass_shader_and_blend_order() {
@@ -56,7 +56,7 @@ fn pipeline_indices_follow_drawn_pass_shader_and_blend_order() {
 
     let layout = scene_pipeline_descriptor_layout(&storage, &graph).expect("layout");
     let indices =
-        scene_pipeline_indices_for_draws(&storage, &graph, vk::Format::B8G8R8A8_UNORM, &[], false)
+        scene_pipeline_indices_for_draws(&storage, &graph, TextureFormat::Bgra8Unorm, &[], false)
             .expect("indices");
 
     assert_eq!(layout.sampled_slots, vec![0]);
@@ -78,11 +78,7 @@ fn descriptor_layout_keeps_sampled_and_input_attachment_slots_disjoint_in_storag
             resource_heap_count: 2,
             sampler_heap_count: 1,
         }],
-        render_passes: vec![render_pass(
-            0,
-            SceneStringId(0),
-            ScenePipelineBlend::Normal,
-        )],
+        render_passes: vec![render_pass(0, SceneStringId(0), ScenePipelineBlend::Normal)],
         ..SceneBinaryDocument::default()
     })
     .expect("storage");
@@ -118,31 +114,20 @@ fn same_effect_shader_uses_distinct_fullscreen_and_object_mesh_pipelines() {
         ],
     );
 
-    let indices = scene_pipeline_indices_for_draws(
-        &storage,
-        &graph,
-        vk::Format::B8G8R8A8_UNORM,
-        &[],
-        false,
-    )
-    .expect("primitive-specific indices");
+    let indices =
+        scene_pipeline_indices_for_draws(&storage, &graph, TextureFormat::Bgra8Unorm, &[], false)
+            .expect("primitive-specific indices");
     let disabled = scene_disabled_pipeline_indices_for_draws(
         &storage,
         &graph,
-        vk::Format::B8G8R8A8_UNORM,
+        TextureFormat::Bgra8Unorm,
         &[],
         false,
     )
     .expect("primitive-specific passthrough indices");
-    let keys = drawn_pass_pipeline_keys(
-        &storage,
-        &graph,
-        vk::Format::B8G8R8A8_UNORM,
-        &[],
-        &[],
-        false,
-    )
-    .expect("pipeline keys");
+    let keys =
+        drawn_pass_pipeline_keys(&storage, &graph, TextureFormat::Bgra8Unorm, &[], &[], false)
+            .expect("pipeline keys");
 
     assert_eq!(indices, vec![0, 1]);
     assert_eq!(disabled, vec![None, Some(2)]);
@@ -156,22 +141,13 @@ fn same_effect_shader_uses_distinct_fullscreen_and_object_mesh_pipelines() {
 fn object_mesh_effect_without_a_typed_vertex_program_fails_strictly() {
     let storage = single_shader_storage(
         "effects/iris__SLOTS_3__MASK_1",
-        vec![render_pass(
-            0,
-            SceneStringId(0),
-            ScenePipelineBlend::Normal,
-        )],
+        vec![render_pass(0, SceneStringId(0), ScenePipelineBlend::Normal)],
     );
     let graph = object_mesh_graph_with_passes(vec![pass_node(0, 0, 1)]);
 
-    let error = scene_pipeline_indices_for_draws(
-        &storage,
-        &graph,
-        vk::Format::B8G8R8A8_UNORM,
-        &[],
-        false,
-    )
-    .expect_err("object-mesh iris must not guess a vertex ABI");
+    let error =
+        scene_pipeline_indices_for_draws(&storage, &graph, TextureFormat::Bgra8Unorm, &[], false)
+            .expect_err("object-mesh iris must not guess a vertex ABI");
 
     assert!(error.contains("has no ObjectMesh vertex program"));
 }
@@ -180,11 +156,7 @@ fn object_mesh_effect_without_a_typed_vertex_program_fails_strictly() {
 fn one_pass_cannot_mix_incompatible_draw_primitives() {
     let storage = single_shader_storage(
         "effects/shimmer__SLOTS_9",
-        vec![render_pass(
-            0,
-            SceneStringId(0),
-            ScenePipelineBlend::Normal,
-        )],
+        vec![render_pass(0, SceneStringId(0), ScenePipelineBlend::Normal)],
     );
     let graph = graph_with_passes_and_primitives(
         vec![pass_node(0, 0, 2)],
@@ -194,14 +166,9 @@ fn one_pass_cannot_mix_incompatible_draw_primitives() {
         ],
     );
 
-    let error = scene_pipeline_indices_for_draws(
-        &storage,
-        &graph,
-        vk::Format::B8G8R8A8_UNORM,
-        &[],
-        false,
-    )
-    .expect_err("mixed primitive pass must fail");
+    let error =
+        scene_pipeline_indices_for_draws(&storage, &graph, TextureFormat::Bgra8Unorm, &[], false)
+            .expect_err("mixed primitive pass must fail");
 
     assert!(error.contains("mixes incompatible draw primitives"));
 }
@@ -246,9 +213,8 @@ fn pipeline_indices_include_dynamic_rendering_target_format() {
         graph_index: 0,
         target: SceneRenderTargetKind::NamedFbo,
         target_name: SceneStringId(7),
-        format: vk::Format::R16G16B16A16_SFLOAT,
-        width: 960,
-        height: 540,
+        format: TextureFormat::Rgba16Float,
+        extent: Extent2D::new(960, 540),
         batch_field_count: 1,
         batch_atlas_columns: 1,
         batch_atlas_rows: 1,
@@ -260,7 +226,7 @@ fn pipeline_indices_include_dynamic_rendering_target_format() {
     let indices = scene_pipeline_indices_for_draws(
         &storage,
         &graph,
-        vk::Format::B8G8R8A8_UNORM,
+        TextureFormat::Bgra8Unorm,
         &target_plans,
         false,
     )
@@ -310,9 +276,8 @@ fn pipeline_indices_keep_scene_color_msaa_separate_from_single_sample_effect_tar
         graph_index: 0,
         target: SceneRenderTargetKind::NamedFbo,
         target_name: SceneStringId(7),
-        format: vk::Format::B8G8R8A8_UNORM,
-        width: 960,
-        height: 540,
+        format: TextureFormat::Bgra8Unorm,
+        extent: Extent2D::new(960, 540),
         batch_field_count: 1,
         batch_atlas_columns: 1,
         batch_atlas_rows: 1,
@@ -324,7 +289,7 @@ fn pipeline_indices_keep_scene_color_msaa_separate_from_single_sample_effect_tar
     let single_sample = scene_pipeline_indices_for_draws(
         &storage,
         &graph,
-        vk::Format::B8G8R8A8_UNORM,
+        TextureFormat::Bgra8Unorm,
         &target_plans,
         false,
     )
@@ -332,7 +297,7 @@ fn pipeline_indices_keep_scene_color_msaa_separate_from_single_sample_effect_tar
     let scene_msaa = scene_pipeline_indices_for_draws(
         &storage,
         &graph,
-        vk::Format::B8G8R8A8_UNORM,
+        TextureFormat::Bgra8Unorm,
         &target_plans,
         true,
     )
@@ -364,13 +329,10 @@ fn final_target_pipeline_keys_include_scene_composite_blend() {
         ..SceneBinaryDocument::default()
     })
     .expect("storage");
-    let graph = object_mesh_graph_with_passes(vec![
-        pass_node(0, 0, 1),
-        pass_node(1, 1, 1),
-    ]);
+    let graph = object_mesh_graph_with_passes(vec![pass_node(0, 0, 1), pass_node(1, 1, 1)]);
 
     let indices =
-        scene_pipeline_indices_for_draws(&storage, &graph, vk::Format::B8G8R8A8_UNORM, &[], false)
+        scene_pipeline_indices_for_draws(&storage, &graph, TextureFormat::Bgra8Unorm, &[], false)
             .expect("indices");
 
     assert_eq!(indices, vec![0, 1]);
@@ -422,21 +384,17 @@ fn foliage_screen_variant_uses_standard_premultiplied_screen_blend() {
         scene_gpu_blend(&storage, &pass, SceneRenderTargetKind::SceneColor),
         SceneGpuBlend::ScreenPremultiplied
     );
-    let attachment = scene_color_blend_attachment(
+    let attachment = scene_color_target(
         SceneGpuBlend::ScreenPremultiplied,
         SceneColorWriteMask::Rgba,
+        TextureFormat::Rgba8Unorm,
     );
-    assert_eq!(attachment.color_blend_op, vk::BlendOp::ADD);
-    assert_eq!(attachment.src_color_blend_factor, vk::BlendFactor::ONE);
-    assert_eq!(
-        attachment.dst_color_blend_factor,
-        vk::BlendFactor::ONE_MINUS_SRC_COLOR
-    );
-    assert_eq!(attachment.src_alpha_blend_factor, vk::BlendFactor::ONE);
-    assert_eq!(
-        attachment.dst_alpha_blend_factor,
-        vk::BlendFactor::ONE_MINUS_SRC_ALPHA
-    );
+    let blend = attachment.blend.expect("screen blend");
+    assert_eq!(blend.color.operation, BlendOperation::Add);
+    assert_eq!(blend.color.src_factor, BlendFactor::One);
+    assert_eq!(blend.color.dst_factor, BlendFactor::OneMinusSourceColor);
+    assert_eq!(blend.alpha.src_factor, BlendFactor::One);
+    assert_eq!(blend.alpha.dst_factor, BlendFactor::OneMinusSourceAlpha);
 }
 
 #[test]
@@ -461,24 +419,17 @@ fn typed_multiply_variant_uses_standard_premultiplied_multiply_blend() {
         scene_gpu_blend(&storage, &pass, SceneRenderTargetKind::SceneColor),
         SceneGpuBlend::MultiplyPremultiplied
     );
-    let attachment = scene_color_blend_attachment(
+    let attachment = scene_color_target(
         SceneGpuBlend::MultiplyPremultiplied,
         SceneColorWriteMask::Rgba,
+        TextureFormat::Rgba8Unorm,
     );
-    assert_eq!(attachment.color_blend_op, vk::BlendOp::ADD);
-    assert_eq!(
-        attachment.src_color_blend_factor,
-        vk::BlendFactor::DST_COLOR
-    );
-    assert_eq!(
-        attachment.dst_color_blend_factor,
-        vk::BlendFactor::ONE_MINUS_SRC_ALPHA
-    );
-    assert_eq!(attachment.src_alpha_blend_factor, vk::BlendFactor::ONE);
-    assert_eq!(
-        attachment.dst_alpha_blend_factor,
-        vk::BlendFactor::ONE_MINUS_SRC_ALPHA
-    );
+    let blend = attachment.blend.expect("multiply blend");
+    assert_eq!(blend.color.operation, BlendOperation::Add);
+    assert_eq!(blend.color.src_factor, BlendFactor::DestinationColor);
+    assert_eq!(blend.color.dst_factor, BlendFactor::OneMinusSourceAlpha);
+    assert_eq!(blend.alpha.src_factor, BlendFactor::One);
+    assert_eq!(blend.alpha.dst_factor, BlendFactor::OneMinusSourceAlpha);
 }
 
 #[test]
@@ -499,17 +450,15 @@ fn typed_static_black_multiply_uses_equivalent_standard_alpha_blend() {
         scene_gpu_blend(&storage, &pass, SceneRenderTargetKind::SceneColor),
         SceneGpuBlend::Alpha
     );
-    let attachment =
-        scene_color_blend_attachment(SceneGpuBlend::Alpha, SceneColorWriteMask::Rgba);
-    assert_eq!(attachment.color_blend_op, vk::BlendOp::ADD);
-    assert_eq!(
-        attachment.src_color_blend_factor,
-        vk::BlendFactor::SRC_ALPHA
+    let attachment = scene_color_target(
+        SceneGpuBlend::Alpha,
+        SceneColorWriteMask::Rgba,
+        TextureFormat::Rgba8Unorm,
     );
-    assert_eq!(
-        attachment.dst_color_blend_factor,
-        vk::BlendFactor::ONE_MINUS_SRC_ALPHA
-    );
+    let blend = attachment.blend.expect("alpha blend");
+    assert_eq!(blend.color.operation, BlendOperation::Add);
+    assert_eq!(blend.color.src_factor, BlendFactor::SourceAlpha);
+    assert_eq!(blend.color.dst_factor, BlendFactor::OneMinusSourceAlpha);
 
     pass.shader_key = SceneStringId(1);
     assert_eq!(
@@ -536,7 +485,7 @@ fn rounded_hsl_quad_declares_disjoint_advanced_blend_coverage() {
 
     assert_eq!(
         advanced_blend_overlap(&storage, &pass),
-        vk::BlendOverlapEXT::DISJOINT
+        BlendOverlap::Disjoint
     );
 }
 
@@ -555,19 +504,22 @@ fn material_normal_replaces_while_translucent_alpha_blends() {
         SceneGpuBlend::Alpha
     );
 
-    let replace =
-        scene_color_blend_attachment(SceneGpuBlend::Replace, SceneColorWriteMask::Rgba);
-    let translucent =
-        scene_color_blend_attachment(SceneGpuBlend::Alpha, SceneColorWriteMask::Rgba);
-    assert_eq!(replace.blend_enable, vk::FALSE);
-    assert_eq!(translucent.blend_enable, vk::TRUE);
-    assert_eq!(
-        translucent.src_color_blend_factor,
-        vk::BlendFactor::SRC_ALPHA
+    let replace = scene_color_target(
+        SceneGpuBlend::Replace,
+        SceneColorWriteMask::Rgba,
+        TextureFormat::Rgba8Unorm,
     );
+    let translucent = scene_color_target(
+        SceneGpuBlend::Alpha,
+        SceneColorWriteMask::Rgba,
+        TextureFormat::Rgba8Unorm,
+    );
+    assert!(replace.blend.is_none());
+    let translucent = translucent.blend.expect("alpha blend");
+    assert_eq!(translucent.color.src_factor, BlendFactor::SourceAlpha);
     assert_eq!(
-        translucent.dst_color_blend_factor,
-        vk::BlendFactor::ONE_MINUS_SRC_ALPHA
+        translucent.color.dst_factor,
+        BlendFactor::OneMinusSourceAlpha
     );
 }
 
@@ -585,10 +537,7 @@ fn graph_with_passes(
     )
 }
 
-fn single_shader_storage(
-    shader: &str,
-    render_passes: Vec<SceneRenderPassRecord>,
-) -> SceneStorage {
+fn single_shader_storage(shader: &str, render_passes: Vec<SceneRenderPassRecord>) -> SceneStorage {
     SceneStorage::from_document(SceneBinaryDocument {
         strings: vec![shader.to_owned(), "pipeline".to_owned()],
         shader_contracts: vec![SceneShaderContractRecord {
@@ -666,8 +615,7 @@ fn pass_node(
 ) -> SceneRenderingDevicePassNode {
     SceneRenderingDevicePassNode {
         graph_index: 0,
-        graph_activation_policy:
-            crate::engine::scene::SceneRenderGraphActivationPolicy::Always,
+        graph_activation_policy: crate::engine::scene::SceneRenderGraphActivationPolicy::Always,
         pass_record_index,
         pass_id: pass_record_index,
         role: SceneRenderPassKind::EffectMaterial,
@@ -677,8 +625,7 @@ fn pass_node(
         binding_count: 0,
         effect_binding_start: u32::MAX,
         effect_binding_count: 0,
-        effect_visibility_policy:
-            crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+        effect_visibility_policy: crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
         mesh_draw_start,
         mesh_draw_count,
     }
@@ -705,8 +652,7 @@ fn render_pass(
         binding_count: 0,
         effect_binding_start: u32::MAX,
         effect_binding_count: 0,
-        effect_visibility_policy:
-            crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+        effect_visibility_policy: crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
         pipeline_blend,
         scene_blend: crate::engine::scene::SceneCompositeBlend::Alpha,
         depth_test: crate::engine::scene::SceneDepthTest::Disabled,
@@ -720,6 +666,7 @@ fn render_pass(
 fn draw() -> SceneRenderingDeviceMeshDraw {
     SceneRenderingDeviceMeshDraw {
         primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+        projection_domain: crate::engine::scene::SceneRenderingDeviceProjectionDomain::Scene,
         shader_key: crate::engine::scene::SceneStringId::NONE,
         mesh_index: crate::engine::scene::INVALID_OBJECT_ID,
         resolved_object_index: crate::engine::scene::INVALID_OBJECT_ID,
@@ -727,6 +674,7 @@ fn draw() -> SceneRenderingDeviceMeshDraw {
         clip_transform: [[0.0; 4]; 4],
         effect_model_view_projection_matrix: [[0.0; 4]; 4],
         authored_source_extent: [0.0; 2],
+        uv_inset_texels: 0.0,
         skinning_palette_start: crate::engine::scene::INVALID_OBJECT_ID,
         skinning_palette_count: 0,
         resolved_color: crate::engine::scene::SceneVec3 {
@@ -740,8 +688,7 @@ fn draw() -> SceneRenderingDeviceMeshDraw {
         effect_batch_atlas_grid: [0; 2],
         effect_binding_start: u32::MAX,
         effect_binding_count: 0,
-        effect_visibility_policy:
-            crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
+        effect_visibility_policy: crate::engine::scene::SceneRenderEffectVisibilityPolicy::None,
         resolved_effect_visibility_mask: 0,
         object: crate::engine::scene::SceneObjectHandle(crate::engine::scene::INVALID_OBJECT_ID),
         material: crate::engine::scene::SceneMaterialHandle(

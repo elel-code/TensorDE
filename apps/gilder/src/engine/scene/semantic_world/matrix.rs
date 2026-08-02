@@ -305,6 +305,7 @@ mod tests {
                 y: 3.0,
                 z: 4.0,
             },
+            camera_zoom: 1.0,
         });
 
         assert_eq!(matrix[0], 2.0);
@@ -335,6 +336,7 @@ mod tests {
                 z: -std::f32::consts::FRAC_PI_2,
             },
             scale: SceneVec3::ONE,
+            camera_zoom: 1.0,
         });
 
         assert!(matrix[0].abs() <= 1.0e-5);
@@ -361,6 +363,7 @@ mod tests {
                 y: 0.5,
                 z: 1.5,
             },
+            camera_zoom: 1.0,
         });
         let inverse = inverse_affine_matrix(&transform).expect("invertible");
         let product = multiply_matrix(&transform, &inverse);
@@ -385,6 +388,7 @@ mod tests {
                 y: 1.0,
                 z: 1.0,
             },
+            camera_zoom: 1.0,
         });
 
         assert!(matrix[0].abs() < 1.0e-6);
@@ -411,6 +415,7 @@ mod tests {
                 y: 1.0,
                 z: 1.0,
             },
+            camera_zoom: 1.0,
         });
         let blended = interpolate_affine_matrix(&identity_matrix(), &target, 0.5);
         let diagonal = std::f32::consts::FRAC_1_SQRT_2;

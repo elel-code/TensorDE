@@ -26,6 +26,7 @@ pub(super) fn lower_pass_role(role: RenderPassRole) -> SceneRenderPassKind {
     match role {
         RenderPassRole::Clear => SceneRenderPassKind::Clear,
         RenderPassRole::BaseMaterial => SceneRenderPassKind::BaseMaterial,
+        RenderPassRole::ObjectLocalSource => SceneRenderPassKind::ObjectLocalSource,
         RenderPassRole::EffectMaterial => SceneRenderPassKind::EffectMaterial,
         RenderPassRole::ColorBlendPassthrough => SceneRenderPassKind::ColorBlendPassthrough,
         RenderPassRole::CopyTarget => SceneRenderPassKind::CopyTarget,
@@ -49,6 +50,9 @@ pub(super) fn lower_pass_draw_primitive(
     match primitive {
         RenderPassDrawPrimitive::None => SceneRenderPassDrawPrimitive::None,
         RenderPassDrawPrimitive::ObjectMesh => SceneRenderPassDrawPrimitive::ObjectMesh,
+        RenderPassDrawPrimitive::ObjectCompositeMesh => {
+            SceneRenderPassDrawPrimitive::ObjectCompositeMesh
+        }
         RenderPassDrawPrimitive::FullscreenTriangle => {
             SceneRenderPassDrawPrimitive::FullscreenTriangle
         }

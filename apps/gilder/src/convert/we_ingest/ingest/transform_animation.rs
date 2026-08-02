@@ -19,6 +19,7 @@ pub(super) fn ingest_object_transform_tracks(
         ("origin", WeIrObjectTransformProperty::Origin),
         ("angles", WeIrObjectTransformProperty::Angles),
         ("scale", WeIrObjectTransformProperty::Scale),
+        ("zoom", WeIrObjectTransformProperty::CameraZoom),
     ] {
         let Some(binding) = value.get(property_name).and_then(Value::as_object) else {
             continue;
@@ -65,7 +66,12 @@ fn append_keyframed_track(
     }
 
     let mut parsed_channels = Vec::new();
-    for component in 0..3 {
+    let component_count = if property == WeIrObjectTransformProperty::CameraZoom {
+        1
+    } else {
+        3
+    };
+    for component in 0..component_count {
         let channel_name = format!("c{component}");
         let Some(values) = animation.get(&channel_name).and_then(Value::as_array) else {
             continue;
@@ -260,6 +266,45 @@ mod tests {
         );
 
         assert!(tracks.is_empty());
+        assert!(unsupported.is_empty());
+    }
+
+    #[test]
+    fn lowers_camera_zoom_as_a_typed_scalar_track() {
+        let object: Value = serde_json::from_str(
+            r#"{
+                "zoom": {
+                    "value": 1.0,
+                    "animation": {
+                        "c0": [
+                            {"frame":0,"value":2.55,"front":{"enabled":true,"magic":true,"x":0.50277778,"y":0}},
+                            {"frame":180,"value":1.0,"back":{"enabled":true,"magic":true,"x":-0.50277778,"y":0}}
+                        ],
+                        "options":{"fps":30,"length":180,"mode":"single"}
+                    }
+                }
+            }"#,
+        )
+        .expect("camera json");
+        let mut tracks = Vec::new();
+        let mut channels = Vec::new();
+        let mut keyframes = Vec::new();
+        let mut unsupported = Vec::new();
+
+        ingest_object_transform_tracks(
+            32,
+            &object,
+            &mut tracks,
+            &mut channels,
+            &mut keyframes,
+            &mut unsupported,
+        );
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].property, WeIrObjectTransformProperty::CameraZoom);
+        assert_eq!(channels.len(), 1);
+        assert_eq!(channels[0].component, 0);
+        assert_eq!(keyframes.len(), 2);
         assert!(unsupported.is_empty());
     }
 }

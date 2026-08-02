@@ -53,50 +53,30 @@ MATRIX_COLUMNS = [
     "source_bit_rate",
     "source_nb_frames",
     "source_duration_seconds",
-    "audio_clock_probe_requested",
-    "audio_output_mode",
-    "audio_stream_found",
-    "audio_stream_error",
-    "audio_master_clock_enabled",
-    "audio_master_clock_start_ns",
-    "audio_video_master_clock_ready",
-    "audio_playback_target_reached",
-    "audio_playback_coverage_percent",
-    "audio_output_backend",
-    "audio_output_xrun_count",
-    "surface_host_binding",
-    "surface_host_platform_backend",
-    "surface_host_event_loop_backend",
-    "surface_host_wait_configure_roundtrips",
+    "presentation_codec",
     "surface_host_buffer_width",
     "surface_host_buffer_height",
-    "decoder_codec",
-    "decoder_name",
-    "coded_width",
-    "coded_height",
-    "decoder_thread_count",
-    "decoder_thread_type",
-    "decoder_active_thread_type",
-    "decoder_extra_hw_frames",
-    "decoder_hw_frames_initial_pool_size",
-    "decoder_low_delay_flag",
-    "decoder_fast_flag",
-    "decoder_has_b_frames",
-    "decoder_codec_delay",
-    "decoder_h264_enable_er",
-    "decoder_max_packet_size_bytes",
-    "inferred_min_ffmpeg_slice_buffer_slot_bytes",
-    "inferred_min_ffmpeg_slice_buffer_slot_kb",
-    "codec_host_memory_model",
-    "inferred_codec_resolution_scaled_host_bytes",
-    "inferred_codec_resolution_scaled_host_kb",
-    "inferred_h264_refstruct_min_three_picture_bytes",
-    "inferred_hevc_refstruct_min_three_picture_bytes",
-    "inferred_hevc_layer_tables_bytes",
+    "surface_width",
+    "surface_height",
+    "binding",
+    "route",
+    "decoded_frame_format",
+    "decoded_frame_width",
+    "decoded_frame_height",
     "target_fps",
     "playback_frames",
+    "requested_present_frame_count",
+    "frames_presented",
+    "decoded_frame_count",
+    "repeated_presentation_count",
+    "video_loop_index",
+    "frame_slot_count",
+    "pacing",
+    "descriptor_heap_only",
+    "decoded_image_zero_copy_presented",
+    "zero_copy_scope",
+    "present_mode",
     "max_memory_kb",
-    "max_memory_minus_codec_resolution_scaled_host_kb",
     "last_memory_kb",
     "memory_calculation",
     "memory_sample_count",
@@ -113,29 +93,8 @@ MATRIX_COLUMNS = [
     "peak_smaps_private_dirty_kb",
     "peak_smaps_anonymous_kb",
     "dgop_minus_peak_smaps_pss_dirty_kb",
+    "runtime_elapsed_ms",
     "average_present_fps",
-    "average_present_teardown_inclusive_fps",
-    "presented_frame_count",
-    "all_zero_copy_presented",
-    "present_mode",
-    "present_delta_over_6250us_count",
-    "present_delta_over_8334us_count",
-    "frame_sleep_count",
-    "total_pacing_sleep_micros",
-    "present_sleep_guard_micros",
-    "present_spin_guard_micros",
-    "present_handoff_route",
-    "present_handoff_capacity_frames",
-    "present_handoff_peak_depth",
-    "ffmpeg_retained_avframe_count",
-    "ffmpeg_retained_avframe_peak_count",
-    "descriptor_sampler_cache_entry_count",
-    "descriptor_sampler_cache_peak_entry_count",
-    "descriptor_sampler_cache_rewrite_count",
-    "descriptor_sampler_cache_recreate_count",
-    "descriptor_sampler_cache_resource_heap_kb",
-    "descriptor_sampler_cache_sampler_heap_kb",
-    "descriptor_sampler_cache_total_heap_kb",
     "telemetry",
 ]
 
@@ -251,20 +210,6 @@ def parse_args() -> argparse.Namespace:
         "--target-fps",
         default="240",
         help="Integer target FPS, or 'source' to use probed source FPS.",
-    )
-    parser.add_argument("--present-mode-policy", default="")
-    parser.add_argument("--wait-after-present", action="store_true")
-    parser.add_argument("--audio-clock-probe", action="store_true")
-    parser.add_argument(
-        "--audio-output",
-        default="clock-only",
-        choices=["clock-only", "auto"],
-        help="Audio output mode when --audio-clock-probe is enabled.",
-    )
-    parser.add_argument(
-        "--release-frame-after-render-fence",
-        action="store_true",
-        help="Set GILDER_FFMPEG_VULKAN_HWDECODE_RELEASE_FRAME_AFTER_RENDER_FENCE=1.",
     )
     parser.add_argument("--sample-interval", type=float, default=0.1)
     parser.add_argument(
@@ -437,10 +382,6 @@ def run_case(
         str(case.source),
         "--video-codec",
         case.probe.codec_cli,
-        "--width",
-        str(case.probe.width),
-        "--height",
-        str(case.probe.height),
         "--target-fps",
         str(case.target_fps),
         "--playback-frames",
@@ -452,20 +393,10 @@ def run_case(
     ]
     if args.output_name:
         cmd.extend(["--output-name", args.output_name])
-    if args.audio_clock_probe:
-        cmd.append("--audio-clock-probe")
-    if args.audio_clock_probe or args.audio_output != "clock-only":
-        cmd.extend(["--audio-output", args.audio_output])
 
     env = os.environ.copy()
     env["WAYLAND_DISPLAY"] = args.display
     env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-    if args.present_mode_policy and args.present_mode_policy != "default":
-        env["GILDER_VULKAN_PRESENT_MODE_POLICY"] = args.present_mode_policy
-    if args.wait_after_present:
-        env["GILDER_VULKAN_PRESENT_WAIT_AFTER_PRESENT"] = "1"
-    if args.release_frame_after_render_fence:
-        env["GILDER_FFMPEG_VULKAN_HWDECODE_RELEASE_FRAME_AFTER_RENDER_FENCE"] = "1"
 
     samples: list[dict[str, Any]] = []
     with telemetry_path.open("w") as stdout, stderr_path.open("w") as stderr, dgop_path.open(
@@ -525,22 +456,25 @@ def run_case(
     cpu = aggregate_cpu(samples)
     peak_smaps = parse_smaps_rollup(peak_rollup_path)
     telemetry = read_json(telemetry_path)
-    decoder = telemetry.get("decoder") or {}
     surface_host = telemetry.get("surface_host") or {}
-    decoder_coded_extent = list_value(decoder.get("coded_extent"))
     surface_buffer_size = list_value(surface_host.get("buffer_size"))
-    codec_host_bytes = int_value(decoder.get("inferred_codec_resolution_scaled_host_bytes"))
-    codec_host_kb = bytes_to_kb(codec_host_bytes)
-    seq = telemetry.get("decoded_image_present_sequence") or {}
-    audio = telemetry.get("audio_clock") or {}
-    present_handoff = seq.get("present_handoff") or {}
-    swapchain = (telemetry.get("device") or {}).get("swapchain") or {}
+    surface_extent = list_value(telemetry.get("surface_extent"))
+    decoded_frame_extent = list_value(telemetry.get("decoded_frame_extent"))
     if not telemetry:
         status = 1
         matrix_status = "missing-runtime-json"
     elif not (
-        seq.get("presented_frame_count") == telemetry.get("requested_present_frame_count")
+        telemetry.get("binding") == "vulkan-renderer"
+        and telemetry.get("route") == "renderer-owned-ffmpeg-vulkan-direct-surface"
+        and int_value(telemetry.get("requested_present_frame_count"))
+        == case.playback_frames
+        and telemetry.get("frames_presented")
+        == telemetry.get("requested_present_frame_count")
+        and telemetry.get("descriptor_heap_only") is True
         and telemetry.get("decoded_image_zero_copy_presented") is True
+        and bool(telemetry.get("zero_copy_scope"))
+        and telemetry.get("present_mode") == "fifo-latest-ready"
+        and telemetry.get("pacing") == "strict-decoded-pts-duration"
     ):
         status = 1
         matrix_status = "failed-zero-copy-present-contract"
@@ -563,70 +497,36 @@ def run_case(
         "source_bit_rate": case.probe.bit_rate,
         "source_nb_frames": case.probe.nb_frames,
         "source_duration_seconds": case.probe.duration_seconds,
-        "audio_clock_probe_requested": telemetry.get(
-            "audio_clock_probe_requested", args.audio_clock_probe
-        ),
-        "audio_output_mode": telemetry.get("audio_output_mode", args.audio_output),
-        "audio_stream_found": audio.get("audio_stream_found", False),
-        "audio_stream_error": audio.get("audio_stream_error", ""),
-        "audio_master_clock_enabled": telemetry.get("audio_master_clock_enabled", False),
-        "audio_master_clock_start_ns": telemetry.get("audio_master_clock_start_ns", ""),
-        "audio_video_master_clock_ready": audio.get("video_master_clock_ready", False),
-        "audio_playback_target_reached": audio.get("playback_target_reached", False),
-        "audio_playback_coverage_percent": audio.get("playback_coverage_percent", 0),
-        "audio_output_backend": audio.get("audio_output_backend", ""),
-        "audio_output_xrun_count": audio.get("audio_output_xrun_count", 0),
-        "surface_host_binding": surface_host.get("binding", ""),
-        "surface_host_platform_backend": surface_host.get("platform_backend", ""),
-        "surface_host_event_loop_backend": surface_host.get("event_loop_backend", ""),
-        "surface_host_wait_configure_roundtrips": int_value(
-            surface_host.get("wait_configure_roundtrips")
-        ),
+        "presentation_codec": telemetry.get("codec", ""),
         "surface_host_buffer_width": int_at(surface_buffer_size, 0),
         "surface_host_buffer_height": int_at(surface_buffer_size, 1),
-        "decoder_codec": decoder.get("codec", ""),
-        "decoder_name": decoder.get("decoder_name", ""),
-        "coded_width": int_at(decoder_coded_extent, 0),
-        "coded_height": int_at(decoder_coded_extent, 1),
-        "decoder_thread_count": int_value(decoder.get("thread_count")),
-        "decoder_thread_type": int_value(decoder.get("thread_type")),
-        "decoder_active_thread_type": int_value(decoder.get("active_thread_type")),
-        "decoder_extra_hw_frames": int_value(decoder.get("extra_hw_frames")),
-        "decoder_hw_frames_initial_pool_size": int_value(
-            decoder.get("hw_frames_initial_pool_size")
-        ),
-        "decoder_low_delay_flag": decoder.get("low_delay_flag", False),
-        "decoder_fast_flag": decoder.get("fast_flag", False),
-        "decoder_has_b_frames": int_value(decoder.get("has_b_frames")),
-        "decoder_codec_delay": int_value(decoder.get("codec_delay")),
-        "decoder_h264_enable_er": int_value(decoder.get("h264_enable_er")),
-        "decoder_max_packet_size_bytes": int_value(decoder.get("max_packet_size_bytes")),
-        "inferred_min_ffmpeg_slice_buffer_slot_bytes": int_value(
-            decoder.get("inferred_min_ffmpeg_slice_buffer_slot_bytes")
-        ),
-        "inferred_min_ffmpeg_slice_buffer_slot_kb": bytes_to_kb(
-            int_value(decoder.get("inferred_min_ffmpeg_slice_buffer_slot_bytes"))
-        ),
-        "codec_host_memory_model": decoder.get("codec_host_memory_model", ""),
-        "inferred_codec_resolution_scaled_host_bytes": codec_host_bytes,
-        "inferred_codec_resolution_scaled_host_kb": codec_host_kb,
-        "inferred_h264_refstruct_min_three_picture_bytes": int_value(
-            decoder.get("inferred_h264_refstruct_min_three_picture_bytes")
-        ),
-        "inferred_hevc_refstruct_min_three_picture_bytes": int_value(
-            decoder.get("inferred_hevc_refstruct_min_three_picture_bytes")
-        ),
-        "inferred_hevc_layer_tables_bytes": int_value(
-            decoder.get("inferred_hevc_layer_tables_bytes")
-        ),
+        "surface_width": int_at(surface_extent, 0),
+        "surface_height": int_at(surface_extent, 1),
+        "binding": telemetry.get("binding", ""),
+        "route": telemetry.get("route", ""),
+        "decoded_frame_format": telemetry.get("decoded_frame_format", ""),
+        "decoded_frame_width": int_at(decoded_frame_extent, 0),
+        "decoded_frame_height": int_at(decoded_frame_extent, 1),
         "target_fps": case.target_fps,
         "playback_frames": case.playback_frames,
+        "requested_present_frame_count": int_value(
+            telemetry.get("requested_present_frame_count")
+        ),
+        "frames_presented": int_value(telemetry.get("frames_presented")),
+        "decoded_frame_count": int_value(telemetry.get("decoded_frame_count")),
+        "repeated_presentation_count": int_value(
+            telemetry.get("repeated_presentation_count")
+        ),
+        "video_loop_index": int_value(telemetry.get("video_loop_index")),
+        "frame_slot_count": int_value(telemetry.get("frame_slot_count")),
+        "pacing": telemetry.get("pacing", ""),
+        "descriptor_heap_only": telemetry.get("descriptor_heap_only", False),
+        "decoded_image_zero_copy_presented": telemetry.get(
+            "decoded_image_zero_copy_presented", False
+        ),
+        "zero_copy_scope": telemetry.get("zero_copy_scope", ""),
+        "present_mode": telemetry.get("present_mode", "unknown"),
         "max_memory_kb": memory["max_memory_kb"],
-        "max_memory_minus_codec_resolution_scaled_host_kb": (
-            memory["max_memory_kb"] - codec_host_kb
-        )
-        if memory["max_memory_kb"] > 0
-        else 0,
         "last_memory_kb": memory["last_memory_kb"],
         "memory_calculation": memory["memory_calculation"],
         "memory_sample_count": memory["memory_sample_count"],
@@ -647,47 +547,8 @@ def run_case(
         )
         if peak_smaps.get("Pss_Dirty", 0) > 0 and memory["max_memory_kb"] > 0
         else 0,
-        "average_present_fps": seq.get("average_present_fps", 0),
-        "average_present_teardown_inclusive_fps": seq.get(
-            "average_present_teardown_inclusive_fps", 0
-        ),
-        "presented_frame_count": seq.get("presented_frame_count", 0),
-        "all_zero_copy_presented": seq.get("all_zero_copy_presented", False),
-        "present_mode": swapchain.get("present_mode", "unknown"),
-        "present_delta_over_6250us_count": seq.get("present_delta_over_6250us_count", 0),
-        "present_delta_over_8334us_count": seq.get("present_delta_over_8334us_count", 0),
-        "frame_sleep_count": seq.get("frame_sleep_count", 0),
-        "total_pacing_sleep_micros": seq.get("total_pacing_sleep_micros", 0),
-        "present_sleep_guard_micros": seq.get("present_sleep_guard_micros", 0),
-        "present_spin_guard_micros": seq.get("present_spin_guard_micros", 0),
-        "present_handoff_route": present_handoff.get("route", ""),
-        "present_handoff_capacity_frames": present_handoff.get("capacity_frames", 0),
-        "present_handoff_peak_depth": present_handoff.get("peak_depth", 0),
-        "ffmpeg_retained_avframe_count": seq.get("ffmpeg_retained_avframe_count", 0),
-        "ffmpeg_retained_avframe_peak_count": seq.get(
-            "ffmpeg_retained_avframe_peak_count", 0
-        ),
-        "descriptor_sampler_cache_entry_count": seq.get(
-            "descriptor_sampler_cache_entry_count", 0
-        ),
-        "descriptor_sampler_cache_peak_entry_count": seq.get(
-            "descriptor_sampler_cache_peak_entry_count", 0
-        ),
-        "descriptor_sampler_cache_rewrite_count": seq.get(
-            "descriptor_sampler_cache_rewrite_count", 0
-        ),
-        "descriptor_sampler_cache_recreate_count": seq.get(
-            "descriptor_sampler_cache_recreate_count", 0
-        ),
-        "descriptor_sampler_cache_resource_heap_kb": bytes_to_kb(
-            int_value(seq.get("descriptor_sampler_cache_resource_heap_bytes"))
-        ),
-        "descriptor_sampler_cache_sampler_heap_kb": bytes_to_kb(
-            int_value(seq.get("descriptor_sampler_cache_sampler_heap_bytes"))
-        ),
-        "descriptor_sampler_cache_total_heap_kb": bytes_to_kb(
-            int_value(seq.get("descriptor_sampler_cache_total_heap_bytes"))
-        ),
+        "runtime_elapsed_ms": int_value(telemetry.get("runtime_elapsed_ms")),
+        "average_present_fps": telemetry.get("average_present_fps", 0),
         "telemetry": str(telemetry_path),
     }
     summary = "\n".join(f"{key}: {value}" for key, value in row.items())
@@ -854,10 +715,6 @@ def float_value(value: Any) -> float:
         return float(value or 0.0)
     except (TypeError, ValueError):
         return 0.0
-
-
-def bytes_to_kb(value: int) -> int:
-    return (max(0, value) + 1023) // 1024
 
 
 def copy_proc_file(source: Path, dest: Path, line_limit: int) -> None:

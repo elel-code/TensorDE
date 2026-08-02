@@ -1,7 +1,7 @@
 use super::super::*;
 
 #[test]
-fn fused_eye_draw_owns_both_contiguous_material_visibility_stages() {
+fn authored_puppet_eye_effects_reject_final_draw_fusion() {
     let effect_passes = [
         (
             17,
@@ -45,6 +45,7 @@ fn fused_eye_draw_owns_both_contiguous_material_visibility_stages() {
         base_material_blending: Some("translucent".to_owned()),
         base_texture_slots: vec![0],
         base_pass_constants: Vec::new(),
+        color_blend_mode: 0,
         framebuffer_snapshot: None,
         final_scene_blend: SceneBlendMode::Alpha,
         static_black_output: false,
@@ -53,7 +54,6 @@ fn fused_eye_draw_owns_both_contiguous_material_visibility_stages() {
         waterwaves_uv_field_material_index: None,
         waterwaves_direct_material: None,
         foliage_ripple_material: None,
-        ripple_flow_material_indices: None,
         final_effect_material: Some(WeFinalEffectMaterial {
             material_index: 9,
             shader: "we/puppet-iris-waterripple-final".to_owned(),
@@ -66,11 +66,107 @@ fn fused_eye_draw_owns_both_contiguous_material_visibility_stages() {
         effect_passes,
     });
 
-    assert_eq!(graph.passes.len(), 1);
+    assert_eq!(graph.passes.len(), 4);
+    assert_eq!(
+        graph.passes[0].draw_primitive,
+        RenderPassDrawPrimitive::ObjectUvSupportQuad
+    );
+    assert_eq!(
+        graph.passes[1].effect_visibility,
+        RenderPassEffectVisibility::passthrough(17, 1)
+    );
+    assert_eq!(
+        graph.passes[2].effect_visibility,
+        RenderPassEffectVisibility::passthrough(18, 1)
+    );
+    assert_eq!(
+        graph.passes[3].shader.as_deref(),
+        Some("we/puppet-effect-composite")
+    );
+}
+
+#[test]
+fn waterripple_keeps_rgba8_object_source_prepass_before_final_composite() {
+    let graph = we_image_graph(&WeImageGraphContract {
+        object_index: 3,
+        base_material_index: Some(1),
+        base_shader: Some("genericimage4".to_owned()),
+        base_material_blending: Some("translucent".to_owned()),
+        base_texture_slots: vec![0],
+        base_pass_constants: Vec::new(),
+        color_blend_mode: 0,
+        framebuffer_snapshot: None,
+        final_scene_blend: SceneBlendMode::Alpha,
+        static_black_output: false,
+        effects_in_authored_texture_space: true,
+        puppet_skinning_after_effects: false,
+        waterwaves_uv_field_material_index: None,
+        waterwaves_direct_material: None,
+        foliage_ripple_material: None,
+        final_effect_material: Some(WeFinalEffectMaterial {
+            material_index: 9,
+            shader: "we/image-waterripple-final".to_owned(),
+            draw_primitive: RenderPassDrawPrimitive::ObjectMesh,
+            effect_stage_index: 0,
+            effect_stage_count: 1,
+            prepass: Some(WeFinalEffectPrepass {
+                material_index: 1,
+                shader: "we/image-effect-source".to_owned(),
+                effect_stage_index: 0,
+                input: WeFinalEffectPrepassInput::ObjectSource,
+            }),
+            intermediate: None,
+        }),
+        effect_passes: vec![WeEffectPassContract {
+            object_index: 3,
+            effect_binding_start: 17,
+            effect_binding_count: 1,
+            runtime_visibility: true,
+            material_index: Some(4),
+            effect_file: "effects/waterripple/effect.json".to_owned(),
+            pass_index: 0,
+            command: None,
+            shader: Some("effects/waterripple__SLOTS_5".to_owned()),
+            source: None,
+            target: None,
+            binds: [(0, "previous".to_owned()), (2, "texture".to_owned())]
+                .into_iter()
+                .collect(),
+            pass_constants: Vec::new(),
+            material_blending: Some("normal".to_owned()),
+            depthtest: None,
+            depthwrite: None,
+            cullmode: None,
+            combos: BTreeMap::new(),
+        }],
+    });
+
+    assert_eq!(graph.passes.len(), 2);
+    assert_eq!(graph.passes[0].role, RenderPassRole::ObjectLocalSource);
+    assert_eq!(
+        graph.passes[0].draw_primitive,
+        RenderPassDrawPrimitive::ObjectUvSupportQuad
+    );
+    assert_eq!(graph.passes[0].target, RenderTargetRole::ImageLocalMain);
+    assert_eq!(graph.passes[0].target_format.as_deref(), Some("rgba8"));
+    assert_eq!(
+        graph.passes[0].bindings,
+        vec![TextureBindingRole::SourceTexture]
+    );
     assert_eq!(
         graph.passes[0].effect_visibility,
-        RenderPassEffectVisibility::material_stages(17, 2)
+        RenderPassEffectVisibility::NONE
     );
+    assert_eq!(graph.passes[1].role, RenderPassRole::SceneComposite);
+    assert_eq!(
+        graph.passes[1].bindings,
+        vec![TextureBindingRole::PreviousGraphTarget { slot: 0 }]
+    );
+    assert_eq!(
+        graph.passes[1].effect_visibility,
+        RenderPassEffectVisibility::material_stages(17, 1)
+    );
+    assert_eq!(graph.passes[1].state.color_write_mask, ColorWriteMask::Rgb);
 }
 
 #[test]
@@ -126,6 +222,7 @@ fn framebuffer_water_graph_keeps_prepass_and_final_visibility_independent() {
         base_material_blending: Some("translucent".to_owned()),
         base_texture_slots: vec![0],
         base_pass_constants: Vec::new(),
+        color_blend_mode: 0,
         framebuffer_snapshot: Some(WeFramebufferSnapshotContract {
             target_name: "_rt_FullFrameBuffer".to_owned(),
             texture_slot: 0,
@@ -139,7 +236,6 @@ fn framebuffer_water_graph_keeps_prepass_and_final_visibility_independent() {
         waterwaves_uv_field_material_index: None,
         waterwaves_direct_material: None,
         foliage_ripple_material: None,
-        ripple_flow_material_indices: None,
         final_effect_material: Some(WeFinalEffectMaterial {
             material_index: 9,
             shader: "we/framebuffer-water-quantized-shake-final".to_owned(),
@@ -150,6 +246,7 @@ fn framebuffer_water_graph_keeps_prepass_and_final_visibility_independent() {
                 material_index: 8,
                 shader: "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_QUANTIZED_OVERLAY_1".to_owned(),
                 effect_stage_index: 0,
+                input: WeFinalEffectPrepassInput::FramebufferSnapshot,
             }),
             intermediate: Some(WeFinalEffectIntermediate {
                 material_index: 10,

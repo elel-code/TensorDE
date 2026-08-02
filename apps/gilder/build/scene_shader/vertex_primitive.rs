@@ -10,6 +10,7 @@ pub(crate) fn scene_shader_vertex_primitive(spec: SceneShaderSpec) -> &'static s
         MeshFinalEffect if spec.key == "we/framebuffer-water-quantized-water-opacity" => {
             "FullscreenTriangle"
         }
+        MeshImageEffectSource => "ObjectUvSupportQuad",
         MeshObjectComposite
         | MeshUtilityComposite
         | EffectWaterWavesUvField
@@ -21,6 +22,7 @@ pub(crate) fn scene_shader_vertex_primitive(spec: SceneShaderSpec) -> &'static s
             "FullscreenTriangle"
         }
         MeshGenericImage4
+        | MeshSceneColorBlend
         | MeshDynamicText
         | MeshGenericImage4PuppetSkinning
         | MeshColor
@@ -32,9 +34,7 @@ pub(crate) fn scene_shader_vertex_primitive(spec: SceneShaderSpec) -> &'static s
         | MeshClippingMaskImage4
         | MeshClippingMaskImage4PuppetSkinning
         | MeshComposelayer
-        | MeshImageEffectSource
         | MeshImageEffectComposite
-        | MeshPuppetEffectSource
         | MeshPuppetEffectComposite
         | MeshImageWaterWavesComposite
         | MeshImageFoliageRippleComposite

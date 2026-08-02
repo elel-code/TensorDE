@@ -3,7 +3,7 @@
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use super::clock::{native_vulkan_audio_clear_spectrum64, native_vulkan_audio_publish_spectrum64};
+use super::event_source::{clear_published_audio_spectrum64, publish_audio_spectrum64};
 use super::spectrum::{DEFAULT_INPUT_VOLUME, PcmSpectrumProducer};
 
 const MONITOR_SAMPLE_RATE: u32 = 48_000;
@@ -114,7 +114,7 @@ impl NativeVulkanSystemAudioMonitor {
                 .as_mut()
                 .and_then(|producer| producer.push_interleaved(&self.pcm[..sample_count as usize]))
             {
-                native_vulkan_audio_publish_spectrum64(spectrum);
+                publish_audio_spectrum64(spectrum);
                 self.published_spectrum = true;
                 SYSTEM_AUDIO_MONITOR_STATE.store(MONITOR_READY, Ordering::Release);
             }
@@ -131,7 +131,7 @@ impl Drop for NativeVulkanSystemAudioMonitor {
             unsafe { gilder_system_audio_monitor_free(&mut raw) };
         }
         if self.published_spectrum {
-            native_vulkan_audio_clear_spectrum64();
+            clear_published_audio_spectrum64();
         }
         SYSTEM_AUDIO_MONITOR_STATE.store(MONITOR_NOT_REQUESTED, Ordering::Release);
     }

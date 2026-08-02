@@ -1,15 +1,12 @@
-//! Typed two-stage lowering for authored-texture water-ripple then water-flow chains.
+//! Typed authored pass preservation for terminal water-flow chains.
 
 use super::{WeEffectPassContract, WeImageGraphContract};
 use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
-    PassState, RenderGraph, RenderPassDrawPrimitive, RenderPassEffectVisibility, RenderPassNode,
-    RenderPassRole, RenderTargetRole, TextureBindingRole,
+    ColorWriteMask, PassState, PipelineBlendMode, RenderGraph, RenderPassDrawPrimitive,
+    RenderPassEffectVisibility, RenderPassNode, RenderPassRole, RenderTargetRole,
+    TextureBindingRole,
 };
-
-const RIPPLE_SOURCE_SHADER: &str = "we/image-ripple-source";
-const FLOW_COMPOSITE_SHADER: &str = "we/image-ripple-flow-composite";
-const FLOW_MULTIPLY_COMPOSITE_SHADER: &str = "we/image-ripple-flow-multiply-composite";
 
 pub(super) fn is_compatible(contract: &WeImageGraphContract) -> bool {
     contract.effects_in_authored_texture_space
@@ -21,73 +18,84 @@ pub(super) fn is_compatible(contract: &WeImageGraphContract) -> bool {
             .as_deref()
             .is_some_and(is_generic_image_shader)
         && contract.base_texture_slots.as_slice() == [0]
-        && contract.ripple_flow_material_indices.is_some()
         && are_compatible_effect_passes(&contract.effect_passes)
 }
 
 pub(super) fn are_compatible_effect_passes(effects: &[WeEffectPassContract]) -> bool {
-    effects.len() == 2 && compatible_ripple(&effects[0]) && compatible_flow(&effects[1])
+    match effects {
+        [flow] => compatible_flow(flow),
+        [ripple, flow] => compatible_ripple(ripple) && compatible_flow(flow),
+        _ => false,
+    }
 }
 
-pub(super) fn append_two_stage_composite(graph: &mut RenderGraph, contract: &WeImageGraphContract) {
-    let ripple = &contract.effect_passes[0];
-    let materials = contract
-        .ripple_flow_material_indices
-        .expect("compatible ripple/flow graph has typed materials");
+pub(super) fn append_authored_terminal_flow_chain(
+    graph: &mut RenderGraph,
+    contract: &WeImageGraphContract,
+) {
+    let ripple = (contract.effect_passes.len() == 2).then(|| &contract.effect_passes[0]);
+    let flow = contract
+        .effect_passes
+        .last()
+        .expect("compatible terminal flow graph has a flow pass");
     graph.passes.push(RenderPassNode {
         id: 0,
-        role: RenderPassRole::EffectMaterial,
-        draw_primitive: RenderPassDrawPrimitive::FullscreenTriangle,
+        role: RenderPassRole::ObjectLocalSource,
+        draw_primitive: RenderPassDrawPrimitive::ObjectMesh,
         object_index: Some(contract.object_index),
-        material_index: Some(materials.ripple_source),
-        pass_index: ripple.pass_index,
-        shader: Some(RIPPLE_SOURCE_SHADER.to_owned()),
+        material_index: contract.base_material_index,
+        pass_index: 0,
+        shader: contract.base_shader.clone(),
         target: RenderTargetRole::ImageLocalMain,
         target_name: None,
         target_extent: None,
-        target_format: None,
-        bindings: Vec::new(),
-        effect_visibility: super::single_effect_visibility(
-            ripple,
-            RenderPassEffectVisibility::material_stages,
-        ),
+        target_format: Some("rgba8".to_owned()),
+        bindings: std::iter::once(TextureBindingRole::SourceTexture)
+            .chain(
+                contract
+                    .base_texture_slots
+                    .iter()
+                    .copied()
+                    .filter(|slot| *slot != 0)
+                    .map(|slot| TextureBindingRole::TextureSlot { slot }),
+            )
+            .chain(
+                contract
+                    .base_pass_constants
+                    .iter()
+                    .cloned()
+                    .map(|name| TextureBindingRole::PassConstant { name }),
+            )
+            .collect(),
+        effect_visibility: RenderPassEffectVisibility::NONE,
         state: PassState {
-            pipeline_blend: super::base_pipeline_blend(contract),
-            scene_blend: contract.final_scene_blend,
+            pipeline_blend: PipelineBlendMode::Normal,
+            scene_blend: SceneBlendMode::Normal,
             ..PassState::default()
         },
     });
-    graph.passes.push(RenderPassNode {
-        id: 1,
-        role: RenderPassRole::SceneComposite,
-        draw_primitive: RenderPassDrawPrimitive::ObjectMesh,
-        object_index: Some(contract.object_index),
-        material_index: Some(materials.flow_composite),
-        pass_index: 1,
-        shader: Some(flow_composite_shader(contract.final_scene_blend).to_owned()),
-        target: RenderTargetRole::SceneColor,
-        target_name: None,
-        target_extent: None,
-        target_format: None,
-        bindings: vec![TextureBindingRole::PreviousGraphTarget { slot: 0 }],
-        effect_visibility: super::single_effect_visibility(
-            &contract.effect_passes[1],
-            RenderPassEffectVisibility::material_stages,
-        ),
-        state: PassState {
-            pipeline_blend: super::final_pipeline_blend(contract),
-            scene_blend: contract.final_scene_blend,
-            ..PassState::default()
-        },
-    });
-}
-
-fn flow_composite_shader(scene_blend: SceneBlendMode) -> &'static str {
-    if scene_blend == SceneBlendMode::Multiply {
-        FLOW_MULTIPLY_COMPOSITE_SHADER
-    } else {
-        FLOW_COMPOSITE_SHADER
+    if let Some(ripple) = ripple {
+        let mut ripple_node = super::we_effect_pass_node(1, ripple, contract.final_scene_blend);
+        ripple_node.role = RenderPassRole::ObjectLocalSource;
+        ripple_node.draw_primitive = RenderPassDrawPrimitive::ObjectMesh;
+        ripple_node.target = RenderTargetRole::ImageLocalSub;
+        ripple_node.target_name = None;
+        ripple_node.target_format = Some("rgba8".to_owned());
+        ripple_node.state.pipeline_blend = PipelineBlendMode::Normal;
+        ripple_node.state.scene_blend = SceneBlendMode::Normal;
+        graph.passes.push(ripple_node);
     }
+
+    let flow_id = graph.passes.len().min(u32::MAX as usize) as u32;
+    let mut flow_node = super::we_effect_pass_node(flow_id, flow, contract.final_scene_blend);
+    flow_node.role = RenderPassRole::SceneComposite;
+    flow_node.draw_primitive = RenderPassDrawPrimitive::ObjectCompositeMesh;
+    flow_node.target = RenderTargetRole::SceneColor;
+    flow_node.target_name = None;
+    flow_node.target_format = None;
+    flow_node.state.pipeline_blend = super::final_pipeline_blend(contract);
+    flow_node.state.color_write_mask = ColorWriteMask::Rgb;
+    graph.passes.push(flow_node);
 }
 
 fn compatible_ripple(pass: &WeEffectPassContract) -> bool {
@@ -173,13 +181,11 @@ fn combo_disabled(pass: &WeEffectPassContract, name: &str) -> bool {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::super::WeRippleFlowMaterialIndices;
     use super::*;
-    use crate::core::SceneBlendMode;
     use crate::engine::render_graph::RenderPassEffectVisibilityPolicy;
 
     #[test]
-    fn compatible_chain_removes_base_and_terminal_copy_passes() {
+    fn compatible_chain_preserves_three_authored_draws_and_two_local_targets() {
         let contract = WeImageGraphContract {
             object_index: 4,
             base_material_index: Some(2),
@@ -187,6 +193,7 @@ mod tests {
             base_material_blending: Some("translucent".to_owned()),
             base_texture_slots: vec![0],
             base_pass_constants: Vec::new(),
+            color_blend_mode: 0,
             framebuffer_snapshot: None,
             final_scene_blend: SceneBlendMode::Alpha,
             static_black_output: false,
@@ -195,40 +202,108 @@ mod tests {
             waterwaves_uv_field_material_index: None,
             waterwaves_direct_material: None,
             foliage_ripple_material: None,
-            ripple_flow_material_indices: Some(WeRippleFlowMaterialIndices {
-                ripple_source: 7,
-                flow_composite: 8,
-            }),
             final_effect_material: None,
             effect_passes: vec![ripple(), flow()],
         };
 
         let graph = super::super::we_image_graph(&contract);
 
-        assert_eq!(graph.passes.len(), 2);
+        assert_eq!(graph.passes.len(), 3);
+        assert_eq!(graph.passes[0].shader.as_deref(), Some("genericimage2"));
+        assert_eq!(graph.passes[0].role, RenderPassRole::ObjectLocalSource);
         assert_eq!(
-            graph.passes[0].shader.as_deref(),
-            Some(RIPPLE_SOURCE_SHADER)
+            graph.passes[0].draw_primitive,
+            RenderPassDrawPrimitive::ObjectMesh
         );
         assert_eq!(graph.passes[0].target, RenderTargetRole::ImageLocalMain);
         assert_eq!(
-            graph.passes[1].shader.as_deref(),
-            Some(FLOW_COMPOSITE_SHADER)
+            graph.passes[0].state.pipeline_blend,
+            PipelineBlendMode::Normal
         );
-        assert_eq!(graph.passes[1].target, RenderTargetRole::SceneColor);
-        assert_eq!(graph.passes[1].material_index, Some(8));
         assert_eq!(
-            graph.passes[0].effect_visibility.policy,
-            RenderPassEffectVisibilityPolicy::MaterialStages
+            graph.passes[1].shader.as_deref(),
+            Some("effects/waterripple__SLOTS_5")
         );
-        assert_eq!(graph.passes[0].effect_visibility.binding_start, 5);
-        assert_eq!(graph.passes[0].effect_visibility.binding_count, 1);
+        assert_eq!(graph.passes[1].role, RenderPassRole::ObjectLocalSource);
+        assert_eq!(
+            graph.passes[1].draw_primitive,
+            RenderPassDrawPrimitive::ObjectMesh
+        );
+        assert_eq!(graph.passes[1].target, RenderTargetRole::ImageLocalSub);
+        assert_eq!(graph.passes[1].material_index, Some(5));
+        assert_eq!(
+            graph.passes[2].shader.as_deref(),
+            Some("effects/waterflow__SLOTS_7")
+        );
+        assert_eq!(graph.passes[2].role, RenderPassRole::SceneComposite);
+        assert_eq!(
+            graph.passes[2].draw_primitive,
+            RenderPassDrawPrimitive::ObjectCompositeMesh
+        );
+        assert_eq!(graph.passes[2].target, RenderTargetRole::SceneColor);
+        assert_eq!(graph.passes[2].material_index, Some(6));
+        assert_eq!(graph.passes[2].state.color_write_mask, ColorWriteMask::Rgb);
         assert_eq!(
             graph.passes[1].effect_visibility.policy,
-            RenderPassEffectVisibilityPolicy::MaterialStages
+            RenderPassEffectVisibilityPolicy::Passthrough
         );
-        assert_eq!(graph.passes[1].effect_visibility.binding_start, 6);
+        assert_eq!(graph.passes[1].effect_visibility.binding_start, 5);
         assert_eq!(graph.passes[1].effect_visibility.binding_count, 1);
+        assert_eq!(
+            graph.passes[2].effect_visibility.policy,
+            RenderPassEffectVisibilityPolicy::Passthrough
+        );
+        assert_eq!(graph.passes[2].effect_visibility.binding_start, 6);
+        assert_eq!(graph.passes[2].effect_visibility.binding_count, 1);
+    }
+
+    #[test]
+    fn lone_flow_preserves_local_source_and_authored_scene_composite() {
+        let contract = WeImageGraphContract {
+            object_index: 4,
+            base_material_index: Some(2),
+            base_shader: Some("genericimage4".to_owned()),
+            base_material_blending: Some("translucent".to_owned()),
+            base_texture_slots: vec![0],
+            base_pass_constants: Vec::new(),
+            color_blend_mode: 0,
+            framebuffer_snapshot: None,
+            final_scene_blend: SceneBlendMode::Alpha,
+            static_black_output: false,
+            effects_in_authored_texture_space: true,
+            puppet_skinning_after_effects: false,
+            waterwaves_uv_field_material_index: None,
+            waterwaves_direct_material: None,
+            foliage_ripple_material: None,
+            final_effect_material: None,
+            effect_passes: vec![flow()],
+        };
+
+        let graph = super::super::we_image_graph(&contract);
+
+        assert_eq!(graph.passes.len(), 2);
+        assert_eq!(graph.passes[0].role, RenderPassRole::ObjectLocalSource);
+        assert_eq!(graph.passes[0].shader.as_deref(), Some("genericimage4"));
+        assert_eq!(graph.passes[0].target, RenderTargetRole::ImageLocalMain);
+        assert_eq!(
+            graph.passes[0].draw_primitive,
+            RenderPassDrawPrimitive::ObjectMesh
+        );
+        assert_eq!(graph.passes[1].role, RenderPassRole::SceneComposite);
+        assert_eq!(
+            graph.passes[1].shader.as_deref(),
+            Some("effects/waterflow__SLOTS_7")
+        );
+        assert_eq!(graph.passes[1].target, RenderTargetRole::SceneColor);
+        assert_eq!(
+            graph.passes[1].draw_primitive,
+            RenderPassDrawPrimitive::ObjectCompositeMesh
+        );
+        assert_eq!(graph.passes[1].state.color_write_mask, ColorWriteMask::Rgb);
+        assert_eq!(
+            graph.passes[1].effect_visibility.policy,
+            RenderPassEffectVisibilityPolicy::Passthrough
+        );
     }
 
     #[test]
@@ -236,45 +311,6 @@ mod tests {
         let mut effects = vec![ripple(), flow()];
         effects[1].binds.remove(&2);
         assert!(!are_compatible_effect_passes(&effects));
-    }
-
-    #[test]
-    fn multiply_chain_selects_the_premultiplied_fixed_blend_shader() {
-        let mut contract = WeImageGraphContract {
-            object_index: 4,
-            base_material_index: Some(2),
-            base_shader: Some("genericimage2".to_owned()),
-            base_material_blending: Some("translucent".to_owned()),
-            base_texture_slots: vec![0],
-            base_pass_constants: Vec::new(),
-            framebuffer_snapshot: None,
-            final_scene_blend: SceneBlendMode::Multiply,
-            static_black_output: false,
-            effects_in_authored_texture_space: true,
-            puppet_skinning_after_effects: false,
-            waterwaves_uv_field_material_index: None,
-            waterwaves_direct_material: None,
-            foliage_ripple_material: None,
-            ripple_flow_material_indices: Some(WeRippleFlowMaterialIndices {
-                ripple_source: 7,
-                flow_composite: 8,
-            }),
-            final_effect_material: None,
-            effect_passes: vec![ripple(), flow()],
-        };
-
-        let graph = super::super::we_image_graph(&contract);
-        assert_eq!(
-            graph.passes[1].shader.as_deref(),
-            Some(FLOW_MULTIPLY_COMPOSITE_SHADER)
-        );
-
-        contract.final_scene_blend = SceneBlendMode::Alpha;
-        let graph = super::super::we_image_graph(&contract);
-        assert_eq!(
-            graph.passes[1].shader.as_deref(),
-            Some(FLOW_COMPOSITE_SHADER)
-        );
     }
 
     fn ripple() -> WeEffectPassContract {

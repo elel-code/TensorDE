@@ -2,9 +2,9 @@
 
 Gilder 是面向 niri、Hyprland 等独立 compositor 的原生壁纸引擎。当前主线是：
 
-- FFmpeg 负责 demux/parser/packet 和 Vulkan 硬件解码；
-- Gilder/Vulkanalia 负责 `AV_PIX_FMT_VULKAN`/`AVVkFrame` 到 descriptor heap、渲染和
-  Wayland present；
+- Gilder 只提供 typed media source、codec requirement 与时钟策略；
+- `vulkan-renderer` 负责 FFmpeg demux/parser/packet、Vulkan 硬件解码、retained
+  `AV_PIX_FMT_VULKAN`/`AVVkFrame` plane lease、descriptor heap、渲染和 Wayland present；
 - scene 正在按 Godot 风格边界全面重写，WE 语义只以 `reverse-engineered/gilder/` 为准。
 
 ## 当前原则
@@ -29,9 +29,10 @@ Gilder 是面向 niri、Hyprland 等独立 compositor 的原生壁纸引擎。�
 - `src/bin/gilder-native-vulkan.rs`：原生 Vulkan 诊断入口。
 - `src/convert/we_ingest/`：WE project、scene.pkg、tex、material、effect、mdl 冷路径 ingest。
 - `src/engine/scene/`：新 scene engine ABI、binary、storage 和 RenderingServer 边界。
-- `src/renderer/native_vulkan/scene/`：native Vulkan scene descriptor heap/render graph 计划边界。
-- `src/renderer/native_vulkan/video/`：FFmpeg demux、Vulkan HW decode、pacing 和 evidence helper。
-- `src/renderer/native_vulkan/vulkan/`：Vulkanalia backend。
+- `src/renderer/native_vulkan/scene/`：typed scene descriptor heap/render graph 计划边界。
+- `src/renderer/native_vulkan/video/`：typed media source、PTS pacing 与 direct/scene plane binding。
+- `src/renderer/native_vulkan/vulkan/`：Gilder 的 typed scene policy/command-plan integration；
+  `vulkan-renderer` 是唯一 Vulkan owner。
 - `docs/gilder/gilder-scene-engine-architecture.md`：scene 全面重写架构。
 
 ## 常用命令
@@ -56,5 +57,8 @@ uv run python scripts/gilder/wallpaper_engine_workshop_download.py --item-id <id
 uv run python apps/gilder/packaging/build_dist.py
 ```
 
-性能证据必须包含足够长的采样窗口，并保留 `average_present_fps`、`presented_frame_count`、
-`all_zero_copy_presented`、dgop/smaps memory、descriptor heap telemetry 和 codec/source metadata。
+性能证据必须包含足够长的采样窗口，并保留 `binding`/`route`、
+`requested_present_frame_count`/`frames_presented`、`decoded_frame_count`、
+`repeated_presentation_count`、`video_loop_index`、`frame_slot_count`、`pacing`、
+`present_mode`、`decoded_image_zero_copy_presented`/`zero_copy_scope`、
+`runtime_elapsed_ms`/`average_present_fps`、dgop/smaps memory 和 codec/source metadata。

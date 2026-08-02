@@ -8,6 +8,8 @@ use crate::renderer::native_vulkan::scene::{
     BuiltinSceneParameterLayout, native_vulkan_scene_shader_for_key,
 };
 
+use super::super::shader_program::is_scene_audio_spectrum_uniform_name;
+
 pub(in crate::renderer::native_vulkan::vulkan::scene::runtime) fn scene_uses_audio_spectrum(
     storage: &SceneStorage,
     draws: &[SceneRenderingDeviceMeshDraw],
@@ -39,7 +41,7 @@ fn scene_owned_shader_uses_audio_spectrum(
         .flat_map(|buffer| storage.shader_uniform_buffer_members(buffer))
         .filter(|member| !member.material_parameter.is_some())
         .filter_map(|member| storage.string(member.name))
-        .any(|name| matches!(name, "g_AudioSpectrum64Left" | "g_AudioSpectrum64Right"))
+        .any(is_scene_audio_spectrum_uniform_name)
 }
 
 pub(super) fn material_uses_audio_spectrum(
@@ -92,7 +94,7 @@ mod tests {
                 "package/effects/audioline__SLOTS_1".to_owned(),
                 "main".to_owned(),
                 "GlobalParams".to_owned(),
-                "g_AudioSpectrum64Left".to_owned(),
+                "g_AudioSpectrum32Left".to_owned(),
             ],
             shader_programs: vec![SceneShaderProgramRecord {
                 program_key: SceneStringId(0),
@@ -117,7 +119,7 @@ mod tests {
             shader_uniform_buffers: vec![SceneShaderUniformBufferRecord {
                 name: SceneStringId(2),
                 register: 0,
-                byte_size: 1_012,
+                byte_size: 512,
                 member_start: 0,
                 member_count: 1,
             }],
@@ -125,11 +127,11 @@ mod tests {
                 name: SceneStringId(3),
                 material_parameter: SceneStringId::NONE,
                 byte_offset: 0,
-                byte_size: 1_012,
+                byte_size: 512,
                 scalar_type: SceneShaderScalarType::F32,
                 rows: 1,
                 columns: 1,
-                array_count: 64,
+                array_count: 32,
                 array_stride: 16,
                 matrix_stride: 0,
             }],

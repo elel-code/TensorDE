@@ -94,14 +94,7 @@ pub fn native_vulkan_scene_pipeline_cache_plan(
         .iter()
         .filter(|entry| entry.scene_owned_program_available)
         .count();
-    let missing_shader_keys = entries
-        .iter()
-        .filter(|entry| {
-            !entry.shader_catalog_available && !entry.scene_owned_program_available
-        })
-        .filter_map(|entry| storage.string(entry.shader_key))
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let missing_shader_keys = unresolved_draw_shader_keys(storage, &entries);
     let shader_programs = shader_programs_for_entries(storage, &entries);
 
     NativeVulkanScenePipelineCachePlan {
@@ -117,6 +110,21 @@ pub fn native_vulkan_scene_pipeline_cache_plan(
         cache_model: "pipeline-key-hash-cache",
         shader_catalog_source: "built-in-scene-shader-catalog",
     }
+}
+
+fn unresolved_draw_shader_keys(
+    storage: &SceneStorage,
+    entries: &[NativeVulkanScenePipelineCacheEntry],
+) -> Vec<String> {
+    entries
+        .iter()
+        .filter(|entry| entry.render_pass_count != 0)
+        .filter(|entry| {
+            !entry.shader_catalog_available && !entry.scene_owned_program_available
+        })
+        .filter_map(|entry| storage.string(entry.shader_key))
+        .map(str::to_owned)
+        .collect()
 }
 
 fn pipeline_entry_for_slice(
@@ -375,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_scene_owned_program_remains_unresolved() {
+    fn only_draw_reachable_incomplete_scene_owned_program_is_unresolved() {
         let storage = scene_owned_pipeline_storage(
             "workshop/example/effects/custom",
             false,
@@ -389,11 +397,15 @@ mod tests {
 
         assert_eq!(cache.shader_catalog_hit_count, 0);
         assert_eq!(cache.scene_owned_shader_hit_count, 0);
+        assert!(cache.missing_shader_keys.is_empty());
+        assert!(!cache.entries[0].scene_owned_program_available);
+
+        let mut reachable_entries = cache.entries.clone();
+        reachable_entries[0].render_pass_count = 1;
         assert_eq!(
-            cache.missing_shader_keys,
+            unresolved_draw_shader_keys(&storage, &reachable_entries),
             vec!["workshop/example/effects/custom".to_owned()]
         );
-        assert!(!cache.entries[0].scene_owned_program_available);
     }
 
     #[test]

@@ -12,7 +12,7 @@ use gilder::renderer::native_vulkan::{
 };
 use serde::Serialize;
 
-pub(super) const SCENE_BACKEND_PLAN_REPORT_VERSION: u32 = 9;
+pub(super) const SCENE_BACKEND_PLAN_REPORT_VERSION: u32 = 11;
 const SCENE_BACKEND_PLAN_UNIFORM_ALIGNMENT: u64 = 256;
 
 #[derive(Debug, Serialize)]
@@ -50,14 +50,19 @@ pub(super) struct SceneBackendPlanDrawVisibility {
 pub(super) fn scene_backend_plan_report<'a>(
     storage: &'a SceneStorage,
     semantic_frame: &'a ResolvedSemanticFrame,
+    surface_extent: Option<(u32, u32)>,
 ) -> Result<SceneBackendPlanReport<'a>, String> {
     let backend_plan =
         native_vulkan_scene_backend_plan_from_semantic_frame(storage, semantic_frame);
     let project = storage.project();
+    let output_extent = scene_backend_plan_output_extent(
+        [project.logical_width.max(1), project.logical_height.max(1)],
+        surface_extent,
+    );
     let scene_owned_uniform_arena = native_vulkan_scene_owned_uniform_arena_plan(
         storage,
         &backend_plan.rendering_device_graph,
-        [project.logical_width.max(1), project.logical_height.max(1)],
+        output_extent,
         SCENE_BACKEND_PLAN_UNIFORM_ALIGNMENT,
     )?;
     let checkpoint_draw_visibility = backend_plan
@@ -114,4 +119,28 @@ pub(super) fn scene_backend_plan_report<'a>(
         checkpoint_draw_visibility,
         scene_owned_uniform_arena,
     })
+}
+
+fn scene_backend_plan_output_extent(
+    authored_extent: [u32; 2],
+    surface_extent: Option<(u32, u32)>,
+) -> [u32; 2] {
+    surface_extent.map_or(authored_extent, |(width, height)| [width, height])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scene_backend_plan_output_extent;
+
+    #[test]
+    fn explicit_surface_extent_replaces_only_the_offline_output_extent() {
+        assert_eq!(
+            scene_backend_plan_output_extent([3440, 1440], Some((3856, 2199))),
+            [3856, 2199]
+        );
+        assert_eq!(
+            scene_backend_plan_output_extent([3440, 1440], None),
+            [3440, 1440]
+        );
+    }
 }

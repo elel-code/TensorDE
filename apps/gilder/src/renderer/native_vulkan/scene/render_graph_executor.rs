@@ -233,6 +233,8 @@ mod tests {
             material_sampled_bindings: Vec::new(),
             mesh_draws: vec![SceneRenderingDeviceMeshDraw {
                 primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+                projection_domain:
+                    crate::engine::scene::SceneRenderingDeviceProjectionDomain::Scene,
                 shader_key: crate::engine::scene::SceneStringId::NONE,
                 mesh_index: 0,
                 resolved_object_index: 0,
@@ -240,6 +242,7 @@ mod tests {
                 clip_transform: identity_clip_transform(),
                 effect_model_view_projection_matrix: identity_clip_transform(),
                 authored_source_extent: [0.0; 2],
+                uv_inset_texels: 0.0,
                 skinning_palette_start: crate::engine::scene::INVALID_OBJECT_ID,
                 skinning_palette_count: 0,
                 resolved_color: crate::engine::scene::SceneVec3 {
@@ -391,6 +394,8 @@ mod tests {
             material_sampled_bindings: Vec::new(),
             mesh_draws: vec![SceneRenderingDeviceMeshDraw {
                 primitive: SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+                projection_domain:
+                    crate::engine::scene::SceneRenderingDeviceProjectionDomain::Scene,
                 shader_key: crate::engine::scene::SceneStringId::NONE,
                 mesh_index: crate::engine::scene::INVALID_OBJECT_ID,
                 resolved_object_index: crate::engine::scene::INVALID_OBJECT_ID,
@@ -398,6 +403,7 @@ mod tests {
                 clip_transform: identity_clip_transform(),
                 effect_model_view_projection_matrix: identity_clip_transform(),
                 authored_source_extent: [0.0; 2],
+                uv_inset_texels: 0.0,
                 skinning_palette_start: crate::engine::scene::INVALID_OBJECT_ID,
                 skinning_palette_count: 0,
                 resolved_color: crate::engine::scene::SceneVec3 {

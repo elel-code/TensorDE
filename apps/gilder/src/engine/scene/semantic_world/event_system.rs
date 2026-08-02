@@ -12,9 +12,12 @@ pub(super) struct RetainedSceneEventSystem {
 }
 
 impl RetainedSceneEventSystem {
-    pub(super) fn from_world(world: &SceneSemanticWorld<'_>) -> Self {
+    pub(super) fn from_world(
+        world: &SceneSemanticWorld<'_>,
+        initial_frame: &ResolvedSemanticFrame,
+    ) -> Self {
         Self {
-            pointer_parallax: RetainedPointerParallaxSystem::from_world(world),
+            pointer_parallax: RetainedPointerParallaxSystem::from_world(world, initial_frame),
         }
     }
 
@@ -31,7 +34,7 @@ impl RetainedSceneEventSystem {
             .begin_frame(world, frame_delta_seconds, events);
     }
 
-    pub(super) fn finish_frame(&self, frame: &mut ResolvedSemanticFrame) {
+    pub(super) fn finish_frame(&mut self, frame: &mut ResolvedSemanticFrame) {
         self.pointer_parallax.apply_frame(frame);
     }
 }

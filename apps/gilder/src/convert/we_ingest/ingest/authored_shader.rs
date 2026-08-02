@@ -1,10 +1,11 @@
 //! Cold-compile package-owned Wallpaper Engine shaders into native heap SPIR-V.
 //!
-//! The runtime receives only the resulting words and compact binding ABI. GLSL,
-//! normalized Slang, compiler binaries, and validation tools stay in this formal
-//! conversion path.
+//! The runtime receives only native-Slang O2 words and a compact binding ABI.
+//! Package source, Rust specialization, compiler binaries, and validation
+//! tools remain in this cold conversion path.
 
 mod compiler_environment;
+mod native_preprocess;
 mod stage_io;
 mod uniform_metadata;
 
@@ -14,8 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use vulkan_renderer_build::{
-    DescriptorHeapBindingKind, GlslToSlangRequest, ShaderCompileRequest, ShaderContract,
-    ShaderIoDirection, ShaderScalarType, ShaderStage, SlangCompiler,
+    DescriptorHeapBindingKind, ShaderCompileRequest, ShaderContract, ShaderIoDirection,
+    ShaderScalarType, ShaderStage, SlangCompiler, lower_generated_stage_to_native_slang,
     lower_slang_bindings_to_descriptor_heap_at_offset, reflect_shader_interface,
 };
 
@@ -27,9 +28,8 @@ use crate::convert::we_ingest::ir::{
 
 use super::WeIngestError;
 use super::asset_source::WeAssetSource;
-use compiler_environment::{
-    compiler_definitions, inject_we_compiler_preamble, remove_unreferenced_frontend_declarations,
-};
+use compiler_environment::compiler_definitions;
+use native_preprocess::specialize_stage;
 use stage_io::normalize_stage_io_pair;
 use uniform_metadata::{ShaderUniformMetadata, parse_shader_uniform_metadata};
 
@@ -240,10 +240,17 @@ fn compile_program(
     let fragment_uniforms = parse_shader_uniform_metadata(&fragment)
         .map_err(|error| shader_error(&spec.program_key, "fragment", error))?;
     let definitions = compiler_definitions(spec, [&vertex, &fragment])?;
-    let [vertex, fragment] = normalize_stage_io_pair(&vertex, &fragment, &spec.program_key)?;
-    let vertex = inject_we_compiler_preamble(&vertex);
-    let fragment = inject_we_compiler_preamble(&fragment);
-    let include_directories = source.shader_include_directories(&spec.source_key);
+    let specialized_vertex =
+        specialize_stage(source, spec, ShaderStage::Vertex, &vertex, &definitions)?;
+    let specialized_fragment =
+        specialize_stage(source, spec, ShaderStage::Fragment, &fragment, &definitions)?;
+    let [vertex, fragment] = normalize_stage_io_pair(
+        &specialized_vertex,
+        &specialized_fragment,
+        &specialized_vertex,
+        &specialized_fragment,
+        &spec.program_key,
+    )?;
     let vertex = compile_stage(StageCompileInput {
         compiler,
         temporary,
@@ -252,8 +259,6 @@ fn compile_program(
         stage: ShaderStage::Vertex,
         ir_stage: WeIrShaderStage::Vertex,
         source: &vertex,
-        definitions: &definitions,
-        include_directories: &include_directories,
         push_base_bytes: 0,
         uniform_metadata: &vertex_uniforms,
     })?;
@@ -265,8 +270,6 @@ fn compile_program(
         stage: ShaderStage::Fragment,
         ir_stage: WeIrShaderStage::Fragment,
         source: &fragment,
-        definitions: &definitions,
-        include_directories: &include_directories,
         push_base_bytes: vertex.push_constant_bytes,
         uniform_metadata: &fragment_uniforms,
     })?;
@@ -297,8 +300,6 @@ struct StageCompileInput<'a> {
     stage: ShaderStage,
     ir_stage: WeIrShaderStage,
     source: &'a str,
-    definitions: &'a [(String, String)],
-    include_directories: &'a [PathBuf],
     push_base_bytes: u32,
     uniform_metadata: &'a ShaderUniformMetadata,
 }
@@ -306,61 +307,61 @@ struct StageCompileInput<'a> {
 fn compile_stage(input: StageCompileInput<'_>) -> Result<WeIrShaderProgram, WeIngestError> {
     let stage_name = input.stage.slang_name();
     let stem = format!("program-{}-{stage_name}", input.program_index);
-    let glsl_path = input.temporary.join(format!("{stem}.glsl"));
-    let normalized_path = input.temporary.join(format!("{stem}.normalized.slang"));
+    let source_path = input.temporary.join(format!("{stem}.source.slang"));
+    let direct_path = input.temporary.join(format!("{stem}.direct.slang"));
     let native_path = input.temporary.join(format!("{stem}.native.slang"));
     let spirv_path = input.temporary.join(format!("{stem}.spv"));
-    fs::write(&glsl_path, input.source).map_err(|error| {
+    fs::write(&source_path, input.source).map_err(|error| {
         shader_error(
             &input.spec.program_key,
             stage_name,
-            format!("failed to stage GLSL source: {error}"),
+            format!("failed to stage specialized source: {error}"),
         )
     })?;
-    let frontend_request = GlslToSlangRequest {
-        source: glsl_path.clone(),
-        entry_point: "main".to_owned(),
-        stage: input.stage,
-        output: normalized_path.clone(),
-        include_directories: input.include_directories.to_vec(),
-        definitions: input.definitions.to_vec(),
-        // WE follows the C preprocessor for undeclared #if identifiers (zero), reuses helper
-        // macro names across conditional functions, and specializes blend helpers until later
-        // returns are unreachable. Preserve those rules without promoting frontend diagnostics
-        // to hard failures; all later type, reflection and SPIR-V validation remains strict.
-        disabled_warnings: vec![15205, 15400, 30081, 41000],
-    };
-    let preprocessed = input
+    let direct = lower_generated_stage_to_native_slang(input.source, input.stage)
+        .map_err(|error| shader_error(&input.spec.program_key, stage_name, error))?;
+    fs::write(&direct_path, &direct).map_err(|error| {
+        shader_error(
+            &input.spec.program_key,
+            stage_name,
+            format!("failed to stage direct native Slang: {error}"),
+        )
+    })?;
+    let direct_reflection = input
         .compiler
-        .preprocess_glsl(&frontend_request)
-        .map_err(|error| shader_error(&input.spec.program_key, stage_name, error))?;
-    let specialized = remove_unreferenced_frontend_declarations(input.source, &preprocessed);
-    fs::write(&glsl_path, specialized).map_err(|error| {
-        shader_error(
-            &input.spec.program_key,
-            stage_name,
-            format!("failed to stage specialized GLSL source: {error}"),
+        .reflect_native_source(
+            &direct_path,
+            "main",
+            input.stage,
+            &input
+                .temporary
+                .join(format!("{stem}.direct-reflection.spv")),
         )
-    })?;
-    let frontend = input
-        .compiler
-        .transpile_glsl(&frontend_request)
         .map_err(|error| shader_error(&input.spec.program_key, stage_name, error))?;
-    let interface = reflect_shader_interface(&frontend.reflection, "main", input.stage)
+    if std::env::var_os("GILDER_DIAGNOSTIC_KEEP_AUTHORED_SHADER_SOURCES").is_some() {
+        let reflection_path = input
+            .temporary
+            .join(format!("{stem}.direct-reflection.json"));
+        let reflection = serde_json::to_vec_pretty(&direct_reflection).map_err(|error| {
+            shader_error(
+                &input.spec.program_key,
+                stage_name,
+                format!("failed to encode direct native reflection diagnostic: {error}"),
+            )
+        })?;
+        fs::write(&reflection_path, reflection).map_err(|error| {
+            shader_error(
+                &input.spec.program_key,
+                stage_name,
+                format!("failed to write direct native reflection diagnostic: {error}"),
+            )
+        })?;
+    }
+    let interface = reflect_shader_interface(&direct_reflection, "main", input.stage)
         .map_err(|error| shader_error(&input.spec.program_key, stage_name, error))?;
-    let normalized = fs::read_to_string(&normalized_path).map_err(|error| {
-        shader_error(
-            &input.spec.program_key,
-            stage_name,
-            format!("failed to read normalized Slang: {error}"),
-        )
-    })?;
-    let lowered = lower_slang_bindings_to_descriptor_heap_at_offset(
-        &normalized,
-        "main",
-        input.push_base_bytes,
-    )
-    .map_err(|error| shader_error(&input.spec.program_key, stage_name, error))?;
+    let lowered =
+        lower_slang_bindings_to_descriptor_heap_at_offset(&direct, "main", input.push_base_bytes)
+            .map_err(|error| shader_error(&input.spec.program_key, stage_name, error))?;
     fs::write(&native_path, &lowered.source).map_err(|error| {
         shader_error(
             &input.spec.program_key,
@@ -541,6 +542,13 @@ impl TemporaryShaderDirectory {
 
 impl Drop for TemporaryShaderDirectory {
     fn drop(&mut self) {
+        if std::env::var_os("GILDER_DIAGNOSTIC_KEEP_AUTHORED_SHADER_SOURCES").is_some() {
+            eprintln!(
+                "gilder-diagnostic-authored-shader-directory={}",
+                self.path.display()
+            );
+            return;
+        }
         let _ = fs::remove_dir_all(&self.path);
     }
 }

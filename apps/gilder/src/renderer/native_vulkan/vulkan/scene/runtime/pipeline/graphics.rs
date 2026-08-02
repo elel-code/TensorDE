@@ -1,29 +1,43 @@
-//! Vulkan graphics-pipeline fixed state and dynamic-rendering metadata.
-//!
-//! Local-read metadata is accepted only as an already validated typed plan;
-//! scene graph execution remains responsible for proving and recording the
-//! matching dynamic-rendering scope.
+//! Shared-renderer graphics-pipeline lowering for scene draws.
+
+use std::ffi::CStr;
+
+use vulkan_renderer::{
+    AdvancedBlendState, Backend, BlendComponent, BlendFactor, BlendOperation, BlendState,
+    ColorTargetState, ColorWrites, CullMode, FragmentState, FrontFace, GraphicsPipelineDescriptor,
+    MachineCodeGraphicsPipeline, MachineCodeGraphicsPipelineDescriptor, MultisampleState,
+    PipelineBinaryArchiveCache, PolygonMode, PrimitiveState, PrimitiveTopology, ProgrammableStage,
+    SampleCount, ShaderBindingMap, ShaderModule, TextureFormat, VertexAttribute,
+    VertexBufferLayout, VertexState, VertexStepMode,
+};
 
 use super::super::local_read::SceneLocalReadPipelineMetadata;
-use super::blend::scene_color_blend_attachment;
-use super::*;
+use super::{
+    SceneColorWriteMask, SceneCullMode, SceneGpuBlend, ScenePipelineSamples,
+    SceneVertexAttributePlan,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn create_graphics_pipeline(
-    device: &Device,
-    target_format: vk::Format,
-    stages: [vk::PipelineShaderStageCreateInfo; 2],
+    device: &Backend,
+    target_format: TextureFormat,
+    vertex_module: &ShaderModule,
+    fragment_module: &ShaderModule,
+    vertex_entry_point: &CStr,
+    fragment_entry_point: &CStr,
     blend: SceneGpuBlend,
     cull_mode: SceneCullMode,
     color_write_mask: SceneColorWriteMask,
     advanced_source_premultiplied: bool,
-    advanced_blend_overlap: vk::BlendOverlapEXT,
+    advanced_blend_overlap: vulkan_renderer::BlendOverlap,
     samples: ScenePipelineSamples,
-    topology: vk::PrimitiveTopology,
+    topology: PrimitiveTopology,
+    default_mesh_vertex_input: bool,
     dynamic_text: bool,
     scene_owned_attributes: Option<&[SceneVertexAttributePlan]>,
     local_read_metadata: Option<&SceneLocalReadPipelineMetadata<'_>>,
-) -> Result<vk::Pipeline, String> {
+    pipeline_binary_cache: &PipelineBinaryArchiveCache,
+) -> Result<MachineCodeGraphicsPipeline, String> {
     if local_read_metadata.is_some() && blend.requires_advanced_operation() {
         return Err(
             "scene local-read pipeline does not have a proven advanced-blend attachment contract"
@@ -36,179 +50,270 @@ pub(super) fn create_graphics_pipeline(
                 .to_owned(),
         );
     }
-
     if dynamic_text && scene_owned_attributes.is_some() {
         return Err(
             "scene pipeline cannot combine dynamic-text and scene-owned vertex layouts".to_owned(),
         );
     }
-    let (bindings, attributes) = if dynamic_text {
-        (
-            vec![
-                vk::VertexInputBindingDescription::builder()
-                    .binding(1)
-                    .stride(super::super::dynamic_text::DYNAMIC_TEXT_INSTANCE_STRIDE as u32)
-                    .input_rate(vk::VertexInputRate::INSTANCE)
-                    .build(),
-            ],
-            vec![
-                vertex_attribute_for_binding(5, 1, vk::Format::R32G32B32A32_SFLOAT, 0),
-                vertex_attribute_for_binding(6, 1, vk::Format::R32G32B32A32_SFLOAT, 16),
-            ],
-        )
-    } else if let Some(scene_owned_attributes) = scene_owned_attributes {
-        let bindings = (!scene_owned_attributes.is_empty())
-            .then(|| {
-                vk::VertexInputBindingDescription::builder()
-                    .binding(0)
-                    .stride(super::super::SCENE_MESH_VERTEX_STRIDE_BYTES)
-                    .input_rate(vk::VertexInputRate::VERTEX)
-                    .build()
-            })
-            .into_iter()
-            .collect();
-        let attributes = scene_owned_attributes
-            .iter()
-            .map(|attribute| {
-                vertex_attribute(attribute.location, attribute.format, attribute.offset)
-            })
-            .collect();
-        (bindings, attributes)
-    } else {
-        (
-            vec![
-                vk::VertexInputBindingDescription::builder()
-                    .binding(0)
-                    .stride(super::super::SCENE_MESH_VERTEX_STRIDE_BYTES)
-                    .input_rate(vk::VertexInputRate::VERTEX)
-                    .build(),
-            ],
-            vec![
-                vertex_attribute(0, vk::Format::R32G32_SFLOAT, 0),
-                vertex_attribute(1, vk::Format::R32G32_SFLOAT, 8),
-                vertex_attribute(2, vk::Format::R32_SFLOAT, 16),
-                vertex_attribute(3, vk::Format::R32G32B32A32_UINT, 20),
-                vertex_attribute(4, vk::Format::R32G32B32A32_SFLOAT, 36),
-            ],
-        )
-    };
-    let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder()
-        .vertex_binding_descriptions(&bindings)
-        .vertex_attribute_descriptions(&attributes)
-        .build();
-    let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
-        .topology(topology)
-        .build();
-    let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
-        .viewport_count(1)
-        .scissor_count(1)
-        .build();
-    let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-    let dynamic_state = vk::PipelineDynamicStateCreateInfo::builder()
-        .dynamic_states(&dynamic_states)
-        .build();
-    let rasterization = vk::PipelineRasterizationStateCreateInfo::builder()
-        .polygon_mode(vk::PolygonMode::FILL)
-        .cull_mode(scene_vk_cull_mode(cull_mode))
-        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-        .line_width(1.0)
-        .build();
-    let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
-        .rasterization_samples(samples.rasterization_samples())
-        .alpha_to_coverage_enable(blend == SceneGpuBlend::AlphaToCoverage)
-        .build();
 
-    let active_color_attachment = scene_color_blend_attachment(blend, color_write_mask);
-    let default_color_attachments = [active_color_attachment];
-    let local_color_attachments = local_read_metadata
-        .map(|metadata| metadata.color_blend_attachments(active_color_attachment));
-    let color_attachments = local_color_attachments
-        .as_deref()
-        .unwrap_or(&default_color_attachments);
-    let mut advanced_blend = vk::PipelineColorBlendAdvancedStateCreateInfoEXT::builder()
-        .src_premultiplied(advanced_source_premultiplied)
-        .dst_premultiplied(false)
-        .blend_overlap(advanced_blend_overlap)
-        .build();
-    let mut color_blend_builder =
-        vk::PipelineColorBlendStateCreateInfo::builder().attachments(color_attachments);
-    if blend.requires_advanced_operation() {
-        color_blend_builder = color_blend_builder.push_next(&mut advanced_blend);
-    }
-    let color_blend = color_blend_builder.build();
-
-    let default_color_attachment_formats = [target_format];
-    let color_attachment_formats = local_read_metadata
+    let attributes = vertex_attributes(
+        default_mesh_vertex_input,
+        dynamic_text,
+        scene_owned_attributes,
+    );
+    let buffers = (!attributes.is_empty())
+        .then_some(VertexBufferLayout {
+            slot: if dynamic_text { 1 } else { 0 },
+            array_stride: if dynamic_text {
+                super::super::dynamic_text::DYNAMIC_TEXT_INSTANCE_STRIDE as u64
+            } else {
+                u64::from(super::super::SCENE_MESH_VERTEX_STRIDE_BYTES)
+            },
+            step_mode: if dynamic_text {
+                VertexStepMode::Instance
+            } else {
+                VertexStepMode::Vertex
+            },
+            attributes: &attributes,
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+    let shader_bindings = ShaderBindingMap::default();
+    let active_target = scene_color_target(blend, color_write_mask, target_format);
+    let target_formats = local_read_metadata
         .map(SceneLocalReadPipelineMetadata::color_attachment_formats)
-        .unwrap_or(&default_color_attachment_formats);
-    let mut rendering_info = vk::PipelineRenderingCreateInfo::builder()
-        .color_attachment_formats(color_attachment_formats)
-        .build();
-    let mut pipeline_flags2 = vk::PipelineCreateFlags2CreateInfo::builder()
-        .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT)
-        .build();
-    let mut attachment_location_info =
-        local_read_metadata.map(SceneLocalReadPipelineMetadata::attachment_location_info);
-    let mut input_attachment_index_info =
-        local_read_metadata.map(SceneLocalReadPipelineMetadata::input_attachment_index_info);
-    let mut pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
-        .stages(&stages)
-        .vertex_input_state(&vertex_input)
-        .input_assembly_state(&input_assembly)
-        .viewport_state(&viewport_state)
-        .rasterization_state(&rasterization)
-        .multisample_state(&multisample)
-        .color_blend_state(&color_blend)
-        .dynamic_state(&dynamic_state)
-        .layout(vk::PipelineLayout::null())
-        .render_pass(vk::RenderPass::null())
-        .subpass(0)
-        .push_next(&mut rendering_info)
-        .push_next(&mut pipeline_flags2);
-    if let Some(info) = attachment_location_info.as_mut() {
-        pipeline_info = pipeline_info.push_next(info);
-    }
-    if let Some(info) = input_attachment_index_info.as_mut() {
-        pipeline_info = pipeline_info.push_next(info);
-    }
-    let pipeline_info = pipeline_info.build();
-    let (pipelines, _success_code) = unsafe {
-        device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
-    }
-    .map_err(|err| format!("vkCreateGraphicsPipelines(vulkanalia scene): {err:?}"))?;
-    Ok(pipelines[0])
+        .unwrap_or(std::slice::from_ref(&target_format));
+    let active_attachments = local_read_metadata
+        .map(SceneLocalReadPipelineMetadata::active_color_attachments)
+        .unwrap_or_else(|| vec![true]);
+    let targets = target_formats
+        .iter()
+        .zip(active_attachments)
+        .map(|(format, active)| {
+            active.then_some(ColorTargetState {
+                format: *format,
+                ..active_target
+            })
+        })
+        .collect::<Vec<_>>();
+    let local_read_mapping = local_read_metadata
+        .map(|metadata| metadata.shared_mapping(device))
+        .transpose()?;
+    let advanced_blend = blend
+        .requires_advanced_operation()
+        .then_some(AdvancedBlendState {
+            source_premultiplied: advanced_source_premultiplied,
+            destination_premultiplied: false,
+            overlap: advanced_blend_overlap,
+        });
+    device
+        .create_machine_code_graphics_pipeline(&MachineCodeGraphicsPipelineDescriptor {
+            pipeline: GraphicsPipelineDescriptor {
+                label: Some("gilder-scene-graphics"),
+                vertex: VertexState {
+                    stage: ProgrammableStage {
+                        module: vertex_module,
+                        entry_point: vertex_entry_point,
+                        bindings: &shader_bindings,
+                    },
+                    buffers: &buffers,
+                },
+                primitive: PrimitiveState {
+                    topology,
+                    primitive_restart_enable: false,
+                    polygon_mode: PolygonMode::Fill,
+                    cull_mode: scene_cull_mode(cull_mode),
+                    front_face: FrontFace::CounterClockwise,
+                },
+                depth_stencil: None,
+                multisample: MultisampleState {
+                    count: match samples {
+                        ScenePipelineSamples::Single => SampleCount::One,
+                        ScenePipelineSamples::SceneColor4x => SampleCount::Four,
+                    },
+                    mask: u64::MAX,
+                    alpha_to_coverage_enabled: blend == SceneGpuBlend::AlphaToCoverage,
+                },
+                fragment: FragmentState {
+                    stage: ProgrammableStage {
+                        module: fragment_module,
+                        entry_point: fragment_entry_point,
+                        bindings: &shader_bindings,
+                    },
+                    targets: &targets,
+                },
+                advanced_blend,
+                local_read_mapping: local_read_mapping.as_ref(),
+                cache: None,
+            },
+            archive_cache: pipeline_binary_cache,
+        })
+        .map_err(|error| format!("create shared scene graphics pipeline: {error}"))
 }
 
-fn vertex_attribute(
-    location: u32,
-    format: vk::Format,
-    offset: u32,
-) -> vk::VertexInputAttributeDescription {
-    vk::VertexInputAttributeDescription::builder()
-        .location(location)
-        .binding(0)
-        .format(format)
-        .offset(offset)
-        .build()
+fn vertex_attributes(
+    default_mesh_vertex_input: bool,
+    dynamic_text: bool,
+    scene_owned: Option<&[SceneVertexAttributePlan]>,
+) -> Vec<VertexAttribute> {
+    if dynamic_text {
+        return vec![
+            VertexAttribute {
+                format: vulkan_renderer::VertexFormat::Float32x4,
+                offset: 0,
+                shader_location: 5,
+            },
+            VertexAttribute {
+                format: vulkan_renderer::VertexFormat::Float32x4,
+                offset: 16,
+                shader_location: 6,
+            },
+        ];
+    }
+    if let Some(attributes) = scene_owned {
+        return attributes
+            .iter()
+            .map(|attribute| VertexAttribute {
+                format: attribute.format,
+                offset: u64::from(attribute.offset),
+                shader_location: attribute.location,
+            })
+            .collect();
+    }
+    if !default_mesh_vertex_input {
+        return Vec::new();
+    }
+    vec![
+        vertex_attribute(0, vulkan_renderer::VertexFormat::Float32x2, 0),
+        vertex_attribute(1, vulkan_renderer::VertexFormat::Float32x2, 8),
+        vertex_attribute(2, vulkan_renderer::VertexFormat::Float32, 16),
+        vertex_attribute(3, vulkan_renderer::VertexFormat::Uint32x4, 20),
+        vertex_attribute(4, vulkan_renderer::VertexFormat::Float32x4, 36),
+    ]
 }
 
-fn vertex_attribute_for_binding(
-    location: u32,
-    binding: u32,
-    format: vk::Format,
-    offset: u32,
-) -> vk::VertexInputAttributeDescription {
-    vk::VertexInputAttributeDescription::builder()
-        .location(location)
-        .binding(binding)
-        .format(format)
-        .offset(offset)
-        .build()
+const fn vertex_attribute(
+    shader_location: u32,
+    format: vulkan_renderer::VertexFormat,
+    offset: u64,
+) -> VertexAttribute {
+    VertexAttribute {
+        format,
+        offset,
+        shader_location,
+    }
 }
 
-pub(super) fn scene_vk_cull_mode(cull_mode: SceneCullMode) -> vk::CullModeFlags {
+pub(super) const fn scene_cull_mode(cull_mode: SceneCullMode) -> CullMode {
     match cull_mode {
-        SceneCullMode::None => vk::CullModeFlags::NONE,
-        SceneCullMode::Normal => vk::CullModeFlags::BACK,
+        SceneCullMode::None => CullMode::None,
+        SceneCullMode::Normal => CullMode::Back,
+    }
+}
+
+pub(super) fn scene_color_target(
+    blend: SceneGpuBlend,
+    write_mask: SceneColorWriteMask,
+    format: TextureFormat,
+) -> ColorTargetState {
+    let blend = match blend {
+        SceneGpuBlend::Replace | SceneGpuBlend::AlphaToCoverage => None,
+        SceneGpuBlend::Alpha => Some(BlendState::ALPHA_BLENDING),
+        SceneGpuBlend::Additive => Some(blend_state(
+            BlendFactor::SourceAlpha,
+            BlendFactor::One,
+            BlendOperation::Add,
+            BlendFactor::One,
+            BlendFactor::One,
+            BlendOperation::Add,
+        )),
+        SceneGpuBlend::Multiply => Some(advanced_blend_state(BlendOperation::Multiply)),
+        SceneGpuBlend::MultiplyPremultiplied => Some(blend_state(
+            BlendFactor::DestinationColor,
+            BlendFactor::OneMinusSourceAlpha,
+            BlendOperation::Add,
+            BlendFactor::One,
+            BlendFactor::OneMinusSourceAlpha,
+            BlendOperation::Add,
+        )),
+        SceneGpuBlend::Screen => Some(advanced_blend_state(BlendOperation::Screen)),
+        SceneGpuBlend::ScreenPremultiplied => Some(blend_state(
+            BlendFactor::One,
+            BlendFactor::OneMinusSourceColor,
+            BlendOperation::Add,
+            BlendFactor::One,
+            BlendFactor::OneMinusSourceAlpha,
+            BlendOperation::Add,
+        )),
+        SceneGpuBlend::Maximum => Some(blend_state(
+            BlendFactor::One,
+            BlendFactor::One,
+            BlendOperation::Maximum,
+            BlendFactor::One,
+            BlendFactor::One,
+            BlendOperation::Maximum,
+        )),
+        SceneGpuBlend::Modulate => Some(blend_state(
+            BlendFactor::DestinationColor,
+            BlendFactor::One,
+            BlendOperation::Add,
+            BlendFactor::Zero,
+            BlendFactor::One,
+            BlendOperation::Add,
+        )),
+        SceneGpuBlend::HslColor => Some(advanced_blend_state(BlendOperation::HslColor)),
+    };
+    ColorTargetState {
+        format,
+        blend,
+        write_mask: match write_mask {
+            SceneColorWriteMask::Rgb => ColorWrites::RGB,
+            SceneColorWriteMask::Rgba => ColorWrites::ALL,
+        },
+    }
+}
+
+const fn advanced_blend_state(operation: BlendOperation) -> BlendState {
+    blend_state(
+        BlendFactor::One,
+        BlendFactor::Zero,
+        operation,
+        BlendFactor::One,
+        BlendFactor::Zero,
+        operation,
+    )
+}
+
+const fn blend_state(
+    color_source: BlendFactor,
+    color_destination: BlendFactor,
+    color_operation: BlendOperation,
+    alpha_source: BlendFactor,
+    alpha_destination: BlendFactor,
+    alpha_operation: BlendOperation,
+) -> BlendState {
+    BlendState {
+        color: BlendComponent {
+            src_factor: color_source,
+            dst_factor: color_destination,
+            operation: color_operation,
+        },
+        alpha: BlendComponent {
+            src_factor: alpha_source,
+            dst_factor: alpha_destination,
+            operation: alpha_operation,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::vertex_attributes;
+
+    #[test]
+    fn builtin_fullscreen_pipeline_declares_no_vertex_buffer_slot() {
+        assert!(vertex_attributes(false, false, None).is_empty());
+        assert_eq!(vertex_attributes(true, false, None).len(), 5);
+        assert_eq!(vertex_attributes(false, true, None).len(), 2);
     }
 }

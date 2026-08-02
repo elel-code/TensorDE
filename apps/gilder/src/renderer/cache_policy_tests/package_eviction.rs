@@ -499,6 +499,7 @@ void main() {}
                     y: 1.0,
                     z: 1.0,
                 },
+                camera_zoom: 1.0,
                 color: SceneVec3 {
                     x: 1.0,
                     y: 1.0,

@@ -9,6 +9,7 @@ fn direct_generic_multiply_uses_the_premultiplied_fixed_blend_shader() {
         base_material_blending: Some("translucent".to_owned()),
         base_texture_slots: vec![0],
         base_pass_constants: Vec::new(),
+        color_blend_mode: 0,
         framebuffer_snapshot: None,
         final_scene_blend: SceneBlendMode::Multiply,
         static_black_output: false,
@@ -17,7 +18,6 @@ fn direct_generic_multiply_uses_the_premultiplied_fixed_blend_shader() {
         waterwaves_uv_field_material_index: None,
         waterwaves_direct_material: None,
         foliage_ripple_material: None,
-        ripple_flow_material_indices: None,
         final_effect_material: None,
         effect_passes: Vec::new(),
     });
@@ -59,6 +59,7 @@ fn offscreen_static_black_multiply_uses_typed_composite_shader() {
         base_material_blending: Some("translucent".to_owned()),
         base_texture_slots: vec![0],
         base_pass_constants: Vec::new(),
+        color_blend_mode: 0,
         framebuffer_snapshot: None,
         final_scene_blend: SceneBlendMode::Multiply,
         static_black_output: true,
@@ -67,7 +68,6 @@ fn offscreen_static_black_multiply_uses_typed_composite_shader() {
         waterwaves_uv_field_material_index: None,
         waterwaves_direct_material: None,
         foliage_ripple_material: None,
-        ripple_flow_material_indices: None,
         final_effect_material: None,
         effect_passes: vec![effect],
     });

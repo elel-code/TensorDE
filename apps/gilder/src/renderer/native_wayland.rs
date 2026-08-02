@@ -8,7 +8,7 @@
 use std::{ffi::c_void, fmt, ptr::NonNull};
 
 use serde::Serialize;
-use wayland_client_runtime::LayerSurfaceLayer;
+use wayland_client_runtime::{LayerSurfaceLayer, NativeSurfaceHandle};
 
 #[cfg(feature = "native-vulkan-renderer")]
 mod event_source;
@@ -148,8 +148,11 @@ pub fn capabilities() -> NativeWaylandCapabilities {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct NativeWaylandSurfaceHandles {
+    /// Retained renderer lease. The shared Vulkan surface owns a clone so the
+    /// Wayland connection and `wl_surface` outlive every swapchain image.
+    pub renderer_handle: NativeSurfaceHandle,
     pub display: NonNull<c_void>,
     pub surface: NonNull<c_void>,
     pub logical_size: (u32, u32),
@@ -158,7 +161,7 @@ pub struct NativeWaylandSurfaceHandles {
 }
 
 impl NativeWaylandSurfaceHandles {
-    pub fn window_handle(self) -> usize {
+    pub fn window_handle(&self) -> usize {
         self.surface.as_ptr() as usize
     }
 }

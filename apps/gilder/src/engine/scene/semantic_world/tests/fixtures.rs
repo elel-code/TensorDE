@@ -133,6 +133,7 @@ pub(super) fn image_object() -> SceneObjectRecord {
             y: 1.0,
             z: 1.0,
         },
+        camera_zoom: 1.0,
         color: SceneVec3 {
             x: 1.0,
             y: 1.0,
@@ -165,6 +166,7 @@ pub(super) fn puppet_object() -> SceneObjectRecord {
             y: 1.0,
             z: 1.0,
         },
+        camera_zoom: 1.0,
         color: SceneVec3 {
             x: 1.0,
             y: 1.0,
@@ -201,6 +203,7 @@ pub(super) fn parent_puppet_object() -> SceneObjectRecord {
             y: 1.0,
             z: 1.0,
         },
+        camera_zoom: 1.0,
         color: SceneVec3 {
             x: 1.0,
             y: 1.0,
@@ -237,6 +240,7 @@ pub(super) fn attached_child_object() -> SceneObjectRecord {
             y: 1.0,
             z: 1.0,
         },
+        camera_zoom: 1.0,
         color: SceneVec3 {
             x: 1.0,
             y: 1.0,
@@ -273,6 +277,7 @@ pub(super) fn cycle_object(
             y: 1.0,
             z: 1.0,
         },
+        camera_zoom: 1.0,
         color: SceneVec3 {
             x: 1.0,
             y: 1.0,

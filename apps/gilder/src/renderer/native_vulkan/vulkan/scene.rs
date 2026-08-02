@@ -1,4 +1,4 @@
-//! Vulkanalia scene runtime entrypoint.
+//! Shared-renderer scene runtime entrypoint.
 //!
 //! References:
 //! - `docs/gilder/gilder-scene-engine-architecture.md`
@@ -11,9 +11,8 @@ mod runtime;
 
 pub use runtime::{
     NativeVulkanSceneOwnedUniformArenaPlanSnapshot, NativeVulkanSceneOwnedUniformSliceSnapshot,
-    native_vulkan_scene_owned_uniform_arena_plan,
+    NativeVulkanScenePresentSnapshot, native_vulkan_scene_owned_uniform_arena_plan,
 };
 pub(in crate::renderer::native_vulkan) use runtime::{
-    NativeVulkanVulkanaliaScenePresentOptions, NativeVulkanVulkanaliaScenePresentSnapshot,
-    run_native_vulkan_vulkanalia_scene_present,
+    NativeVulkanScenePresentOptions, run_native_vulkan_scene_present,
 };

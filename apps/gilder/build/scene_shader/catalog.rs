@@ -1,5 +1,6 @@
 use super::super::*;
 use std::collections::BTreeSet;
+use std::path::Path;
 
 #[path = "catalog/installed_effects.rs"]
 mod installed_effects;
@@ -13,8 +14,9 @@ mod specs;
 use installed_effects::INSTALLED_EFFECT_PROGRAMS;
 use key::{effect_shader_name_for_key, effect_texture_slot_mask_for_key};
 use native_stage::{
-    builtin_binding_expressions, compile_native_particle_compute, compile_native_scene_fragment,
-    compile_native_scene_input_attachment, compile_native_scene_vertex,
+    builtin_binding_expressions, compile_generated_scene_fragment, compile_generated_scene_vertex,
+    compile_native_particle_compute, compile_native_slang_scene_fragment,
+    compile_native_slang_scene_input_attachment, compile_native_slang_scene_vertex,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -26,6 +28,7 @@ pub(crate) struct SceneShaderSpec {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SceneShaderFamily {
     MeshGenericImage4,
+    MeshSceneColorBlend,
     MeshDynamicText,
     MeshGenericImage4PuppetSkinning,
     MeshColor,
@@ -42,7 +45,6 @@ pub(crate) enum SceneShaderFamily {
     MeshImageEffectSource,
     MeshImageEffectComposite,
     MeshFlatRoundedMaskComposite,
-    MeshPuppetEffectSource,
     MeshPuppetEffectComposite,
     MeshImageWaterWavesComposite,
     MeshImageFoliageRippleComposite,
@@ -111,48 +113,62 @@ pub(crate) fn build_scene_shader_catalog() {
     generated.push_str("    pub local_read_shader: Option<BuiltinSceneLocalReadShader>,\n    pub fragment_coordinate_fetch_slot_mask: u32,\n");
     generated.push_str("    pub parameter_layout: BuiltinSceneParameterLayout,\n");
     generated.push_str("}\n\n");
+    let expected_entry_count =
+        BUILTIN_SCENE_SHADER_SPECS.len() + super::FINAL_EFFECT_SHADER_SPECS.len();
+    let mut actual_entry_count = 0usize;
     let mut entries = String::new();
     for spec in BUILTIN_SCENE_SHADER_SPECS
         .iter()
         .chain(super::FINAL_EFFECT_SHADER_SPECS)
     {
+        actual_entry_count += 1;
         let (vertex_source, fragment_source) = scene_shader_sources(*spec);
-        let fragment = compile_native_scene_fragment(&shader_dir, spec.key, &fragment_source);
-        let vertex = compile_native_scene_vertex(
+        let fragment = compile_scene_fragment(&shader_dir, *spec, &fragment_source);
+        let vertex = compile_scene_vertex(
             &shader_dir,
-            spec.key,
+            *spec,
             &vertex_source,
             fragment.push_constant_bytes,
         );
         let object_mesh_vertex = match spec.family {
+            SceneShaderFamily::FlatPassthrough => Some(compile_native_slang_scene_vertex(
+                &shader_dir,
+                &format!("{}__OBJECT_MESH", spec.key),
+                &super::mesh_vertex_source(),
+                fragment.push_constant_bytes,
+            )),
             SceneShaderFamily::Effect => {
                 let shader = effect_shader_name_for_key(spec.key);
                 let texture_slot_mask = effect_texture_slot_mask_for_key(spec.key);
-                super::effect_object_mesh_vertex_source(spec.key, shader, texture_slot_mask).map(
-                    |source| {
-                        compile_native_scene_vertex(
-                            &shader_dir,
-                            &format!("{}__OBJECT_MESH", spec.key),
-                            &source,
-                            fragment.push_constant_bytes,
-                        )
-                    },
-                )
+                if shader == "effects/waterflow" {
+                    let source = super::waterflow_object_mesh_vertex_source();
+                    Some(compile_native_slang_scene_vertex(
+                        &shader_dir,
+                        &format!("{}__OBJECT_MESH", spec.key),
+                        &source,
+                        fragment.push_constant_bytes,
+                    ))
+                } else if shader == "effects/waterripple" && texture_slot_mask == 0x05 {
+                    Some(compile_native_slang_scene_vertex(
+                        &shader_dir,
+                        &format!("{}__OBJECT_MESH", spec.key),
+                        &super::mesh_vertex_source(),
+                        fragment.push_constant_bytes,
+                    ))
+                } else {
+                    super::effect_object_mesh_vertex_source(spec.key, shader, texture_slot_mask)
+                        .map(|source| {
+                            compile_generated_scene_vertex(
+                                &shader_dir,
+                                &format!("{}__OBJECT_MESH", spec.key),
+                                &source,
+                                fragment.push_constant_bytes,
+                            )
+                        })
+                }
             }
             _ => None,
         };
-        let input_attachment_fragment_source = super::input_attachment_fragment_source(matches!(
-            spec.family,
-            SceneShaderFamily::FlatPassthrough
-        ));
-        let input_attachment_fragment = input_attachment_fragment_source.as_ref().map(|source| {
-            compile_native_scene_input_attachment(
-                &shader_dir,
-                &format!("{}__INPUT_ATTACHMENT", spec.key),
-                source.source(),
-                fragment.push_constant_bytes,
-            )
-        });
         let vertex_path = vertex
             .spirv
             .to_str()
@@ -165,19 +181,27 @@ pub(crate) fn build_scene_shader_catalog() {
             .source
             .to_str()
             .expect("built-in scene fragment source path must be UTF-8");
-        let local_read_shader = input_attachment_fragment_source
-            .as_ref()
-            .zip(input_attachment_fragment.as_ref())
-            .map_or_else(
-                || "None".to_owned(),
-                |(source, stage)| {
-                    source.catalog_expression(
-                        &stage.spirv,
-                        stage.push_constant_bytes,
-                        &builtin_binding_expressions(&stage.bindings),
-                    )
-                },
+        assert!(
+            fragment_source_path.ends_with(".source.slang"),
+            "built-in scene shader {} did not retain native Slang source",
+            spec.key
+        );
+        let local_read_shader = if matches!(spec.family, SceneShaderFamily::FlatPassthrough) {
+            let source = super::flat_passthrough_input_attachment_source();
+            let stage = compile_native_slang_scene_input_attachment(
+                &shader_dir,
+                &format!("{}__INPUT_ATTACHMENT", spec.key),
+                source.source(),
+                fragment.push_constant_bytes,
             );
+            source.catalog_expression(
+                &stage.spirv,
+                stage.push_constant_bytes,
+                &builtin_binding_expressions(&stage.bindings),
+            )
+        } else {
+            "None".to_owned()
+        };
         let object_mesh_vertex = object_mesh_vertex.as_ref().map_or_else(
             || "None".to_owned(),
             |vertex| {
@@ -212,6 +236,10 @@ pub(crate) fn build_scene_shader_catalog() {
             fragment_bindings,
         ));
     }
+    assert_eq!(
+        actual_entry_count, expected_entry_count,
+        "native scene shader catalog coverage regressed"
+    );
     generated.push_str("pub static BUILTIN_SCENE_SHADERS: &[BuiltinSceneShader] = &[\n");
     generated.push_str(&entries);
     generated.push_str("];\n");
@@ -243,6 +271,31 @@ pub(crate) fn build_scene_shader_catalog() {
         .expect("write built-in scene shader catalog");
 }
 
+fn compile_scene_fragment(
+    shader_dir: &Path,
+    spec: SceneShaderSpec,
+    source: &str,
+) -> native_stage::NativeSceneStage {
+    if has_version_controlled_native_slang_source(spec) {
+        compile_native_slang_scene_fragment(shader_dir, spec.key, source)
+    } else {
+        compile_generated_scene_fragment(shader_dir, spec.key, source)
+    }
+}
+
+fn compile_scene_vertex(
+    shader_dir: &Path,
+    spec: SceneShaderSpec,
+    source: &str,
+    push_base_bytes: u32,
+) -> native_stage::NativeSceneStage {
+    if has_version_controlled_native_slang_source(spec) {
+        compile_native_slang_scene_vertex(shader_dir, spec.key, source, push_base_bytes)
+    } else {
+        compile_generated_scene_vertex(shader_dir, spec.key, source, push_base_bytes)
+    }
+}
+
 fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
     match spec.family {
         SceneShaderFamily::MeshGenericImage4
@@ -257,6 +310,7 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
         | SceneShaderFamily::MeshPuppetEffectComposite
         | SceneShaderFamily::MeshImageWaterWavesComposite
         | SceneShaderFamily::MeshPuppetWaterWavesComposite => "StandardMaterial",
+        SceneShaderFamily::MeshSceneColorBlend => "SceneColorBlend",
         SceneShaderFamily::MeshGenericParticle => "Particle",
         SceneShaderFamily::MeshWaterWavesDirect => "WaterWavesDirect",
         SceneShaderFamily::MeshImageFoliageRippleComposite
@@ -296,6 +350,9 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
 
 fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
     match spec.family {
+        SceneShaderFamily::MeshGenericImage4 if spec.key == "we/genericimage4" => {
+            super::generic_image_sources()
+        }
         SceneShaderFamily::MeshGenericImage4 => {
             let fragment = if spec.key == "we/genericimage4-multiply-composite" {
                 super::generic_image_multiply_fragment_source()
@@ -304,6 +361,7 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
             };
             (scene_mesh_vertex_source(), fragment)
         }
+        SceneShaderFamily::MeshSceneColorBlend => super::scene_color_blend_sources(),
         SceneShaderFamily::MeshDynamicText => (
             super::dynamic_text_vertex_source(),
             super::generic_image_fragment_source(),
@@ -344,9 +402,7 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
             scene_puppet_skinning_vertex_source(),
             clippingmaskimage4_fragment_source(),
         ),
-        SceneShaderFamily::MeshComposelayer => {
-            (composelayer_vertex_source(), composelayer_fragment_source())
-        }
+        SceneShaderFamily::MeshComposelayer => super::composelayer_sources(),
         SceneShaderFamily::MeshObjectComposite => {
             if spec.key == "we/objectcomposite-screen-group" {
                 super::screen_group_composite_sources()
@@ -366,7 +422,6 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
             "we/flat-rounded-hsl-source" => super::flat_rounded_hsl_source_sources(),
             _ => super::flat_rounded_mask_composite_sources(),
         },
-        SceneShaderFamily::MeshPuppetEffectSource => super::puppet_effect_source_sources(),
         SceneShaderFamily::MeshPuppetEffectComposite => super::puppet_effect_composite_sources(),
         SceneShaderFamily::MeshImageWaterWavesComposite => {
             if spec.key == "we/image-waterwaves-multiply-composite" {
@@ -417,6 +472,17 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
             flattexture_vertex_source(),
             super::passthrough_fragment_source(),
         ),
+        SceneShaderFamily::Effect
+            if effect_shader_name_for_key(spec.key) == "effects/waterflow" =>
+        {
+            super::waterflow_sources()
+        }
+        SceneShaderFamily::Effect
+            if effect_shader_name_for_key(spec.key) == "effects/waterripple"
+                && effect_texture_slot_mask_for_key(spec.key) == 0x05 =>
+        {
+            super::waterripple_slots_5_sources()
+        }
         SceneShaderFamily::Effect => {
             let shader = effect_shader_name_for_key(spec.key);
             let texture_slot_mask = effect_texture_slot_mask_for_key(spec.key);
@@ -426,4 +492,21 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
             )
         }
     }
+}
+
+fn has_version_controlled_native_slang_source(spec: SceneShaderSpec) -> bool {
+    matches!(
+        spec.family,
+        SceneShaderFamily::MeshSceneColorBlend
+            | SceneShaderFamily::MeshComposelayer
+            | SceneShaderFamily::MeshImageEffectSource
+    ) || spec.key == "we/genericimage4"
+        || matches!(spec.family, SceneShaderFamily::Effect)
+            && matches!(
+                (
+                    effect_shader_name_for_key(spec.key),
+                    effect_texture_slot_mask_for_key(spec.key)
+                ),
+                ("effects/waterflow", _) | ("effects/waterripple", 0x05)
+            )
 }

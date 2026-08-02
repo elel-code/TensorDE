@@ -10,24 +10,23 @@
 //! effect targets can remain attached for one rendering scope.  Unsupported
 //! combinations are rejected here; callers must not fall back to sampling.
 
-use vulkanalia::vk;
+use vulkan_renderer::{
+    Backend, Extent2D, RenderingLocalReadMapping, RenderingLocalReadMappingDescriptor,
+    RenderingLocalReadMappingKind, TextureFormat,
+};
 
 use crate::engine::scene::{
     SceneRenderPassKind, SceneRenderTargetKind, SceneRenderingDeviceGraphPlan,
-    SceneRenderingDeviceImageAccess,
-    SceneRenderingDevicePassNode, SceneStorage, SceneStringId,
+    SceneRenderingDeviceImageAccess, SceneRenderingDevicePassNode, SceneStorage, SceneStringId,
 };
-use crate::renderer::native_vulkan::scene::native_vulkan_scene_shader_for_key;
 use crate::renderer::native_vulkan::scene::BuiltinSceneLocalReadShader;
+use crate::renderer::native_vulkan::scene::native_vulkan_scene_shader_for_key;
 
 use super::super::descriptor_layout::{
     ScenePipelineShaderDescriptorAccess, scene_pipeline_shader_descriptor_access,
 };
 use super::super::effect_target::SceneEffectTargetImagePlan;
-use super::{
-    SceneLocalReadAttachmentMapping, SceneLocalReadDeviceLimits,
-    SceneLocalReadPipelineMetadata, validate_scene_local_read_shader_variant,
-};
+use super::{SceneLocalReadPipelineMetadata, validate_scene_local_read_shader_variant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) enum SceneLocalReadScopePassRole {
@@ -56,8 +55,8 @@ pub(in crate::renderer::native_vulkan) struct SceneLocalReadScopePlan {
     pub(super) consumer_draw_count: u32,
     pub(super) source: SceneLocalReadScopeTarget,
     pub(super) destination: SceneLocalReadScopeTarget,
-    pub(super) extent: vk::Extent2D,
-    pub(super) color_attachment_formats: [vk::Format; 2],
+    pub(super) extent: Extent2D,
+    pub(super) color_attachment_formats: [TextureFormat; 2],
     pub(super) input_slot: u32,
     pub(super) input_attachment_index: u32,
 }
@@ -112,13 +111,13 @@ impl SceneLocalReadScopePlan {
         self.destination
     }
 
-    pub(in crate::renderer::native_vulkan) fn extent(&self) -> vk::Extent2D {
+    pub(in crate::renderer::native_vulkan) fn extent(&self) -> Extent2D {
         self.extent
     }
 
     pub(in crate::renderer::native_vulkan) fn color_attachment_formats(
         &self,
-    ) -> [vk::Format; 2] {
+    ) -> [TextureFormat; 2] {
         self.color_attachment_formats
     }
 
@@ -126,24 +125,43 @@ impl SceneLocalReadScopePlan {
         self.input_slot
     }
 
+    pub(in crate::renderer::native_vulkan::vulkan::scene::runtime) fn shared_mapping(
+        &self,
+        device: &Backend,
+        role: SceneLocalReadScopePassRole,
+    ) -> Result<RenderingLocalReadMapping, String> {
+        let locations = self.color_attachment_locations(role);
+        let input_indices = self.color_attachment_input_indices(role);
+        device
+            .create_rendering_local_read_mapping(RenderingLocalReadMappingDescriptor {
+                color_attachment_locations: &locations,
+                color_attachment_input_indices: &input_indices,
+                kind: match role {
+                    SceneLocalReadScopePassRole::Producer => {
+                        RenderingLocalReadMappingKind::OutputOnly
+                    }
+                    SceneLocalReadScopePassRole::Consumer => {
+                        RenderingLocalReadMappingKind::InputAttachment
+                    }
+                },
+            })
+            .map_err(|error| format!("create scene local-read {role:?} mapping: {error}"))
+    }
+
     pub(in crate::renderer::native_vulkan) fn pipeline_metadata<'a>(
         &self,
         role: SceneLocalReadScopePassRole,
         descriptor_access: &ScenePipelineShaderDescriptorAccess,
         shader: Option<&'a BuiltinSceneLocalReadShader>,
-        limits: SceneLocalReadDeviceLimits,
     ) -> Result<SceneLocalReadPipelineMetadata<'a>, String> {
         let formats = self.color_attachment_formats();
         let locations = self.color_attachment_locations(role);
         match role {
-            SceneLocalReadScopePassRole::Producer => {
-                SceneLocalReadPipelineMetadata::output_only(
-                    descriptor_access,
-                    &formats,
-                    &locations,
-                    limits,
-                )
-            }
+            SceneLocalReadScopePassRole::Producer => SceneLocalReadPipelineMetadata::output_only(
+                descriptor_access,
+                &formats,
+                &locations,
+            ),
             SceneLocalReadScopePassRole::Consumer => {
                 let input_indices = self.color_attachment_input_indices(role);
                 SceneLocalReadPipelineMetadata::new(
@@ -152,43 +170,25 @@ impl SceneLocalReadScopePlan {
                     &formats,
                     &locations,
                     &input_indices,
-                    limits,
                 )
             }
         }
     }
 
-    pub(in crate::renderer::native_vulkan) fn attachment_mapping(
-        &self,
-        role: SceneLocalReadScopePassRole,
-        limits: SceneLocalReadDeviceLimits,
-    ) -> Result<SceneLocalReadAttachmentMapping, String> {
-        let locations = self.color_attachment_locations(role);
-        let input_indices = self.color_attachment_input_indices(role);
-        SceneLocalReadAttachmentMapping::new_for_scope(
-            &locations,
-            &input_indices,
-            limits.max_color_attachments,
-            limits.max_per_stage_descriptor_input_attachments,
-            role == SceneLocalReadScopePassRole::Consumer,
-        )
-    }
-
-    fn color_attachment_locations(&self, role: SceneLocalReadScopePassRole) -> [u32; 2] {
+    fn color_attachment_locations(&self, role: SceneLocalReadScopePassRole) -> [Option<u32>; 2] {
         match role {
-            SceneLocalReadScopePassRole::Producer => [0, vk::ATTACHMENT_UNUSED],
-            SceneLocalReadScopePassRole::Consumer => [vk::ATTACHMENT_UNUSED, 0],
+            SceneLocalReadScopePassRole::Producer => [Some(0), None],
+            SceneLocalReadScopePassRole::Consumer => [None, Some(0)],
         }
     }
 
-    fn color_attachment_input_indices(&self, role: SceneLocalReadScopePassRole) -> [u32; 2] {
+    fn color_attachment_input_indices(
+        &self,
+        role: SceneLocalReadScopePassRole,
+    ) -> [Option<u32>; 2] {
         match role {
-            SceneLocalReadScopePassRole::Producer => {
-                [vk::ATTACHMENT_UNUSED, vk::ATTACHMENT_UNUSED]
-            }
-            SceneLocalReadScopePassRole::Consumer => {
-                [self.input_attachment_index, vk::ATTACHMENT_UNUSED]
-            }
+            SceneLocalReadScopePassRole::Producer => [None, None],
+            SceneLocalReadScopePassRole::Consumer => [Some(self.input_attachment_index), None],
         }
     }
 }
@@ -265,11 +265,7 @@ pub(in crate::renderer::native_vulkan) fn scene_local_read_scope_plans(
                 consumer.graph_index, consumer.pass_id, binding.slot
             )
         })?;
-        let producer_key = (
-            producer.graph_index,
-            producer.target,
-            producer.target_name,
-        );
+        let producer_key = (producer.graph_index, producer.target, producer.target_name);
         if source_key != producer_key {
             return Err(format!(
                 "scene graph {} pass {} input slot {} reads {:?}:{:?}, but the immediately preceding pass {} writes {:?}:{:?}",
@@ -309,8 +305,7 @@ pub(in crate::renderer::native_vulkan) fn scene_local_read_scope_plans(
             ));
         }
         let source_plan = effect_target_plan(effect_target_plans, source, "source")?;
-        let destination_plan =
-            effect_target_plan(effect_target_plans, destination, "destination")?;
+        let destination_plan = effect_target_plan(effect_target_plans, destination, "destination")?;
         validate_scope_images(source_plan, destination_plan, producer, consumer)?;
 
         let consumer_record = storage
@@ -365,10 +360,7 @@ pub(in crate::renderer::native_vulkan) fn scene_local_read_scope_plans(
             consumer_draw_count: consumer.mesh_draw_count,
             source,
             destination,
-            extent: vk::Extent2D {
-                width: source_plan.width,
-                height: source_plan.height,
-            },
+            extent: source_plan.extent,
             color_attachment_formats: [source_plan.format, destination_plan.format],
             input_slot: binding.slot,
             input_attachment_index: shader_input.input_attachment_index,
@@ -499,22 +491,16 @@ fn validate_scope_images(
             consumer.graph_index, consumer.pass_id, destination.physical_slot
         ));
     }
-    if source.width != destination.width || source.height != destination.height {
+    if source.extent != destination.extent {
         return Err(format!(
             "scene graph {} local-read pass pair {} -> {} has mismatched extents {}x{} and {}x{}",
             consumer.graph_index,
             producer.pass_id,
             consumer.pass_id,
-            source.width,
-            source.height,
-            destination.width,
-            destination.height
-        ));
-    }
-    if source.format == vk::Format::UNDEFINED || destination.format == vk::Format::UNDEFINED {
-        return Err(format!(
-            "scene graph {} local-read pass pair {} -> {} has an undefined attachment format",
-            consumer.graph_index, producer.pass_id, consumer.pass_id
+            source.extent.width,
+            source.extent.height,
+            destination.extent.width,
+            destination.extent.height
         ));
     }
     Ok(())

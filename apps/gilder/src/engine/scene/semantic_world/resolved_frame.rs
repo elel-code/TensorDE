@@ -215,6 +215,7 @@ pub struct ResolvedObjectState {
     pub local_matrix: [f32; 16],
     pub world_matrix: [f32; 16],
     pub render_world_matrix: [f32; 16],
+    pub camera_zoom: f32,
     pub self_visible: bool,
     pub resolved_visible: bool,
     pub self_color: SceneVec3,

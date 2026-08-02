@@ -66,6 +66,7 @@ pub(super) fn create_stages(
             material_index: caustics_material,
             shader: caustics_shader.to_owned(),
             effect_stage_index: 0,
+            input: WeFinalEffectPrepassInput::FramebufferSnapshot,
         },
         WeFinalEffectIntermediate {
             material_index: intermediate_material,

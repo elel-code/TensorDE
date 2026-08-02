@@ -1,14 +1,10 @@
 #[cfg(feature = "native-vulkan-renderer")]
-use gilder::core::FitMode;
-#[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::native_vulkan::NativeVulkanClearColor;
 #[cfg(feature = "native-vulkan-renderer")]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 #[cfg(feature = "native-vulkan-renderer")]
 use std::time::Duration;
 
-#[cfg(feature = "native-vulkan-renderer")]
-const DEFAULT_BOUNDED_RUN_DURATION: Duration = Duration::from_secs(5);
 #[cfg(feature = "native-vulkan-renderer")]
 const DEFAULT_SCENE_RUN_DURATION: Option<Duration> = None;
 
@@ -120,36 +116,17 @@ fn native_vulkan_glibc_tunables_with_tcache_disabled() -> String {
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
-fn native_vulkan_static_source_is_gtex(source: &Path) -> bool {
-    source
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("gtex"))
-}
-
-#[cfg(feature = "native-vulkan-renderer")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::engine::scene::{RenderingServer, SceneStorage};
-    use gilder::renderer::StaticWallpaperPlan;
-    #[cfg(feature = "native-vulkan-video")]
-    use gilder::renderer::native_vulkan::NativeVulkanVulkanaliaVideoPresentAudioMasterClock;
     use gilder::renderer::native_vulkan::{
-        NativeVulkanAudioOutputPolicy, NativeVulkanOptions, NativeVulkanSceneRunOptions,
-        NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionCodec, backend_contract,
-        capabilities, native_vulkan_video_duration_playback_frames,
-        native_vulkan_video_playback_frame_count, probe_vulkan_video_decode, probe_wayland_surface,
-        run_clear, run_scene_with_options, run_static_image, wallpaper_type_support_matrix,
+        NativeVulkanOptions, NativeVulkanSceneRunOptions, backend_contract, capabilities,
+        native_vulkan_video_duration_playback_frames, native_vulkan_video_playback_frame_count,
+        run_scene_with_options, wallpaper_type_support_matrix,
     };
     #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::{
-        NativeVulkanFfmpegVulkanHwVideoPresentOptions,
-        run_native_vulkan_ffmpeg_vulkan_hw_video_present,
-    };
-    use gilder::renderer::native_vulkan::{
-        NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions,
-        NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions,
-        probe_native_vulkan_vulkanalia_devices, probe_native_vulkan_vulkanalia_surface_swapchain,
-        probe_native_vulkan_vulkanalia_video_present_device,
+        NativeVulkanSharedVideoPresentOptions, NativeVulkanVideoSessionCodec,
+        run_native_vulkan_shared_video_present,
     };
     use gilder::renderer::native_wayland::{
         NativeWaylandFractionalScaleRounding, NativeWaylandLayer,
@@ -165,18 +142,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut scene_surface_width = None::<u32>;
     let mut scene_surface_height = None::<u32>;
     let mut scene_gpu_timing = false;
+    let mut scene_semantic_diagnostics = false;
     let mut scene_pointer_replay_normalized = None::<[f64; 2]>;
     let mut scene_user_property_overrides = Map::new();
-    let mut fit = FitMode::Cover;
-    let mut _fit_set = false;
-    let mut background = None::<String>;
+    #[cfg(feature = "native-vulkan-video")]
+    let mut scene_video_sources = Vec::new();
+    #[cfg(not(feature = "native-vulkan-video"))]
+    let scene_video_sources = Vec::new();
     let mut scene_clear_color_override = None::<NativeVulkanClearColor>;
-    let mut _muted = true;
-    #[cfg(feature = "native-vulkan-video")]
-    let mut audio_clock_probe_requested = false;
-    #[cfg(feature = "native-vulkan-video")]
-    let mut audio_output_policy = NativeVulkanAudioOutputPolicy::Plan;
     let mut allow_foreground_layer = false;
+    #[cfg(feature = "native-vulkan-video")]
     let mut video_codec = NativeVulkanVideoSessionCodec::H265Main8;
     let mut video_playback_frames = 0u32;
     let mut args = std::env::args().skip(1);
@@ -185,17 +160,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--capabilities" => mode = NativeVulkanCliMode::Capabilities,
             "--contract" => mode = NativeVulkanCliMode::Contract,
             "--type-support" => mode = NativeVulkanCliMode::TypeSupport,
-            "--probe-surface" => mode = NativeVulkanCliMode::ProbeSurface,
-            "--probe-video" => mode = NativeVulkanCliMode::ProbeVideo,
-            "--probe-vulkanalia" => mode = NativeVulkanCliMode::ProbeVulkanalia,
-            "--probe-vulkanalia-swapchain" => mode = NativeVulkanCliMode::ProbeVulkanaliaSwapchain,
-            "--probe-vulkanalia-video-present" => {
-                mode = NativeVulkanCliMode::ProbeVulkanaliaVideoPresent
-            }
             "--scene-backend-plan" => mode = NativeVulkanCliMode::SceneBackendPlan,
             "--run-scene" => mode = NativeVulkanCliMode::RunScene,
-            "--run-clear" => mode = NativeVulkanCliMode::RunClear,
-            "--run-static" => mode = NativeVulkanCliMode::RunStatic,
             "--run-video" => mode = NativeVulkanCliMode::RunVideo,
             "--json" => mode = NativeVulkanCliMode::All,
             "--output-name" => {
@@ -279,19 +245,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             "--gpu-timing" => scene_gpu_timing = true,
+            "--scene-semantic-diagnostics" => scene_semantic_diagnostics = true,
             "--scene-video" => {
-                return Err("--scene-video is not supported by the native Vulkan CLI".into());
+                #[cfg(feature = "native-vulkan-video")]
+                scene_video_sources.push(parse_scene_video_source(
+                    args.next()
+                        .ok_or("--scene-video requires MEDIA_INSTANCE:CODEC:PATH")?,
+                )?);
+                #[cfg(not(feature = "native-vulkan-video"))]
+                return Err("--scene-video requires native-vulkan-video feature".into());
             }
             "--poster" | "--loop" | "--no-loop" | "--decoder" | "--start-offset-ms" => {
                 return Err(format!("{arg} is not supported by the native Vulkan CLI").into());
-            }
-            "--fit" => {
-                let value = args.next().ok_or("--fit requires a value")?;
-                fit = parse_fit_mode(&value)?;
-                _fit_set = true;
-            }
-            "--background" => {
-                background = Some(args.next().ok_or("--background requires #rrggbb")?);
             }
             "--text" | "--text-color" | "--font-size" | "--path-data" | "--path-fill-rule"
             | "--stroke-color" | "--stroke-width" | "--scene-time-ms" | "--snapshot-time-ms"
@@ -307,32 +272,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--scene-property" => {
                 insert_scene_property_override(&mut scene_user_property_overrides, args.next())?;
             }
-            "--muted" => _muted = true,
-            "--unmuted" => _muted = false,
-            "--audio-clock-probe" => {
-                #[cfg(feature = "native-vulkan-video")]
-                {
-                    audio_clock_probe_requested = true;
-                }
-                #[cfg(not(feature = "native-vulkan-video"))]
-                {
-                    return Err("--audio-clock-probe requires native-vulkan-video feature".into());
-                }
-            }
-            "--audio-output" => {
-                let value = args.next().ok_or("--audio-output requires a value")?;
-                #[cfg(feature = "native-vulkan-video")]
-                {
-                    audio_output_policy = NativeVulkanAudioOutputPolicy::parse_cli(&value)?;
-                }
-                #[cfg(not(feature = "native-vulkan-video"))]
-                {
-                    let _ = NativeVulkanAudioOutputPolicy::parse_cli(&value)?;
-                }
+            "--muted" | "--unmuted" | "--audio-clock-probe" | "--audio-output" => {
+                return Err(
+                    "native video audio output and audio-master-clock controls were removed with the raw video route; the renderer-owned video path currently accepts video timing only"
+                        .into(),
+                );
             }
             "--video-codec" => {
-                let value = args.next().ok_or("--video-codec requires a value")?;
-                video_codec = value.parse()?;
+                #[cfg(feature = "native-vulkan-video")]
+                {
+                    let value = args.next().ok_or("--video-codec requires a value")?;
+                    video_codec = value.parse()?;
+                }
+                #[cfg(not(feature = "native-vulkan-video"))]
+                {
+                    let _ = args.next().ok_or("--video-codec requires a value")?;
+                    return Err("--video-codec requires native-vulkan-video feature".into());
+                }
             }
             "--playback-frames" => {
                 video_playback_frames = args
@@ -364,6 +320,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if scene_gpu_timing && mode != NativeVulkanCliMode::RunScene {
         return Err("--gpu-timing requires --run-scene".into());
     }
+    if scene_semantic_diagnostics && mode != NativeVulkanCliMode::RunScene {
+        return Err("--scene-semantic-diagnostics requires --run-scene".into());
+    }
     if !scene_user_property_overrides.is_empty()
         && !matches!(
             mode,
@@ -389,31 +348,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         NativeVulkanCliMode::Capabilities => json!(capabilities()),
         NativeVulkanCliMode::Contract => json!(backend_contract()),
         NativeVulkanCliMode::TypeSupport => json!(wallpaper_type_support_matrix()),
-        NativeVulkanCliMode::ProbeSurface => {
-            json!(probe_wayland_surface(NativeVulkanSurfaceProbeOptions {
-                host: options.host,
-                wait_configure_roundtrips: options.wait_configure_roundtrips,
-            })?)
-        }
-        NativeVulkanCliMode::ProbeVideo => json!(probe_vulkan_video_decode()?),
-        NativeVulkanCliMode::ProbeVulkanalia => json!(probe_native_vulkan_vulkanalia_devices()?),
-        NativeVulkanCliMode::ProbeVulkanaliaSwapchain => {
-            json!(probe_native_vulkan_vulkanalia_surface_swapchain(
-                NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions {
-                    host: options.host,
-                    wait_configure_roundtrips: options.wait_configure_roundtrips,
-                }
-            )?)
-        }
-        NativeVulkanCliMode::ProbeVulkanaliaVideoPresent => {
-            json!(probe_native_vulkan_vulkanalia_video_present_device(
-                NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions {
-                    host: options.host,
-                    wait_configure_roundtrips: options.wait_configure_roundtrips,
-                    codec: video_codec,
-                }
-            )?)
-        }
         NativeVulkanCliMode::SceneBackendPlan => {
             let source = source.ok_or("--scene-backend-plan requires --source <file.gscene>")?;
             if !source.is_file() {
@@ -424,38 +358,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let semantic_frame = RenderingServer::new(&storage)
                 .semantic_world()?
                 .resolve_frame_with_user_properties_at(0.0, &scene_user_property_overrides)?;
-            json!(scene_backend_plan_report(&storage, &semantic_frame)?)
-        }
-        NativeVulkanCliMode::RunClear => json!(run_clear(
-            options,
-            duration.unwrap_or(DEFAULT_BOUNDED_RUN_DURATION),
-        )?),
-        NativeVulkanCliMode::RunStatic => {
-            let source = source.ok_or("--run-static requires --source")?;
-            if !source.is_file() {
-                return Err(format!("static source does not exist: {}", source.display()).into());
-            }
-            if !native_vulkan_static_source_is_gtex(&source) {
-                return Err(format!(
-                    "--run-static requires a native .gtex BC7 source {}; image conversion must be rebuilt through the new scene engine binary resource format",
-                    source.display()
-                )
-                .into());
-            }
-            let output_name = options
-                .host
-                .output_name
-                .clone()
-                .unwrap_or_else(|| "native-vulkan".to_owned());
-            json!(run_static_image(
-                options,
-                duration.unwrap_or(DEFAULT_BOUNDED_RUN_DURATION),
-                StaticWallpaperPlan {
-                    output_name,
-                    source,
-                    fit,
-                    background,
-                },
+            json!(scene_backend_plan_report(
+                &storage,
+                &semantic_frame,
+                scene_surface_extent,
             )?)
         }
         NativeVulkanCliMode::RunScene => {
@@ -474,6 +380,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     clear_color_override: scene_clear_color_override,
                     surface_extent: scene_surface_extent,
                     gpu_timing: scene_gpu_timing,
+                    semantic_diagnostics: scene_semantic_diagnostics,
+                    video_sources: scene_video_sources,
                 },
             )?)
         }
@@ -488,25 +396,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
             #[cfg(feature = "native-vulkan-video")]
             {
-                json!(run_native_vulkan_ffmpeg_vulkan_hw_video_present(
-                    NativeVulkanFfmpegVulkanHwVideoPresentOptions {
+                json!(run_native_vulkan_shared_video_present(
+                    NativeVulkanSharedVideoPresentOptions {
                         host: options.host,
                         wait_configure_roundtrips: options.wait_configure_roundtrips,
                         source,
                         codec: video_codec,
                         playback_frame_count,
                         target_max_fps: options.target_max_fps,
-                        audio_clock_probe_requested,
-                        audio_output_mode: audio_output_policy.resolve(_muted),
-                        audio_master_clock:
-                            NativeVulkanVulkanaliaVideoPresentAudioMasterClock::DISABLED,
                         clear_color: options.clear_color,
                     },
                 )?)
             }
             #[cfg(not(feature = "native-vulkan-video"))]
             {
-                let _ = (options, source, fit, _muted, playback_frame_count);
+                let _ = (options, source, playback_frame_count);
                 return Err(
                     "--run-video FFmpeg Vulkan HW decode route requires native-vulkan-video feature"
                         .into(),

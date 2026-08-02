@@ -1,7 +1,5 @@
 //! Rasterization sample policy for scene pipelines.
 
-use vulkanalia::vk;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ScenePipelineSamples {
     Single,
@@ -9,10 +7,10 @@ pub(super) enum ScenePipelineSamples {
 }
 
 impl ScenePipelineSamples {
-    pub(super) const fn rasterization_samples(self) -> vk::SampleCountFlags {
+    pub(super) const fn label(self) -> &'static str {
         match self {
-            Self::Single => vk::SampleCountFlags::_1,
-            Self::SceneColor4x => vk::SampleCountFlags::_4,
+            Self::Single => "1x",
+            Self::SceneColor4x => "4x",
         }
     }
 }

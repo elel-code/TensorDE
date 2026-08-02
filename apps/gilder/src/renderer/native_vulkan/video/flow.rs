@@ -76,25 +76,25 @@ pub fn native_vulkan_video_flow_contract() -> NativeVulkanVideoFlowContract {
                 kind: NativeVulkanVideoFlowQueueKind::PacketQueue,
                 owner: NativeVulkanVideoFlowOwner::FfmpegHwDecode,
                 ffmpeg_reference: "ffplay.c PacketQueue: packet_queue_put/get/flush/start and queue serial",
-                producer: "read/demux/parser frontend",
-                consumer: "FFmpeg avcodec Vulkan hwaccel send/receive worker",
+                producer: "renderer-owned FFmpeg demux/parser frontend",
+                consumer: "renderer-owned FFmpeg Vulkan avcodec send/receive",
                 payload: "AVPacket refs with pts/duration and packet serial",
                 serial_rule: "flush, seek and loop advance packet serial; decode, audio and frame samples with older serial are stale",
                 capacity_rule: "bounded queue; FFmpeg parser/codec state owns recovery, reorder and reference bootstrap",
-                copy_cost_rule: "compressed payload is consumed by avcodec; Gilder does not upload a Vulkan Video bitstream ring on the mainline",
+                copy_cost_rule: "compressed payload is consumed by renderer-owned avcodec inside vulkan-renderer; Gilder does not upload a Vulkan Video bitstream ring",
                 wake_rule: "producer wakes decode when queue becomes non-empty; consumer never busy-spins on empty queue",
             },
             NativeVulkanVideoFlowQueueContract {
                 kind: NativeVulkanVideoFlowQueueKind::DecodedFrameQueue,
                 owner: NativeVulkanVideoFlowOwner::FfmpegHwDecode,
                 ffmpeg_reference: "ffplay.c FrameQueue: pictq with keep_last and per-frame serial",
-                producer: "FFmpeg Vulkan hwaccel decode",
-                consumer: "render refresh",
-                payload: "AVFrame(format=AV_PIX_FMT_VULKAN) with AVVkFrame image/layout/timeline/queue-family identity, pts and serial",
+                producer: "renderer-owned FFmpeg Vulkan decode",
+                consumer: "renderer-owned presentation transaction",
+                payload: "opaque retained Y/UV plane leases plus PTS/duration, loop generation and typed timeline dependency",
                 serial_rule: "frame serial must match the current packet queue serial before render",
-                capacity_rule: "small keep-last queue; retain AVFrame refs until present fences release sampled images",
-                copy_cost_rule: "decoded images remain FFmpeg-owned Vulkan images; no transfer/download/upload is allowed on the mainline",
-                wake_rule: "decode wakes render when a displayable frame is ready; render sleeps/paces to the selected master clock",
+                capacity_rule: "bounded keep-last state; renderer retains the private AVFrame only through the consuming submission retirement",
+                copy_cost_rule: "decoded images remain renderer-owned FFmpeg Vulkan images; no transfer/download/upload is allowed",
+                wake_rule: "presentation holds the retained frame until its PTS/duration expires and only then asks decode for another",
             },
             NativeVulkanVideoFlowQueueContract {
                 kind: NativeVulkanVideoFlowQueueKind::AudioFrameQueue,
@@ -112,11 +112,11 @@ pub fn native_vulkan_video_flow_contract() -> NativeVulkanVideoFlowContract {
                 kind: NativeVulkanVideoFlowQueueKind::PresentPacer,
                 owner: NativeVulkanVideoFlowOwner::NativePresent,
                 ffmpeg_reference: "ffplay.c video_refresh: compute_target_delay, master clock comparison and remaining_time sleep",
-                producer: "render refresh",
-                consumer: "Wayland/Vulkan present",
-                payload: "selected frame identity, target present time, output surface and compositor pacing evidence",
+                producer: "renderer-owned PTS frame selector",
+                consumer: "renderer-owned Wayland/Vulkan presentation transaction",
+                payload: "selected opaque frame lease, PTS deadline, output surface and compositor pacing evidence",
                 serial_rule: "present only uses the frame serial accepted by render; stale frames are discarded before present",
-                capacity_rule: "latest-present intent is keep-last; duplicated presents are avoided when the displayed frame and clock permit",
+                capacity_rule: "latest-present intent is keep-last; high-refresh presents may reuse the current PTS frame without another decode",
                 copy_cost_rule: "present path may still copy through swapchain/compositor; zero-copy claims must stay scoped",
                 wake_rule: "sleep until next refresh deadline or compositor/event wakeup instead of polling continuously",
             },
@@ -136,8 +136,8 @@ pub fn native_vulkan_video_flow_contract() -> NativeVulkanVideoFlowContract {
                 owner: NativeVulkanVideoFlowOwner::FfmpegHwDecode,
                 ffmpeg_reference: "ffplay.c video_thread and ffmpeg_dec.c decoder_thread send/receive flow",
                 input: "packet queue boundary",
-                output: "AV_PIX_FMT_VULKAN decoded frame queue",
-                blocking_rule: "blocks on packet/frame readiness; never owns Gilder descriptor heap or present loop",
+                output: "opaque retained decoded-plane lease",
+                blocking_rule: "blocks on packet/frame readiness; never exposes a descriptor heap, raw image, queue or present loop to Gilder",
                 replaceable_rule: "decode stays FFmpeg Vulkan hwaccel on the mainline; unsupported software fallback is an explicit error",
             },
             NativeVulkanVideoFlowThreadContract {
@@ -153,10 +153,10 @@ pub fn native_vulkan_video_flow_contract() -> NativeVulkanVideoFlowContract {
                 kind: NativeVulkanVideoFlowThreadKind::RenderRefresh,
                 owner: NativeVulkanVideoFlowOwner::NativeRender,
                 ffmpeg_reference: "ffplay.c video_refresh",
-                input: "decoded frame queue plus master clock",
+                input: "retained decoded-plane lease plus PTS/duration policy",
                 output: "present pacer",
-                blocking_rule: "uses frame duration/master-clock delay to sleep or skip; does not busy-loop on missing frames",
-                replaceable_rule: "render stays native Vulkan even when the frontend demux/decode provider changes",
+                blocking_rule: "uses exact PTS/duration delay to retain, repeat or catch up without busy-loop decode",
+                replaceable_rule: "renderer owns rendering even when the typed media frontend changes",
             },
             NativeVulkanVideoFlowThreadContract {
                 kind: NativeVulkanVideoFlowThreadKind::AudioCallback,
@@ -170,8 +170,8 @@ pub fn native_vulkan_video_flow_contract() -> NativeVulkanVideoFlowContract {
         ],
         invariants: &[
             "FFmpeg under references/gilder/ffmpeg is the first source for queue, serial, clock and refresh semantics",
-            "FFmpeg owns demux/parser/packet send and Vulkan hw decode; Gilder owns descriptor heap/render/present",
-            "PacketQueue semantics apply to compressed packets; FrameQueue semantics apply to AVVkFrame decoded images and keep-last refresh",
+            "vulkan-renderer owns FFmpeg demux/parser/packet send, Vulkan hw decode, descriptor heaps, render and present; Gilder supplies typed media policy",
+            "PacketQueue semantics apply inside the renderer; retained decoded-plane leases apply to keep-last PTS refresh",
             "every cross-thread video/audio handoff carries a serial or is explicitly proven not to cross loop/seek state",
             "lock-free structures are optional; FFmpeg alignment requires bounded ownership, serial invalidation and sleep/wakeup behavior first",
             "copy-reduction evidence must name the boundary: compressed packet retention, bitstream upload, decoded image handoff, render or present",
@@ -223,7 +223,9 @@ mod tests {
             queue.kind == NativeVulkanVideoFlowQueueKind::DecodedFrameQueue
                 && queue.ffmpeg_reference.contains("FrameQueue")
                 && queue.capacity_rule.contains("keep-last")
-                && queue.copy_cost_rule.contains("FFmpeg-owned Vulkan images")
+                && queue
+                    .copy_cost_rule
+                    .contains("decoded images remain renderer-owned")
         }));
         assert!(contract.threads.iter().any(|thread| {
             thread.kind == NativeVulkanVideoFlowThreadKind::Read
@@ -234,7 +236,7 @@ mod tests {
         assert!(contract.threads.iter().any(|thread| {
             thread.kind == NativeVulkanVideoFlowThreadKind::RenderRefresh
                 && thread.ffmpeg_reference.contains("video_refresh")
-                && thread.blocking_rule.contains("does not busy-loop")
+                && thread.blocking_rule.contains("without busy-loop decode")
         }));
     }
 

@@ -17,6 +17,7 @@
             a: 1.0,
         };
         let item = NativeVulkanRenderItem::Scene {
+            scene: Box::new(crate::renderer::native_vulkan::NativeVulkanSceneRenderItem {
             output_name: "HDMI-A-1".to_owned(),
             scene_source: Some(PathBuf::from("/tmp/scene.json")),
             display: Some(SceneDisplayPlan::Color {
@@ -50,7 +51,8 @@
             scene_size: None,
             scene_fit: FitMode::Cover,
             target_max_fps: Some(60),
-            renderer_status: "deterministic-scene-snapshot-ready-for-vulkan-passes",
+                renderer_status: "deterministic-scene-snapshot-ready-for-vulkan-passes",
+            }),
         };
 
         let color = native_vulkan_render_item_clear_color(&item, fallback);

@@ -78,11 +78,11 @@ impl SemanticFrameResolver {
         let user_property_visibility =
             super::user_property::resolved_visibility(world, user_property_overrides)?;
         let frame =
-            world.resolve_frame_with_dynamic_values_at(0.0, &[], &user_property_visibility)?;
+            world.resolve_frame_with_dynamic_values_at(0.0, 0.0, &[], &user_property_visibility)?;
         let dynamic_entities = dynamic_entity_closure(world);
         let puppet_topologies = retained_puppet_topologies(world)?;
         let entity_count = world.entities.len();
-        let event_system = RetainedSceneEventSystem::from_world(world);
+        let event_system = RetainedSceneEventSystem::from_world(world, &frame);
         let script_runtime =
             SceneScriptRuntime::from_storage(world.storage(), user_property_overrides)
                 .map_err(|error| SceneSemanticWorldError::ScriptRuntime(error.to_string()))?;
@@ -124,6 +124,8 @@ impl SemanticFrameResolver {
         frame_delta_seconds: f32,
         events: &SceneFrameEvents,
     ) -> Result<&ResolvedSemanticFrame, SceneSemanticWorldError> {
+        let camera_animation_time_seconds =
+            (scene_time_seconds - frame_delta_seconds.clamp(0.0, 0.25)).max(0.0);
         self.dispatch_scripts(world, scene_time_seconds, events)?;
         self.event_system
             .begin_frame(world, &mut self.frame, frame_delta_seconds, events);
@@ -144,6 +146,7 @@ impl SemanticFrameResolver {
             let video_frame = self.frame.video_frame;
             self.frame = world.resolve_frame_with_dynamic_values_at(
                 scene_time_seconds,
+                camera_animation_time_seconds,
                 &self.script_deltas,
                 &self.user_property_visibility,
             )?;
@@ -183,6 +186,7 @@ impl SemanticFrameResolver {
                 &self.script_deltas,
                 &self.user_property_visibility,
                 scene_time_seconds,
+                camera_animation_time_seconds,
             )?;
         }
         for &entity_index in &self.dynamic_entities {

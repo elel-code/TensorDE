@@ -142,6 +142,7 @@ mod tests {
             base_material_blending: Some("translucent".to_owned()),
             base_texture_slots: vec![0],
             base_pass_constants: Vec::new(),
+            color_blend_mode: 0,
             framebuffer_snapshot: None,
             final_scene_blend: SceneBlendMode::Alpha,
             static_black_output: false,
@@ -153,7 +154,6 @@ mod tests {
                 material_index: 12,
                 shader: DIRECT_SHADER.to_owned(),
             }),
-            ripple_flow_material_indices: None,
             final_effect_material: None,
             effect_passes: vec![effect("foliagesway", 10), effect("waterripple", 11)],
         };
@@ -182,6 +182,7 @@ mod tests {
             base_material_blending: Some("translucent".to_owned()),
             base_texture_slots: vec![0],
             base_pass_constants: Vec::new(),
+            color_blend_mode: 0,
             framebuffer_snapshot: None,
             final_scene_blend: SceneBlendMode::Screen,
             static_black_output: false,
@@ -193,7 +194,6 @@ mod tests {
                 material_index: 12,
                 shader: SCREEN_DIRECT_SHADER.to_owned(),
             }),
-            ripple_flow_material_indices: None,
             final_effect_material: None,
             effect_passes: vec![effect("foliagesway", 10), effect("waterripple", 11)],
         };

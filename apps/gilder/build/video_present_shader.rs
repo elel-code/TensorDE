@@ -69,6 +69,28 @@ pub(super) fn build_video_present_shaders() {
     );
     fs::write(out_dir.join("gilder_video_present_shaders.rs"), generated)
         .expect("write generated video-present shader catalog");
+    let scene_generated = format!(
+        "static SCENE_VIDEO_LAYER_VERTEX_SPIRV: &[u32] = vulkan_renderer::include_spirv!({:?});\n\
+         static SCENE_VIDEO_LAYER_FRAGMENT_SPIRV: &[u32] = vulkan_renderer::include_spirv!({:?});\n\
+         const SCENE_VIDEO_LAYER_PUSH_BYTES: u32 = {};\n",
+        scene_vertex.spirv, scene_fragment.spirv, scene_fragment.push_bytes,
+    );
+    fs::write(
+        out_dir.join("gilder_scene_video_shaders.rs"),
+        scene_generated,
+    )
+    .expect("write generated scene-video shader catalog");
+    let shared_present_generated = format!(
+        "static SHARED_VIDEO_PRESENT_VERTEX_SPIRV: &[u32] = vulkan_renderer::include_spirv!({:?});\n\
+         static SHARED_VIDEO_PRESENT_FRAGMENT_SPIRV: &[u32] = vulkan_renderer::include_spirv!({:?});\n\
+         const SHARED_VIDEO_PRESENT_PUSH_BYTES: u32 = {};\n",
+        fullscreen_vertex.spirv, fullscreen_fragment.spirv, fullscreen_fragment.push_bytes,
+    );
+    fs::write(
+        out_dir.join("gilder_shared_video_present_shaders.rs"),
+        shared_present_generated,
+    )
+    .expect("write shared video-present shader catalog");
 }
 
 fn compile_descriptor_free(

@@ -9,8 +9,7 @@ pub(super) struct FlatRoundedMaskUvBounds {
 }
 
 pub(super) fn flat_rounded_effect_enabled(draw: &SceneRenderingDeviceMeshDraw) -> bool {
-    draw.effect_visibility_policy
-        == crate::engine::scene::SceneRenderEffectVisibilityPolicy::None
+    draw.effect_visibility_policy == crate::engine::scene::SceneRenderEffectVisibilityPolicy::None
         || (draw.effect_binding_count > 0 && draw.resolved_effect_visibility_mask & 1 != 0)
 }
 
@@ -49,7 +48,12 @@ pub(super) fn flat_rounded_mask_uv_bounds(
                 [0.0, 0.0],
             )
         },
-        |extent| (extent[0].max(extent[1]), [extent[0].recip(), extent[1].recip()]),
+        |extent| {
+            (
+                extent[0].max(extent[1]),
+                [extent[0].recip(), extent[1].recip()],
+            )
+        },
     );
     let edge_softness = softness / softness_extent * 2.0;
     let half_extent = [
@@ -74,14 +78,9 @@ mod tests {
 
     #[test]
     fn bounds_include_only_the_soft_sdf_support() {
-        let bounds = flat_rounded_mask_uv_bounds(
-            [0.9, 0.9],
-            2.0,
-            [550.0, 3300.0],
-            [2561, 1601],
-            None,
-        )
-        .expect("bounded rounded mask");
+        let bounds =
+            flat_rounded_mask_uv_bounds([0.9, 0.9], 2.0, [550.0, 3300.0], [2561, 1601], None)
+                .expect("bounded rounded mask");
 
         let edge = 2.0 / 2561.0 * 2.0;
         assert!((bounds.min[0] - (0.05 - edge)).abs() <= 1.0e-6);
@@ -110,14 +109,8 @@ mod tests {
     #[test]
     fn invalid_parameters_require_an_unbounded_fallback() {
         assert!(
-            flat_rounded_mask_uv_bounds(
-                [0.9, 0.9],
-                -1.0,
-                [550.0, 3300.0],
-                [2561, 1601],
-                None,
-            )
-            .is_none()
+            flat_rounded_mask_uv_bounds([0.9, 0.9], -1.0, [550.0, 3300.0], [2561, 1601], None,)
+                .is_none()
         );
     }
 }

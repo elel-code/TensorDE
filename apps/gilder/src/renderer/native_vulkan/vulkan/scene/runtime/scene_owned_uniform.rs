@@ -2,11 +2,10 @@
 
 use crate::engine::scene::semantic_world::ResolvedMaterialScalarValue;
 use crate::engine::scene::{
-    SceneMaterialHandle, SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw, SceneStorage,
-    StereoSpectrum64,
+    SceneMaterialHandle, SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw,
+    SceneRenderingDeviceProjectionDomain, SceneStorage, StereoSpectrum64,
 };
 use serde::Serialize;
-use vulkanalia::vk;
 
 use super::ScenePipelineDescriptorLayout;
 use super::effect_target::SceneEffectTargetImagePlan;
@@ -14,8 +13,8 @@ use super::material_uniform::{material_pass_constants, parse_constant_values};
 use super::sampled_binding::{SceneSampledImageBindingPlan, SceneSampledImageSource};
 use super::scene_viewport::{apply_scene_cover_clip_scale, scene_cover_clip_scale};
 use super::shader_program::{
-    SceneOwnedUniformSource, SceneResolvedGraphicsProgram, resolve_scene_graphics_program,
-    scene_owned_stage_resource_plan,
+    SceneAudioSpectrumChannel, SceneAudioSpectrumResolution, SceneOwnedUniformSource,
+    SceneResolvedGraphicsProgram, resolve_scene_graphics_program, scene_owned_stage_resource_plan,
 };
 
 mod payload;
@@ -74,8 +73,10 @@ struct SceneOwnedUniformMemberSource {
 enum SceneOwnedRetainedSource {
     SceneTime,
     FrameDelta,
-    AudioSpectrum64Left,
-    AudioSpectrum64Right,
+    AudioSpectrum {
+        channel: SceneAudioSpectrumChannel,
+        resolution: SceneAudioSpectrumResolution,
+    },
     ModelViewProjectionMatrix,
     EffectModelViewProjectionMatrix,
     LayerModelMatrix,
@@ -125,11 +126,8 @@ pub fn native_vulkan_scene_owned_uniform_arena_plan(
     let effect_targets = super::effect_target::scene_effect_target_image_plan(
         storage,
         graph,
-        vk::Format::B8G8R8A8_SRGB,
-        vk::Extent2D {
-            width: output_extent[0],
-            height: output_extent[1],
-        },
+        vulkan_renderer::TextureFormat::Bgra8Srgb,
+        vulkan_renderer::Extent2D::new(output_extent[0], output_extent[1]),
     )?;
     let plan = SceneOwnedUniformArenaPlan::build(
         storage,
@@ -221,12 +219,13 @@ impl SceneOwnedUniformArenaPlan {
                                 SceneOwnedUniformSource::FrameDelta => {
                                     SceneOwnedRetainedSource::FrameDelta
                                 }
-                                SceneOwnedUniformSource::AudioSpectrum64Left => {
-                                    SceneOwnedRetainedSource::AudioSpectrum64Left
-                                }
-                                SceneOwnedUniformSource::AudioSpectrum64Right => {
-                                    SceneOwnedRetainedSource::AudioSpectrum64Right
-                                }
+                                SceneOwnedUniformSource::AudioSpectrum {
+                                    channel,
+                                    resolution,
+                                } => SceneOwnedRetainedSource::AudioSpectrum {
+                                    channel,
+                                    resolution,
+                                },
                                 SceneOwnedUniformSource::ModelViewProjectionMatrix => {
                                     SceneOwnedRetainedSource::ModelViewProjectionMatrix
                                 }
@@ -403,29 +402,27 @@ impl SceneOwnedUniformArenaPlan {
                     SceneOwnedRetainedSource::FrameDelta => {
                         write_values(destination, &[inputs.frame_delta_seconds])?;
                     }
-                    SceneOwnedRetainedSource::AudioSpectrum64Left => {
-                        write_strided_values(
-                            destination,
-                            &inputs.audio_spectrum.left,
-                            member.array_stride,
-                        )?;
-                    }
-                    SceneOwnedRetainedSource::AudioSpectrum64Right => {
-                        write_strided_values(
-                            destination,
-                            &inputs.audio_spectrum.right,
-                            member.array_stride,
-                        )?;
-                    }
+                    SceneOwnedRetainedSource::AudioSpectrum {
+                        channel,
+                        resolution,
+                    } => write_audio_spectrum(
+                        destination,
+                        inputs.audio_spectrum,
+                        *channel,
+                        *resolution,
+                        member.array_stride,
+                    )?,
                     SceneOwnedRetainedSource::ModelViewProjectionMatrix => {
-                        let matrix = apply_scene_cover_clip_scale(
+                        let matrix = scene_owned_projection_matrix(
+                            draw.projection_domain,
                             draw.clip_transform,
                             self.scene_cover_clip_scale,
                         );
                         write_matrix(destination, &matrix)?;
                     }
                     SceneOwnedRetainedSource::EffectModelViewProjectionMatrix => {
-                        let matrix = apply_scene_cover_clip_scale(
+                        let matrix = scene_owned_projection_matrix(
+                            draw.projection_domain,
                             draw.effect_model_view_projection_matrix,
                             self.scene_cover_clip_scale,
                         );
@@ -466,6 +463,46 @@ impl SceneOwnedUniformArenaPlan {
             }
         }
         Ok(())
+    }
+}
+
+fn write_audio_spectrum(
+    destination: &mut [u8],
+    spectrum: &StereoSpectrum64,
+    channel: SceneAudioSpectrumChannel,
+    resolution: SceneAudioSpectrumResolution,
+    array_stride: u32,
+) -> Result<(), String> {
+    use SceneAudioSpectrumChannel::{Left, Right};
+    use SceneAudioSpectrumResolution::{Bands16, Bands32, Bands64};
+
+    let channel64 = match channel {
+        Left => &spectrum.left,
+        Right => &spectrum.right,
+    };
+    match resolution {
+        Bands64 => write_strided_values(destination, channel64, array_stride),
+        Bands32 => {
+            let channel32 = StereoSpectrum64::max_pool_32(channel64);
+            write_strided_values(destination, &channel32, array_stride)
+        }
+        Bands16 => {
+            let channel32 = StereoSpectrum64::max_pool_32(channel64);
+            let channel16 = StereoSpectrum64::max_pool_16(&channel32);
+            write_strided_values(destination, &channel16, array_stride)
+        }
+    }
+}
+
+fn scene_owned_projection_matrix(
+    domain: SceneRenderingDeviceProjectionDomain,
+    matrix: [[f32; 4]; 4],
+    scene_cover_clip_scale: [f32; 2],
+) -> [[f32; 4]; 4] {
+    if domain == SceneRenderingDeviceProjectionDomain::Scene {
+        apply_scene_cover_clip_scale(matrix, scene_cover_clip_scale)
+    } else {
+        matrix
     }
 }
 
@@ -581,11 +618,19 @@ fn sampled_source_resolution(
                         "scene-owned sampled effect target physical slot {physical_slot} is missing"
                     )
                 })?;
-            [target.width, target.height, target.width, target.height]
+            [
+                target.extent.width,
+                target.extent.height,
+                target.extent.width,
+                target.extent.height,
+            ]
         }
-        SceneSampledImageSource::VideoFrame { media_instance } => {
+        SceneSampledImageSource::VideoFramePlane {
+            media_instance,
+            plane,
+        } => {
             return Err(format!(
-                "scene-owned video media instance {media_instance} has no retained resolution"
+                "scene-owned video media instance {media_instance} plane {plane:?} has no cold retained resolution"
             ));
         }
     };

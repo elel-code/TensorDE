@@ -444,6 +444,14 @@ impl WeIrBuilder {
         let effects_in_authored_texture_space = puppet_material::image_effects_use_authored_texture(
             base_pass.as_ref().map_or("", |pass| &pass.shader_key),
         );
+        // WE evaluates image effects over the complete authored texture, then applies puppet
+        // skinning exactly once in the terminal scene composite. Retain every authored pass for
+        // that boundary until an aggregate implementation proves the same resource and command
+        // stream; otherwise a puppet triangle fan becomes the local effect producer geometry.
+        let preserve_authored_puppet_effect_stream = preserve_authored_puppet_effect_stream(
+            object_is_puppet,
+            effects_in_authored_texture_space,
+        );
         let mut effect_passes = Vec::new();
         for instance in effect_instances {
             self.push_effect_contracts_for_instance(
@@ -461,21 +469,23 @@ impl WeIrBuilder {
         let framebuffer_snapshot_available =
             utility_layer.is_some_and(|layer| layer.samples_scene_color());
         let final_scene_blend = scene_blend_from_color_blend_mode(color_blend_mode);
-        let waterwaves_displacement = if preserve_authored_effect_target_boundary {
-            Default::default()
-        } else {
-            waterwaves_displacement::create_waterwaves_displacement_materials(
-                self,
-                effects_in_authored_texture_space,
-                base_material_handle as usize,
-                final_scene_blend,
-                object_is_puppet,
-                static_black_output,
-                puppet_group_visual_required,
-                &effect_passes,
-            )
-        };
+        let waterwaves_displacement =
+            if preserve_authored_effect_target_boundary || preserve_authored_puppet_effect_stream {
+                Default::default()
+            } else {
+                waterwaves_displacement::create_waterwaves_displacement_materials(
+                    self,
+                    effects_in_authored_texture_space,
+                    base_material_handle as usize,
+                    final_scene_blend,
+                    object_is_puppet,
+                    static_black_output,
+                    puppet_group_visual_required,
+                    &effect_passes,
+                )
+            };
         let foliage_ripple = (!preserve_authored_effect_target_boundary
+            && !preserve_authored_puppet_effect_stream
             && !puppet_group_visual_required)
             .then(|| {
                 foliage_ripple::create(
@@ -486,18 +496,8 @@ impl WeIrBuilder {
                 )
             })
             .flatten();
-        let ripple_flow_materials = (!preserve_authored_effect_target_boundary
-            && !puppet_group_visual_required)
-            .then(|| {
-                ripple_flow::create(
-                    self,
-                    base_material_handle,
-                    &effect_passes,
-                    final_scene_blend,
-                )
-            })
-            .flatten();
-        let final_effect = if puppet_group_visual_required {
+        let final_effect = if puppet_group_visual_required || preserve_authored_puppet_effect_stream
+        {
             None
         } else if preserve_authored_effect_target_boundary {
             final_effect::create_framebuffer_water(
@@ -521,13 +521,13 @@ impl WeIrBuilder {
         let uses_whole_graph_effect_path = waterwaves_displacement.uv_field.is_some()
             || waterwaves_displacement.direct.is_some()
             || foliage_ripple.is_some()
-            || ripple_flow_materials.is_some()
             || final_effect.is_some();
-        let effect_passes = if uses_whole_graph_effect_path {
-            effect_passes
-        } else {
-            waterwaves_displacement::aggregate_waterwaves_effect_runs(self, &effect_passes)
-        };
+        let effect_passes =
+            if uses_whole_graph_effect_path || preserve_authored_puppet_effect_stream {
+                effect_passes
+            } else {
+                waterwaves_displacement::aggregate_waterwaves_effect_runs(self, &effect_passes)
+            };
         let mut graph_contract = WeImageGraphContract {
             object_index: object as usize,
             base_material_index: Some(base_material_handle as usize),
@@ -543,6 +543,7 @@ impl WeIrBuilder {
                 .map(|pass| pipeline_blend_string(pass.pipeline_blend)),
             base_texture_slots,
             base_pass_constants,
+            color_blend_mode,
             framebuffer_snapshot: utility_layer
                 .filter(|layer| layer.samples_scene_color())
                 .map(
@@ -564,7 +565,6 @@ impl WeIrBuilder {
             waterwaves_uv_field_material_index: waterwaves_displacement.uv_field,
             waterwaves_direct_material: waterwaves_displacement.direct,
             foliage_ripple_material: foliage_ripple,
-            ripple_flow_material_indices: ripple_flow_materials,
             final_effect_material: final_effect,
             effect_passes,
         };
@@ -591,7 +591,7 @@ impl WeIrBuilder {
             graph_contract.framebuffer_snapshot =
                 Some(crate::engine::render_graph::WeFramebufferSnapshotContract {
                     target_name: FULL_FRAMEBUFFER_TARGET.to_owned(),
-                    texture_slot: 0,
+                    texture_slot: we_image_graph_generated_scene_snapshot_slot(&graph_contract),
                     composite_to_object_mesh: false,
                     usage: crate::engine::render_graph::WeFramebufferSnapshotUsage::ObjectSource,
                 });
@@ -700,5 +700,25 @@ impl WeIrBuilder {
             &self.material_textures,
             &self.material_constants,
         );
+    }
+}
+
+fn preserve_authored_puppet_effect_stream(
+    object_is_puppet: bool,
+    effects_in_authored_texture_space: bool,
+) -> bool {
+    object_is_puppet && effects_in_authored_texture_space
+}
+
+#[cfg(test)]
+mod authored_puppet_effect_tests {
+    use super::preserve_authored_puppet_effect_stream;
+
+    #[test]
+    fn only_authored_texture_puppets_disable_effect_stream_aggregation() {
+        assert!(preserve_authored_puppet_effect_stream(true, true));
+        assert!(!preserve_authored_puppet_effect_stream(true, false));
+        assert!(!preserve_authored_puppet_effect_stream(false, true));
+        assert!(!preserve_authored_puppet_effect_stream(false, false));
     }
 }

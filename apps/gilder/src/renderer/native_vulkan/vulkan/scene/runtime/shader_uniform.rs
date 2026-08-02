@@ -65,20 +65,16 @@ pub(super) fn write_scene_owned_uniform_payload(
             SceneOwnedUniformSource::FrameDelta => {
                 write_f32_values(destination, &[inputs.frame_delta_seconds])?;
             }
-            SceneOwnedUniformSource::AudioSpectrum64Left => {
-                write_strided_f32_values(
-                    destination,
-                    &inputs.audio_spectrum.left,
-                    member.array_stride,
-                )?;
-            }
-            SceneOwnedUniformSource::AudioSpectrum64Right => {
-                write_strided_f32_values(
-                    destination,
-                    &inputs.audio_spectrum.right,
-                    member.array_stride,
-                )?;
-            }
+            SceneOwnedUniformSource::AudioSpectrum {
+                channel,
+                resolution,
+            } => write_audio_spectrum(
+                destination,
+                inputs.audio_spectrum,
+                channel,
+                resolution,
+                member.array_stride,
+            )?,
             SceneOwnedUniformSource::ModelViewProjectionMatrix => {
                 write_matrix(destination, inputs.model_view_projection_matrix)?;
             }
@@ -176,9 +172,7 @@ fn write_strided_f32_values(
     let stride = array_stride as usize;
     let expected = values
         .len()
-        .checked_sub(1)
-        .and_then(|count| count.checked_mul(stride))
-        .and_then(|offset| offset.checked_add(size_of::<f32>()))
+        .checked_mul(stride)
         .ok_or_else(|| "scene-owned uniform array byte count overflows".to_owned())?;
     if stride < size_of::<f32>() || destination.len() != expected {
         return Err(format!(
@@ -191,6 +185,34 @@ fn write_strided_f32_values(
         destination[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
     Ok(())
+}
+
+fn write_audio_spectrum(
+    destination: &mut [u8],
+    spectrum: &StereoSpectrum64,
+    channel: super::shader_program::SceneAudioSpectrumChannel,
+    resolution: super::shader_program::SceneAudioSpectrumResolution,
+    array_stride: u32,
+) -> Result<(), String> {
+    use super::shader_program::SceneAudioSpectrumChannel::{Left, Right};
+    use super::shader_program::SceneAudioSpectrumResolution::{Bands16, Bands32, Bands64};
+
+    let channel64 = match channel {
+        Left => &spectrum.left,
+        Right => &spectrum.right,
+    };
+    match resolution {
+        Bands64 => write_strided_f32_values(destination, channel64, array_stride),
+        Bands32 => {
+            let channel32 = StereoSpectrum64::max_pool_32(channel64);
+            write_strided_f32_values(destination, &channel32, array_stride)
+        }
+        Bands16 => {
+            let channel32 = StereoSpectrum64::max_pool_32(channel64);
+            let channel16 = StereoSpectrum64::max_pool_16(&channel32);
+            write_strided_f32_values(destination, &channel16, array_stride)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -214,12 +236,7 @@ mod tests {
                 64,
             ),
             member("g_Time", SceneOwnedUniformSource::SceneTime, 128, 4),
-            member(
-                "g_FrameTime",
-                SceneOwnedUniformSource::FrameDelta,
-                132,
-                4,
-            ),
+            member("g_FrameTime", SceneOwnedUniformSource::FrameDelta, 132, 4),
         ];
         let plan = SceneOwnedUniformBufferPlan {
             name: "GlobalParams",

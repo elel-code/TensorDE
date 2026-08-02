@@ -47,7 +47,8 @@ pub(super) fn create_waterwaves_displacement_materials(
     if std::env::var_os(DISABLE_WATERWAVES_AGGREGATION_ENV).is_some() {
         return WaterWavesDisplacementMaterials::default();
     }
-    if !authored_texture_space
+    if object_is_puppet
+        || !authored_texture_space
         || !we_effect_passes_form_waterwaves_displacement_chain(effects)
         || compatible_effect_binding_count(effects).is_none()
     {

@@ -10,8 +10,12 @@ mod uniform_alias_tests;
 mod uniform_source;
 
 use uniform_source::scene_owned_uniform_source;
+pub(super) use uniform_source::{
+    SceneAudioSpectrumChannel, SceneAudioSpectrumResolution, SceneOwnedUniformSource,
+    is_scene_audio_spectrum_uniform_name,
+};
 
-use vulkanalia::vk;
+use vulkan_renderer::VertexFormat;
 
 use crate::engine::scene::{
     SceneRenderingDeviceDrawPrimitive, SceneShaderBindingKind, SceneShaderIoDirection,
@@ -114,9 +118,10 @@ pub(super) fn resolve_scene_graphics_program(
     }
     let shader = native_vulkan_scene_shader_for_key(key)
         .ok_or_else(|| format!("engine-owned scene shader {key:?} is not built in"))?;
-    let vertex = native_vulkan_scene_vertex_shader_for_primitive(shader, primitive).ok_or_else(
-        || format!("engine-owned scene shader {key:?} has no {primitive:?} vertex program"),
-    )?;
+    let vertex =
+        native_vulkan_scene_vertex_shader_for_primitive(shader, primitive).ok_or_else(|| {
+            format!("engine-owned scene shader {key:?} has no {primitive:?} vertex program")
+        })?;
     Ok(SceneResolvedGraphicsProgram::EngineBuiltIn {
         key,
         shader,
@@ -127,7 +132,7 @@ pub(super) fn resolve_scene_graphics_program(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SceneVertexAttributePlan {
     pub location: u32,
-    pub format: vk::Format,
+    pub format: VertexFormat,
     pub offset: u32,
 }
 
@@ -167,19 +172,6 @@ pub(super) struct SceneOwnedUniformMemberPlan<'a> {
     pub array_count: u32,
     pub array_stride: u32,
     pub matrix_stride: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SceneOwnedUniformSource<'a> {
-    SceneTime,
-    FrameDelta,
-    AudioSpectrum64Left,
-    AudioSpectrum64Right,
-    ModelViewProjectionMatrix,
-    EffectModelViewProjectionMatrix,
-    LayerModelMatrix,
-    SampledTextureResolution { slot: u32 },
-    MaterialParameter { authored_name: &'a str },
 }
 
 pub(super) fn scene_owned_stage_resource_plan<'a>(
@@ -283,27 +275,25 @@ fn scene_vertex_attribute(
     }
     let (format, offset) = match name {
         "a_Position"
-            if input.scalar_type == SceneShaderScalarType::F32
-                && matches!(input.rows, 2..=4) =>
+            if input.scalar_type == SceneShaderScalarType::F32 && matches!(input.rows, 2..=4) =>
         {
             // Scene meshes are two-dimensional. Vulkan supplies zero for the
             // absent z component of the authored vec3 input.
-            (vk::Format::R32G32_SFLOAT, 0)
+            (VertexFormat::Float32x2, 0)
         }
         "a_TexCoord"
-            if input.scalar_type == SceneShaderScalarType::F32 && input.rows == 2 =>
+            if input.scalar_type == SceneShaderScalarType::F32 && matches!(input.rows, 2..=4) =>
         {
-            (vk::Format::R32G32_SFLOAT, 8)
+            // The scene mesh owns two primary-UV components. Authored WE
+            // shaders can declare a wider vector while consuming only xy;
+            // Vulkan supplies the missing components for the narrower format.
+            (VertexFormat::Float32x2, 8)
         }
-        "a_BlendIndices"
-            if input.scalar_type == SceneShaderScalarType::U32 && input.rows == 4 =>
-        {
-            (vk::Format::R32G32B32A32_UINT, 20)
+        "a_BlendIndices" if input.scalar_type == SceneShaderScalarType::U32 && input.rows == 4 => {
+            (VertexFormat::Uint32x4, 20)
         }
-        "a_BlendWeights"
-            if input.scalar_type == SceneShaderScalarType::F32 && input.rows == 4 =>
-        {
-            (vk::Format::R32G32B32A32_SFLOAT, 36)
+        "a_BlendWeights" if input.scalar_type == SceneShaderScalarType::F32 && input.rows == 4 => {
+            (VertexFormat::Float32x4, 36)
         }
         _ => {
             return Err(format!(
@@ -328,10 +318,8 @@ mod tests {
 
     #[test]
     fn scene_owned_program_wins_over_a_same_basename_catalog_entry() {
-        let storage = owned_graphics_storage(
-            "workshop/example/effects/rounded_mask__SLOTS_1",
-            Vec::new(),
-        );
+        let storage =
+            owned_graphics_storage("workshop/example/effects/rounded_mask__SLOTS_1", Vec::new());
 
         let program = resolve_scene_graphics_program(
             &storage,
@@ -341,7 +329,10 @@ mod tests {
         .expect("scene-owned program");
 
         assert!(program.is_scene_owned());
-        assert_eq!(program.key(), "workshop/example/effects/rounded_mask__SLOTS_1");
+        assert_eq!(
+            program.key(),
+            "workshop/example/effects/rounded_mask__SLOTS_1"
+        );
         assert_eq!(program.vertex_spirv(&storage), minimal_spirv());
         assert_eq!(program.fragment_spirv(&storage), minimal_spirv());
     }
@@ -410,15 +401,35 @@ mod tests {
             vec![
                 SceneVertexAttributePlan {
                     location: 0,
-                    format: vk::Format::R32G32_SFLOAT,
+                    format: VertexFormat::Float32x2,
                     offset: 8,
                 },
                 SceneVertexAttributePlan {
                     location: 1,
-                    format: vk::Format::R32G32_SFLOAT,
+                    format: VertexFormat::Float32x2,
                     offset: 0,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn wider_texcoord_input_uses_the_two_component_scene_mesh_uv() {
+        let storage = owned_graphics_storage(
+            "workshop/example/effects/clipping_mask__SLOTS_9",
+            vec![stage_input(2, 1, SceneShaderScalarType::F32, 3)],
+        );
+        let vertex = storage
+            .shader_program(SceneStringId(0), SceneShaderStage::Vertex)
+            .expect("vertex stage");
+
+        assert_eq!(
+            scene_owned_vertex_attributes(&storage, vertex).expect("attributes"),
+            vec![SceneVertexAttributePlan {
+                location: 1,
+                format: VertexFormat::Float32x2,
+                offset: 8,
+            }]
         );
     }
 
@@ -455,7 +466,10 @@ mod tests {
 
         assert_eq!(vertex_plan.push_constant_bytes, 4);
         assert_eq!(vertex_plan.bindings.len(), 1);
-        assert_eq!(vertex_plan.bindings[0].kind, SceneShaderBindingKind::UniformBuffer);
+        assert_eq!(
+            vertex_plan.bindings[0].kind,
+            SceneShaderBindingKind::UniformBuffer
+        );
         assert_eq!(vertex_plan.bindings[0].push_offset, 0);
         assert_eq!(vertex_plan.uniform_buffers[0].byte_size, 176);
         assert_eq!(
@@ -554,14 +568,6 @@ mod tests {
             scene_owned_uniform_source("test", "g_Time", None, &vector)
                 .unwrap_err()
                 .contains("incompatible runtime shape")
-        );
-
-        let mut audio = uniform_member(0, u32::MAX, 0, 1012, 1, 1, 0);
-        audio.array_count = 64;
-        audio.array_stride = 16;
-        assert_eq!(
-            scene_owned_uniform_source("test", "g_AudioSpectrum64Left", None, &audio).unwrap(),
-            SceneOwnedUniformSource::AudioSpectrum64Left
         );
     }
 

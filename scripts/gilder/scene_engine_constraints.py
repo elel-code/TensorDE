@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 from workspace_paths import DOCS_ROOT, GILDER_ROOT, WORKSPACE_ROOT
@@ -79,6 +80,98 @@ def main() -> int:
     if "artifacts/scene-shaders" in source_text:
         failures.append("runtime source references artifacts/scene-shaders")
 
+    product_vulkan_escape_tokens = [
+        "use vulkanalia",
+        "vulkanalia::",
+        "vulkan_renderer::vulkanalia",
+        "vulkan_renderer::vk",
+    ]
+    found_product_vulkan_escape_tokens = [
+        token for token in product_vulkan_escape_tokens if token in source_text
+    ]
+    if found_product_vulkan_escape_tokens:
+        failures.append(
+            "Gilder must use typed vulkan-renderer APIs without a raw Vulkan escape: "
+            + ", ".join(found_product_vulkan_escape_tokens)
+        )
+
+    manifest = tomllib.loads(read_text(ROOT / "Cargo.toml"))
+    forbidden_direct_vulkan_dependencies = {"ash", "vulkanalia"}
+    found_direct_vulkan_dependencies = sorted(
+        forbidden_direct_vulkan_dependencies & manifest_dependency_names(manifest)
+    )
+    if found_direct_vulkan_dependencies:
+        failures.append(
+            "Gilder must not declare a direct raw Vulkan dependency: "
+            + ", ".join(found_direct_vulkan_dependencies)
+        )
+    found_raw_feature_dependencies = sorted(manifest_raw_feature_dependencies(manifest))
+    if found_raw_feature_dependencies:
+        failures.append(
+            "Gilder features must not restore a raw Vulkan dependency: "
+            + ", ".join(found_raw_feature_dependencies)
+        )
+
+    product_presentation_owner_tokens = [
+        "SharedPresentationBootstrap",
+        "SharedPresentationBootstrapDescriptor",
+        "Instance::new(",
+        "InstanceDescriptor::for_window(",
+        ".request_adapter(",
+        ".create_surface(",
+        ".create_swapchain(",
+        ".create_memory_allocator(",
+        ".create_upload_belt(",
+        "PipelineBinaryArchiveCache::new(",
+    ]
+    found_product_presentation_owner_tokens = [
+        token for token in product_presentation_owner_tokens if token in source_text
+    ]
+    if found_product_presentation_owner_tokens:
+        failures.append(
+            "Gilder must not recreate renderer-owned presentation lifecycle: "
+            + ", ".join(found_product_presentation_owner_tokens)
+        )
+
+    required_shared_terminal_tokens = [
+        "create_fullscreen_sampled_surface_terminal(",
+        "create_decoded_video_surface_terminal(",
+    ]
+    missing_shared_terminal_tokens = [
+        token for token in required_shared_terminal_tokens if token not in source_text
+    ]
+    if missing_shared_terminal_tokens:
+        failures.append(
+            "Gilder must use renderer-owned offscreen and decoded-video terminals: "
+            + ", ".join(missing_shared_terminal_tokens)
+        )
+
+    required_terminal_abi_tokens = [
+        "FullscreenSampledSurfaceTerminalDescriptor",
+        "OffscreenSamplerTopology::PerFrameSlot",
+    ]
+    missing_terminal_abi_tokens = [
+        token for token in required_terminal_abi_tokens if token not in source_text
+    ]
+    if missing_terminal_abi_tokens:
+        failures.append(
+            "Gilder must preserve the renderer-owned terminal descriptor ABI: "
+            + ", ".join(missing_terminal_abi_tokens)
+        )
+
+    obsolete_product_terminal_tokens = [
+        "SharedSceneTerminalResources",
+        "SharedDecodedVideoSurfaceResources",
+    ]
+    found_obsolete_product_terminal_tokens = [
+        token for token in obsolete_product_terminal_tokens if token in source_text
+    ]
+    if found_obsolete_product_terminal_tokens:
+        failures.append(
+            "Gilder must not revive product-owned terminal resource implementations: "
+            + ", ".join(found_obsolete_product_terminal_tokens)
+        )
+
     native_scene_files = [ROOT / "src/renderer/native_vulkan/scene.rs"]
     native_scene_files.extend((ROOT / "src/renderer/native_vulkan/scene").rglob("*.rs"))
     native_scene_text = "\n".join(read_text(path) for path in native_scene_files if path.exists())
@@ -146,6 +239,9 @@ def main() -> int:
     print(f"checked: Rust files are <= {MAX_RUST_FILE_LINES} lines")
     print("checked: no mod.rs, no mechanical split names, and scene modules use same-name file+directory layout")
     print("checked: no old scene compatibility files, no shader artifact runtime refs")
+    print("checked: Gilder has no raw Vulkan escape/dependency or product-owned presentation lifecycle")
+    print("checked: shared renderer owns offscreen and decoded-video terminal resources")
+    print("checked: Gilder preserves the explicit shared-terminal descriptor ABI")
     print("checked: native Vulkan scene path has no legacy descriptor-set binding tokens")
     print("checked: scene capability and effect co-development remains documented")
     return 0
@@ -153,6 +249,38 @@ def main() -> int:
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+def manifest_dependency_names(manifest: dict[str, object]) -> set[str]:
+    names: set[str] = set()
+
+    def visit(table: dict[str, object]) -> None:
+        for section_name in ("dependencies", "dev-dependencies", "build-dependencies"):
+            section = table.get(section_name)
+            if isinstance(section, dict):
+                names.update(str(name) for name in section)
+        targets = table.get("target")
+        if isinstance(targets, dict):
+            for target in targets.values():
+                if isinstance(target, dict):
+                    visit(target)
+
+    visit(manifest)
+    return names
+
+
+def manifest_raw_feature_dependencies(manifest: dict[str, object]) -> set[str]:
+    features = manifest.get("features")
+    if not isinstance(features, dict):
+        return set()
+    forbidden = {"dep:ash", "dep:vulkanalia"}
+    return {
+        value
+        for values in features.values()
+        if isinstance(values, list)
+        for value in values
+        if isinstance(value, str) and value in forbidden
+    }
 
 
 def owned_rust_files(root: Path) -> list[Path]:

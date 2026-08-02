@@ -174,6 +174,7 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
                 origin: object.origin,
                 angles: object.angles,
                 scale: object.scale,
+                camera_zoom: object.camera_zoom,
                 color: object.color,
                 alpha: object.alpha,
                 visible: object.visible,
@@ -221,6 +222,7 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
                 WeIrObjectTransformProperty::Origin => SceneObjectTransformProperty::Origin,
                 WeIrObjectTransformProperty::Angles => SceneObjectTransformProperty::Angles,
                 WeIrObjectTransformProperty::Scale => SceneObjectTransformProperty::Scale,
+                WeIrObjectTransformProperty::CameraZoom => SceneObjectTransformProperty::CameraZoom,
             },
             flags: (u32::from(track.relative) * SCENE_OBJECT_TRANSFORM_TRACK_RELATIVE)
                 | (u32::from(track.wrap_loop) * SCENE_OBJECT_TRANSFORM_TRACK_WRAP_LOOP),

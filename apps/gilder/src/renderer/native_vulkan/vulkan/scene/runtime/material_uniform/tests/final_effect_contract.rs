@@ -27,6 +27,18 @@ fn final_scroll_visibility_neutralizes_motion_without_changing_repeat_data() {
 }
 
 #[test]
+fn final_waterripple_separates_source_aspect_from_authored_vertical_ratio() {
+    let storage = storage_with_constants("we/image-waterripple-final", &[("effect.ratio", "0.66")]);
+    let mut draw = draw_with_material_visibility(SceneMaterialHandle(0), 1, 1);
+    draw.authored_source_extent = [415.0, 405.0];
+
+    let payload = pack_test_scene_material_uniforms(&storage, &[draw], 2.0);
+
+    assert_eq!(f32_from_payload(&payload, 10 * 4), 415.0 / 405.0);
+    assert_eq!(f32_from_payload(&payload, 15 * 4), 0.66);
+}
+
+#[test]
 fn fused_eye_visibility_controls_iris_and_ripple_stages_independently() {
     let storage = storage_with_constants("we/puppet-iris-waterripple-final", &[]);
     let mut draw = draw_with_material_visibility(SceneMaterialHandle(0), 2, 0b01);
@@ -194,7 +206,7 @@ fn framebuffer_water_shake_uniform_preserves_flow_and_visibility() {
         assert_eq!(
             f32_from_payload(&payload, 12 * 4),
             f32::from((visibility_mask & 1 != 0) as u8),
-            "visibility mask {visibility_mask:#03b} changed shake identity"
+            "visibility mask {visibility_mask:#04b} changed shake identity"
         );
     }
 }

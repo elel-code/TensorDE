@@ -9,6 +9,7 @@ use super::target::RenderTargetRole;
 pub enum RenderPassRole {
     Clear,
     BaseMaterial,
+    ObjectLocalSource,
     EffectMaterial,
     ColorBlendPassthrough,
     CopyTarget,
@@ -30,6 +31,7 @@ pub enum RenderPassRole {
 pub enum RenderPassDrawPrimitive {
     None,
     ObjectMesh,
+    ObjectCompositeMesh,
     FullscreenTriangle,
     ObjectUvSupportQuad,
     ParticleBillboard,

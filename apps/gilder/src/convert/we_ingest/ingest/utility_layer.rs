@@ -14,6 +14,7 @@ pub(super) const FULL_FRAMEBUFFER_TARGET: &str = "_rt_FullFrameBuffer";
 
 const COMPOSITE_MODEL: &[u8] =
     br#"{"material":"materials/util/composelayer.json","passthrough":true}"#;
+const PROJECT_MODEL: &[u8] = br#"{"material":"materials/util/composelayer.json","passthrough":true,"autosize":true,"projectlayer":true}"#;
 const COMPOSITE_MATERIAL: &[u8] = br#"{"passes":[{"shader":"composelayer","depthtest":"disabled","depthwrite":"disabled","blending":"translucent","cullmode":"nocull","textures":["_rt_FullFrameBuffer"]}]}"#;
 const FULLSCREEN_MODEL: &[u8] =
     br#"{"material":"materials/util/fullscreenlayer.json","fullscreen":true,"passthrough":true}"#;
@@ -26,6 +27,7 @@ pub(super) fn utility_layer_kind(path: &str) -> Option<WeIrUtilityLayerKind> {
         "models/util/composelayer.json" | "models/util/composelayer_depthtest.json" => {
             Some(WeIrUtilityLayerKind::FramebufferComposite)
         }
+        "models/util/projectlayer.json" => Some(WeIrUtilityLayerKind::ProjectLayer),
         "models/util/fullscreenlayer.json" => Some(WeIrUtilityLayerKind::FullscreenPostprocess),
         "models/util/solidlayer.json" | "models/util/solidlayer_depthtest.json" => {
             Some(WeIrUtilityLayerKind::SolidColor)
@@ -39,6 +41,7 @@ pub(super) fn builtin_utility_asset(path: &str) -> Option<&'static [u8]> {
         "models/util/composelayer.json" | "models/util/composelayer_depthtest.json" => {
             Some(COMPOSITE_MODEL)
         }
+        "models/util/projectlayer.json" => Some(PROJECT_MODEL),
         "materials/util/composelayer.json" | "materials/util/composelayer_depthtest.json" => {
             Some(COMPOSITE_MATERIAL)
         }
@@ -74,6 +77,15 @@ mod tests {
             utility_layer_kind("models/util/fullscreenlayer.json"),
             Some(WeIrUtilityLayerKind::FullscreenPostprocess)
         );
+        assert_eq!(
+            utility_layer_kind("models/util/projectlayer.json"),
+            Some(WeIrUtilityLayerKind::ProjectLayer)
+        );
+        assert!(
+            WeIrUtilityLayerKind::ProjectLayer.samples_scene_color(),
+            "a project layer consumes the scene framebuffer"
+        );
+        assert!(builtin_utility_asset("models/util/projectlayer.json").is_some());
         assert!(builtin_utility_asset("materials/util/solidlayer.json").is_some());
         assert!(is_runtime_render_target(FULL_FRAMEBUFFER_TARGET));
     }

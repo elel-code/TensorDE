@@ -65,63 +65,6 @@ pub(super) fn compiler_definitions(
         .collect())
 }
 
-pub(super) fn remove_unreferenced_frontend_declarations(
-    source: &str,
-    preprocessed: &str,
-) -> String {
-    source
-        .lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            let uniform = trimmed.strip_prefix("uniform ").and_then(|declaration| {
-                declaration
-                    .split(';')
-                    .next()
-                    .and_then(|declaration| declaration.split_ascii_whitespace().next_back())
-                    .filter(|name| !name.contains(['[', ']']))
-            });
-            let stage_io = (trimmed.starts_with("layout(")
-                && (trimmed.contains(") in ") || trimmed.contains(") out ")))
-            .then(|| {
-                trimmed
-                    .strip_suffix(';')
-                    .and_then(|declaration| declaration.split_whitespace().next_back())
-            })
-            .flatten();
-            let Some(name) = uniform
-                .or(stage_io)
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-            else {
-                return line;
-            };
-            if identifier_occurrence_count(preprocessed, name) <= 1 {
-                ""
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn identifier_occurrence_count(source: &str, identifier: &str) -> usize {
-    source
-        .match_indices(identifier)
-        .filter(|(start, _)| {
-            let end = start + identifier.len();
-            let before = source[..*start].bytes().next_back();
-            let after = source[end..].bytes().next();
-            before.is_none_or(|byte| !is_identifier_byte(byte))
-                && after.is_none_or(|byte| !is_identifier_byte(byte))
-        })
-        .count()
-}
-
-fn is_identifier_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
-}
-
 pub(super) fn inject_we_compiler_preamble(source: &str) -> String {
     const PREAMBLE: &str = "\
 #define CAST2(v) vec2(v, v)\n\
@@ -133,7 +76,6 @@ pub(super) fn inject_we_compiler_preamble(source: &str) -> String {
 #define texSample2D(s, uv) texture2D(s, uv)\n\
 #define texSample2DLod(s, uv, lod) texture2DLod(s, uv, lod)\n\
 #define texSample3D(s, uvw) texture3D(s, uvw)\n\
-#define mul(a, b) ((b) * (a))\n\
 #define frac(v) fract(v)\n\
 #define saturate(v) clamp(v, 0.0, 1.0)";
 
@@ -388,41 +330,13 @@ mod tests {
     }
 
     #[test]
-    fn removes_only_declarations_proven_unreferenced_after_preprocessing() {
-        let source = "uniform sampler2D g_Texture1; // {\"combo\":\"TEX\"}\n\
-uniform sampler2D g_Texture2; // {\"combo\":\"MASK\"}\n\
-uniform sampler2D g_Texture3; // {\"material\":\"background\"}\n\
-uniform float u_Used; // {\"material\":\"used\",\"default\":1}\n\
-uniform vec2 u_Unused; // {\"material\":\"unused\",\"default\":\"0 0\"}\n\
-layout(location = 0) out vec2 v_Used;\n\
-layout(location = 1) out vec3 v_Unused;";
-        let specialized = remove_unreferenced_frontend_declarations(
-            source,
-            "uniform sampler2D g_Texture1; uniform sampler2D g_Texture2; \
-             uniform sampler2D g_Texture3; \
-             vec4 main() { return texture2D(g_Texture2, vec2(0.0)) + \
-             texture2D(g_Texture3, vec2(0.0)) + vec4(v_Used, 0.0, u_Used); } \
-             uniform float u_Used; uniform vec2 u_Unused; \
-             out vec2 v_Used; out vec3 v_Unused;",
-        );
-
-        assert!(!specialized.contains("g_Texture1"));
-        assert!(specialized.contains("g_Texture2"));
-        assert!(specialized.contains("g_Texture3"));
-        assert!(specialized.contains("u_Used"));
-        assert!(!specialized.contains("u_Unused"));
-        assert!(specialized.contains("v_Used"));
-        assert!(!specialized.contains("v_Unused"));
-        assert_eq!(specialized.lines().count(), 6);
-    }
-
-    #[test]
-    fn injects_function_macros_after_glsl_version() {
+    fn injects_function_macros_after_source_version_directive() {
         let source = inject_we_compiler_preamble("#version 450\nvoid main() { CAST2(1.0); }");
         let mut lines = source.lines();
         assert_eq!(lines.next(), Some("#version 450"));
         assert_eq!(lines.next(), Some("#define CAST2(v) vec2(v, v)"));
         assert!(source.contains("#define texSample2D(s, uv) texture2D(s, uv)"));
+        assert!(!source.contains("#define mul("));
     }
 
     #[test]

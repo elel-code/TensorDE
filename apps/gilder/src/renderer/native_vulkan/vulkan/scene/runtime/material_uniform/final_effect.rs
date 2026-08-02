@@ -105,7 +105,7 @@ fn final_cloudmotion_values(
     };
     values[7] = parameters.scalar(
         &["cloud.ui_editor_properties_direction", "cloud.direction"],
-        1.5707963,
+        AUTHORED_CLOUDMOTION_DEFAULT_DIRECTION,
     );
     values[8] = parameters.scalar(
         &["cloud.ui_editor_properties_granularity", "cloud.scale"],
@@ -436,7 +436,13 @@ pub(super) fn final_waterripple_values(
     } else {
         0.0
     };
-    values[10] = ratio;
+    values[10] = draw_source_aspect_ratio(
+        draw,
+        [
+            storage.project().logical_width.max(1),
+            storage.project().logical_height.max(1),
+        ],
+    );
     values[11] = 1.0;
     values[12] = parameters.scalar(&["effect.mask_enabled"], 0.0);
     values[15] = ratio;

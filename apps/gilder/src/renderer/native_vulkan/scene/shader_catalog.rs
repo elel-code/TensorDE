@@ -39,6 +39,7 @@ pub enum BuiltinSceneParameterLayout {
     BlurGaussian,
     Particle,
     StandardMaterial,
+    SceneColorBlend,
     Iris,
     Opacity,
     RoundedMask,

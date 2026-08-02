@@ -137,6 +137,74 @@ fn runtime_clock_text_produces_distinct_retained_values() {
 }
 
 #[test]
+fn local_storage_retains_values_and_separates_screen_from_global_scope() {
+    let programs = [
+        program(
+            SceneScriptTarget::Alpha,
+            SceneScriptSubscriptions::FRAME,
+            r#"export function init(value) {
+                localStorage.set('position', {x: 12, y: 34, z: 0});
+                localStorage.set('position', {x: 56, y: 78, z: 0}, localStorage.LOCATION_GLOBAL);
+                return value;
+            }"#,
+        ),
+        program(
+            SceneScriptTarget::Origin,
+            SceneScriptSubscriptions::FRAME,
+            "export function update() { return localStorage.get('position'); }",
+        ),
+        program(
+            SceneScriptTarget::Origin,
+            SceneScriptSubscriptions::FRAME,
+            "export function update() { return localStorage.get('position', localStorage.LOCATION_GLOBAL); }",
+        ),
+    ];
+    let runtime =
+        SceneScriptRuntime::new(&programs, &SceneScriptHostCatalog::empty()).expect("runtime");
+
+    let deltas = dispatch(&runtime, input(SceneScriptSubscriptions::FRAME)).expect("dispatch");
+
+    assert_eq!(&deltas[1].numeric[..3], &[12.0, 34.0, 0.0]);
+    assert_eq!(&deltas[2].numeric[..3], &[56.0, 78.0, 0.0]);
+}
+
+#[test]
+fn local_storage_rejects_non_string_keys_and_unknown_locations() {
+    for source in [
+        "export function init() { localStorage.get(1); }",
+        "export function init() { localStorage.clear('instance'); }",
+    ] {
+        let error = SceneScriptRuntime::new(
+            &[program(
+                SceneScriptTarget::Alpha,
+                SceneScriptSubscriptions::FRAME,
+                source,
+            )],
+            &SceneScriptHostCatalog::empty(),
+        )
+        .expect_err("invalid localStorage access must fail");
+        assert!(error.to_string().contains("localStorage"));
+    }
+}
+
+#[test]
+fn vec3_initial_values_and_operations_match_scenescript_value_semantics() {
+    let runtime = SceneScriptRuntime::new(
+        &[program(
+            SceneScriptTarget::Origin,
+            SceneScriptSubscriptions::FRAME,
+            "export function update(value) { return value.add(new Vec3(2, 4, 6)).mix(new Vec3(20, 30, 40), 0.5); }",
+        )],
+        &SceneScriptHostCatalog::empty(),
+    )
+    .expect("runtime");
+
+    let deltas = dispatch(&runtime, input(SceneScriptSubscriptions::FRAME)).expect("dispatch");
+
+    assert_eq!(&deltas[0].numeric[..3], &[16.0, 27.0, 38.0]);
+}
+
+#[test]
 fn user_property_resolution_is_exact_and_type_strict() {
     let authored = r#"{"jia":{"value":true},"speed":{"value":1}}"#;
     let overrides = [("jia".to_owned(), Value::Bool(false))]
@@ -177,6 +245,7 @@ fn user_property_override_updates_exact_script_property_binding() {
     let host = SceneScriptHostCatalog {
         layers: SceneScriptHostCatalog::empty().layers,
         effect_count: 0,
+        canvas_size: [1920, 1080],
         user_properties: [("jia".to_owned(), Value::Bool(false))]
             .into_iter()
             .collect(),
@@ -190,14 +259,12 @@ fn user_property_override_updates_exact_script_property_binding() {
 fn authored_font_assignment_must_match_the_v21_baked_text_resource() {
     let host = SceneScriptHostCatalog {
         layers: vec![SceneScriptLayerCatalog {
-            index: 0,
-            object: 3,
-            name: "Title".to_owned(),
             text: true,
             font: Some("fonts/authored.ttf".to_owned()),
-            effects: Vec::new(),
+            ..SceneScriptLayerCatalog::test(0, 3, "Title")
         }],
         effect_count: 0,
+        canvas_size: [1920, 1080],
         user_properties: Map::new(),
     };
     let matching = program(
@@ -329,14 +396,14 @@ fn builtin_we_math_module_is_shared_by_authored_modules() {
         program(
             SceneScriptTarget::Alpha,
             SceneScriptSubscriptions::FRAME,
-            "import { mix } from 'WEMath'; export function update() { return mix(0, 1, 0.25); }",
+            "import { mix, smoothStep } from 'WEMath'; export function update() { return mix(0, 1, smoothStep(0, 1, 0.5)); }",
         ),
     ];
     let runtime =
         SceneScriptRuntime::new(&programs, &SceneScriptHostCatalog::empty()).expect("runtime");
     let deltas = dispatch(&runtime, input(SceneScriptSubscriptions::FRAME)).expect("dispatch");
     assert_eq!(deltas[0].numeric[0], 1.0);
-    assert_eq!(deltas[1].numeric[0], 0.25);
+    assert_eq!(deltas[1].numeric[0], 0.5);
 }
 
 #[test]
@@ -424,23 +491,87 @@ fn material_scalar_delta_preserves_the_typed_constant_selector() {
 }
 
 #[test]
+fn layer_parent_scene_queries_and_cross_layer_writes_use_typed_deltas() {
+    let mut child = SceneScriptLayerCatalog::test(0, 3, "child");
+    child.parent = Some(12);
+    let host = SceneScriptHostCatalog {
+        layers: vec![child, SceneScriptLayerCatalog::test(1, 12, "parent")],
+        effect_count: 0,
+        canvas_size: [2560, 1440],
+        user_properties: Map::new(),
+    };
+    let runtime = SceneScriptRuntime::new(
+        &[program(
+            SceneScriptTarget::Visible,
+            SceneScriptSubscriptions::FRAME,
+            r#"export function init(value) {
+                const parent = thisLayer.getParent();
+                if (parent !== thisScene.getLayer('parent')) throw new Error('wrong parent');
+                if (thisScene.getLayerCount() !== 2) throw new Error('wrong layer count');
+                if (thisScene.getLayerIndex(parent) !== 1) throw new Error('wrong layer index');
+                if (engine.canvasSize.x !== 2560 || engine.canvasSize.y !== 1440) throw new Error('wrong canvas');
+                Object.defineProperty(thisLayer, 'held', {writable: true, value: false});
+                thisLayer.held = true;
+                parent.origin = new Vec3(10, 20, 30);
+                parent.scale = new Vec3(2, 3, 4);
+                parent.visible = false;
+                return value && thisLayer.held;
+            }"#,
+        )],
+        &host,
+    )
+    .expect("runtime");
+
+    let deltas = dispatch(&runtime, input(SceneScriptSubscriptions::FRAME)).expect("dispatch");
+    let find = |target| {
+        deltas
+            .iter()
+            .find(|delta| delta.object == SceneObjectHandle(12) && delta.target == target)
+            .expect("cross-layer delta")
+    };
+    assert_eq!(
+        &find(SceneScriptTarget::Origin).numeric[..3],
+        &[10.0, 20.0, 30.0]
+    );
+    assert_eq!(
+        &find(SceneScriptTarget::Scale).numeric[..3],
+        &[2.0, 3.0, 4.0]
+    );
+    assert_eq!(find(SceneScriptTarget::Visible).numeric[0], 0.0);
+}
+
+#[test]
+fn unparented_layer_returns_undefined_and_direct_writes_reject_wrong_types() {
+    let runtime = SceneScriptRuntime::new(
+        &[program(
+            SceneScriptTarget::Visible,
+            SceneScriptSubscriptions::FRAME,
+            "export function update() { return thisLayer.getParent() === undefined; }",
+        )],
+        &SceneScriptHostCatalog::empty(),
+    )
+    .expect("runtime");
+    let deltas = dispatch(&runtime, input(SceneScriptSubscriptions::FRAME)).expect("dispatch");
+    assert_eq!(deltas[0].numeric[0], 1.0);
+
+    let error = SceneScriptRuntime::new(
+        &[program(
+            SceneScriptTarget::Visible,
+            SceneScriptSubscriptions::FRAME,
+            "export function init(value) { thisLayer.origin = 12; return value; }",
+        )],
+        &SceneScriptHostCatalog::empty(),
+    )
+    .expect_err("invalid direct layer vector assignment must fail");
+    assert!(error.to_string().contains("origin requires a Vec3"));
+}
+
+#[test]
 fn scene_effect_visibility_uses_typed_binding_selectors_and_targeted_clicks() {
     let host = SceneScriptHostCatalog {
         layers: vec![
+            SceneScriptLayerCatalog::test(0, 3, "controller"),
             SceneScriptLayerCatalog {
-                index: 0,
-                object: 3,
-                name: "controller".to_owned(),
-                text: false,
-                font: None,
-                effects: Vec::new(),
-            },
-            SceneScriptLayerCatalog {
-                index: 1,
-                object: 12,
-                name: "身体".to_owned(),
-                text: false,
-                font: None,
                 effects: vec![
                     SceneScriptEffectCatalog {
                         index: 0,
@@ -455,9 +586,11 @@ fn scene_effect_visibility_uses_typed_binding_selectors_and_targeted_clicks() {
                         visible: true,
                     },
                 ],
+                ..SceneScriptLayerCatalog::test(1, 12, "身体")
             },
         ],
         effect_count: 2,
+        canvas_size: [1920, 1080],
         user_properties: [("jia".to_owned(), Value::Bool(true))]
             .into_iter()
             .collect(),

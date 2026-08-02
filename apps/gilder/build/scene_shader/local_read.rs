@@ -11,14 +11,14 @@ const FLAT_PASSTHROUGH_INPUTS: &[(u32, u32, u32)] = &[(0, 0, 64)];
 const FLAT_PASSTHROUGH_COLOR_OUTPUTS: &[u32] = &[0];
 
 pub(crate) struct InputAttachmentFragmentSource {
-    source: String,
+    source: &'static str,
     inputs: &'static [(u32, u32, u32)],
     color_output_locations: &'static [u32],
 }
 
 impl InputAttachmentFragmentSource {
-    pub(crate) fn source(&self) -> &str {
-        &self.source
+    pub(crate) const fn source(&self) -> &'static str {
+        self.source
     }
 
     pub(crate) fn catalog_expression(
@@ -71,26 +71,10 @@ pub struct BuiltinSceneLocalReadShader {
 "#
 }
 
-pub(crate) fn input_attachment_fragment_source(
-    flat_passthrough_family: bool,
-) -> Option<InputAttachmentFragmentSource> {
-    flat_passthrough_family.then(|| {
-        let source = r#"SubpassInput<float4> g_Input0 : register(t64);
-struct FragmentOutput
-{
-    float4 color : SV_TARGET0;
-};
-FragmentOutput main()
-{
-    FragmentOutput output = { g_Input0.SubpassLoad() };
-    return output;
-}
-"#
-        .to_owned();
-        InputAttachmentFragmentSource {
-            source,
-            inputs: FLAT_PASSTHROUGH_INPUTS,
-            color_output_locations: FLAT_PASSTHROUGH_COLOR_OUTPUTS,
-        }
-    })
+pub(crate) const fn flat_passthrough_input_attachment_source() -> InputAttachmentFragmentSource {
+    InputAttachmentFragmentSource {
+        source: include_str!("../../shaders/scene/passthrough_local_read.frag.slang"),
+        inputs: FLAT_PASSTHROUGH_INPUTS,
+        color_output_locations: FLAT_PASSTHROUGH_COLOR_OUTPUTS,
+    }
 }

@@ -140,6 +140,10 @@ impl NativeVulkanMediaEventRuntime {
 }
 
 impl NativeVulkanMediaEventSource {
+    pub(in crate::renderer::native_vulkan) fn next() -> Self {
+        Self::new(NEXT_MEDIA_SESSION_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
     pub(in crate::renderer::native_vulkan) fn new(session_identity: u64) -> Self {
         Self {
             session: SceneMediaSessionId(session_identity),

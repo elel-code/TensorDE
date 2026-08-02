@@ -142,6 +142,7 @@ fn render_graph_execution_priority(pass: &RenderPassNode) -> u32 {
     match pass.role {
         RenderPassRole::Clear => 1,
         RenderPassRole::BaseMaterial
+        | RenderPassRole::ObjectLocalSource
         | RenderPassRole::EffectMaterial
         | RenderPassRole::ColorBlendPassthrough
         | RenderPassRole::CopyTarget

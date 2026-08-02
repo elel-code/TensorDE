@@ -21,9 +21,6 @@ pub(crate) fn effect_vertex_source(key: &str, shader: &str, texture_slot_mask: u
     if shader == "effects/blend" || shader == "effects/blendgradient" {
         return waterwaves_effect_vertex_source();
     }
-    if shader == "effects/waterflow" {
-        return waterflow_effect_vertex_source();
-    }
     if shader == "effects/waterwaves" {
         return waterwaves_effect_vertex_source();
     }
@@ -60,9 +57,6 @@ pub(crate) fn effect_object_mesh_vertex_source(
     }
     if shader == "effects/cloudmotion" {
         return Some(cloudmotion_effect_object_mesh_vertex_source());
-    }
-    if shader == "effects/waterflow" {
-        return Some(waterflow_effect_object_mesh_vertex_source());
     }
     if matches!(
         shader,
@@ -178,101 +172,6 @@ void main() {
     .to_owned()
 }
 
-fn waterflow_effect_object_mesh_vertex_source() -> String {
-    r#"#version 450
-layout(location = 0) in vec2 a_Position;
-layout(location = 1) in vec2 a_TexCoord;
-layout(set = 0, binding = 2) uniform WaterFlowDrawUniform {
-    vec4 g_ScreenUvToObjectUvRow0;
-    vec4 g_ScreenUvToObjectUvRow1;
-    vec4 g_ObjectUvToScreenUvRow0;
-    vec4 g_ObjectUvToScreenUvRow1;
-} u_Draw;
-layout(set = 0, binding = 3) uniform WaterFlowUniform {
-    vec4 g_TimeSpeedFeatherStrength;
-    vec4 g_PhaseScale;
-    vec4 g_Texture1Resolution;
-    vec4 g_Unused;
-} u_Effect;
-layout(location = 0) out vec2 v_TexCoord;
-layout(location = 1) out vec2 v_ObjectTexCoord;
-layout(location = 2) flat out vec4 v_ObjectUvToScreenUv;
-layout(location = 3) flat out vec4 v_Cycles;
-layout(location = 4) flat out vec2 v_BlendWeight;
-layout(location = 5) out vec2 v_FlowTexCoord;
-void main() {
-    v_TexCoord = a_TexCoord;
-    v_ObjectTexCoord = a_TexCoord;
-    v_ObjectUvToScreenUv = vec4(
-        u_Draw.g_ObjectUvToScreenUvRow0.xy,
-        u_Draw.g_ObjectUvToScreenUvRow1.xy);
-    float time_phase = u_Effect.g_TimeSpeedFeatherStrength.x
-        * u_Effect.g_TimeSpeedFeatherStrength.y;
-    vec4 cycles = fract(time_phase + vec4(0.0, 0.5, 0.25, 0.75));
-    vec2 blend_phase = 2.0 * abs(vec2(cycles.x, cycles.z) - vec2(0.5));
-    float feather = u_Effect.g_TimeSpeedFeatherStrength.z;
-    vec2 smooth_range = vec2(0.5 - feather, 0.5 + feather);
-    v_Cycles = cycles - vec4(0.5);
-    v_BlendWeight = smoothstep(smooth_range.x, smooth_range.y, blend_phase);
-    v_FlowTexCoord = a_TexCoord
-        * u_Effect.g_Texture1Resolution.zw / u_Effect.g_Texture1Resolution.xy;
-    vec2 screen_uv = vec2(
-        dot(u_Draw.g_ObjectUvToScreenUvRow0.xyz, vec3(a_TexCoord, 1.0)),
-        dot(u_Draw.g_ObjectUvToScreenUvRow1.xyz, vec3(a_TexCoord, 1.0)));
-    gl_Position = vec4(screen_uv * 2.0 - 1.0, 0.0, 1.0);
-}
-"#
-    .to_owned()
-}
-
-fn waterflow_effect_vertex_source() -> String {
-    r#"#version 450
-layout(set = 0, binding = 2) uniform WaterFlowDrawUniform {
-    vec4 g_ScreenUvToObjectUvRow0;
-    vec4 g_ScreenUvToObjectUvRow1;
-    vec4 g_ObjectUvToScreenUvRow0;
-    vec4 g_ObjectUvToScreenUvRow1;
-} u_Draw;
-layout(set = 0, binding = 3) uniform WaterFlowUniform {
-    vec4 g_TimeSpeedFeatherStrength;
-    vec4 g_PhaseScale;
-    vec4 g_Texture1Resolution;
-    vec4 g_Unused;
-} u_Effect;
-layout(location = 0) out vec2 v_TexCoord;
-layout(location = 1) out vec2 v_ObjectTexCoord;
-layout(location = 2) flat out vec4 v_ObjectUvToScreenUv;
-layout(location = 3) flat out vec4 v_Cycles;
-layout(location = 4) flat out vec2 v_BlendWeight;
-layout(location = 5) out vec2 v_FlowTexCoord;
-void main() {
-    vec2 positions[3] = vec2[](
-        vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
-    vec2 position = positions[gl_VertexIndex];
-    vec2 uv = position * 0.5 + 0.5;
-    v_TexCoord = uv;
-    v_ObjectTexCoord = vec2(
-        dot(u_Draw.g_ScreenUvToObjectUvRow0.xyz, vec3(uv, 1.0)),
-        dot(u_Draw.g_ScreenUvToObjectUvRow1.xyz, vec3(uv, 1.0)));
-    v_ObjectUvToScreenUv = vec4(
-        u_Draw.g_ObjectUvToScreenUvRow0.xy,
-        u_Draw.g_ObjectUvToScreenUvRow1.xy);
-    float time_phase = u_Effect.g_TimeSpeedFeatherStrength.x
-        * u_Effect.g_TimeSpeedFeatherStrength.y;
-    vec4 cycles = fract(time_phase + vec4(0.0, 0.5, 0.25, 0.75));
-    vec2 blend_phase = 2.0 * abs(vec2(cycles.x, cycles.z) - vec2(0.5));
-    float feather = u_Effect.g_TimeSpeedFeatherStrength.z;
-    vec2 smooth_range = vec2(0.5 - feather, 0.5 + feather);
-    v_Cycles = cycles - vec4(0.5);
-    v_BlendWeight = smoothstep(smooth_range.x, smooth_range.y, blend_phase);
-    v_FlowTexCoord = v_ObjectTexCoord
-        * u_Effect.g_Texture1Resolution.zw / u_Effect.g_Texture1Resolution.xy;
-    gl_Position = vec4(position, 0.0, 1.0);
-}
-"#
-    .to_owned()
-}
-
 fn framebuffer_quantized_overlay_effect_vertex_source() -> String {
     r#"#version 450
 layout(set = 0, binding = 2) uniform FramebufferOverlayDrawUniform {
@@ -381,9 +280,6 @@ pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask:
     }
     if shader == "effects/waterwaves" {
         return waterwaves_fragment_source(texture_slot_mask);
-    }
-    if shader == "effects/waterflow" {
-        return waterflow_fragment_source();
     }
     if shader == "effects/waterripple" {
         return waterripple_fragment_source(texture_slot_mask);

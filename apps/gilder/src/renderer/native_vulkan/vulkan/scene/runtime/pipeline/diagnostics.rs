@@ -1,6 +1,6 @@
 //! Opt-in diagnostics for resolved scene pipeline state.
 
-use vulkanalia::vk;
+use vulkan_renderer::TextureFormat;
 
 use crate::engine::scene::{SceneRenderingDeviceGraphPlan, SceneStorage};
 
@@ -11,7 +11,7 @@ use super::{
 pub(in crate::renderer::native_vulkan) fn emit_scene_pipeline_diagnostics_if_requested(
     storage: &SceneStorage,
     graph: &SceneRenderingDeviceGraphPlan,
-    swapchain_format: vk::Format,
+    swapchain_format: TextureFormat,
     effect_target_plans: &[SceneEffectTargetImagePlan],
     pipeline_indices: &[u32],
     scene_color_msaa_enabled: bool,
@@ -141,7 +141,7 @@ pub(in crate::renderer::native_vulkan) fn emit_scene_pipeline_diagnostics_if_req
             pass_record.cull_mode,
             pass_record.color_write_mask,
             target_format,
-            pass_pipeline_samples(pass.target, scene_color_msaa_enabled).rasterization_samples(),
+            pass_pipeline_samples(pass.target, scene_color_msaa_enabled).label(),
             pipeline_index,
             material_textures,
             material_constants,
