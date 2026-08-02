@@ -180,7 +180,7 @@ impl SharedSceneGpuResources {
             storage,
             &self.mesh_coverage,
             graph,
-            &self.graph_execution_order,
+            &self.scene_color_clear_graph_order,
             output_extent,
             self.scene_color_attachment_clear_enabled,
         );

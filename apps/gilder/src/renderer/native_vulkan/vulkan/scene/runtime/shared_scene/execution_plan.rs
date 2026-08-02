@@ -330,3 +330,146 @@ fn pass_targets_scene_color(pass: &SceneRenderingDevicePassNode) -> bool {
         SceneRenderTargetKind::SceneColor | SceneRenderTargetKind::Swapchain
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::effect_target::{
+        SceneColorCopyCoverage, SharedSceneEffectCopySource, SharedSceneEffectLoadOp,
+    };
+    use super::*;
+    use crate::engine::scene::{
+        SceneRenderEffectVisibilityPolicy, SceneRenderGraphActivationPolicy,
+        SceneRenderingDevicePassNode, SceneStringId,
+    };
+
+    #[test]
+    fn schedules_a_zero_draw_copy_graph_before_later_effect_passes() {
+        let graph = graph(vec![
+            pass(
+                0,
+                0,
+                SceneRenderPassKind::CopyTarget,
+                SceneRenderTargetKind::FirstClassEffectTarget,
+                0,
+                0,
+            ),
+            pass(
+                1,
+                1,
+                SceneRenderPassKind::EffectMaterial,
+                SceneRenderTargetKind::ImageLocalMain,
+                0,
+                1,
+            ),
+        ]);
+        let phase = SharedSceneEffectExecutionPlan {
+            reference_phase: 0,
+            commands: vec![
+                SharedSceneEffectCommand {
+                    source_position: 0,
+                    graph_index: 0,
+                    pass_record_index: 0,
+                    kind: SharedSceneEffectCommandKind::Copy {
+                        source: SharedSceneEffectCopySource::SceneColor,
+                        destination_physical_slot: Some(0),
+                        direct_scene_color_snapshot: false,
+                        coverage: SceneColorCopyCoverage::FullTarget,
+                    },
+                },
+                SharedSceneEffectCommand {
+                    source_position: 1,
+                    graph_index: 1,
+                    pass_record_index: 1,
+                    kind: SharedSceneEffectCommandKind::DynamicRender {
+                        target_physical_slot: 1,
+                        draw_start: 0,
+                        draw_count: 1,
+                        load_op: SharedSceneEffectLoadOp::Clear,
+                        batch_physical_slot: None,
+                        batch_atlas_tile: None,
+                        local_read: None,
+                    },
+                },
+            ],
+        };
+        let graph_order = super::super::super::graph_execution::scene_graph_execution_order(&graph);
+
+        let schedule =
+            compile_shared_scene_frame_execution_plan(&graph, &graph_order, &[], &[phase])
+                .expect("the zero-draw copy keeps its authored command position");
+
+        assert_eq!(
+            schedule.graphs,
+            vec![
+                SharedSceneGraphExecution {
+                    graph_index: 0,
+                    activation_policy: SceneRenderGraphActivationPolicy::Always,
+                    draw_ranges: Vec::new(),
+                    steps: vec![SharedSceneFrameStep::Effect { command_index: 0 }],
+                },
+                SharedSceneGraphExecution {
+                    graph_index: 1,
+                    activation_policy: SceneRenderGraphActivationPolicy::Always,
+                    draw_ranges: vec![SceneGpuDrawRange { start: 0, count: 1 }],
+                    steps: vec![SharedSceneFrameStep::Effect { command_index: 1 }],
+                },
+            ]
+        );
+    }
+
+    fn graph(pass_nodes: Vec<SceneRenderingDevicePassNode>) -> SceneRenderingDeviceGraphPlan {
+        SceneRenderingDeviceGraphPlan {
+            pass_nodes,
+            target_allocations: Vec::new(),
+            effect_batches: Vec::new(),
+            effect_batch_instances: Vec::new(),
+            sampled_bindings: Vec::new(),
+            material_sampled_bindings: Vec::new(),
+            mesh_draws: Vec::new(),
+            puppet_bone_palettes: Vec::new(),
+            puppet_bone_matrices: Vec::new(),
+            particle_gpu_emitters: Vec::new(),
+            resolved_object_count: 0,
+            resolved_visible_object_count: 0,
+            resolved_attachment_link_count: 0,
+            resolved_visible_effect_instance_count: 0,
+            resolved_visible_effect_pass_count: 0,
+            resolved_visible_effect_fbo_count: 0,
+            descriptor_heap_required: true,
+            descriptor_heap_resource_count: 0,
+            descriptor_heap_sampled_image_count: 0,
+            descriptor_heap_uniform_buffer_count: 0,
+            descriptor_heap_storage_buffer_count: 0,
+            descriptor_heap_sampler_count: 0,
+            graph_physical_target_count: 0,
+            graph_aliased_target_count: 0,
+            fifo_latest_ready_present_required: true,
+        }
+    }
+
+    fn pass(
+        graph_index: u32,
+        pass_record_index: u32,
+        role: SceneRenderPassKind,
+        target: SceneRenderTargetKind,
+        mesh_draw_start: u32,
+        mesh_draw_count: u32,
+    ) -> SceneRenderingDevicePassNode {
+        SceneRenderingDevicePassNode {
+            graph_index,
+            graph_activation_policy: SceneRenderGraphActivationPolicy::Always,
+            pass_record_index,
+            pass_id: 0,
+            role,
+            target,
+            target_name: SceneStringId::NONE,
+            binding_start: 0,
+            binding_count: 0,
+            effect_binding_start: u32::MAX,
+            effect_binding_count: 0,
+            effect_visibility_policy: SceneRenderEffectVisibilityPolicy::None,
+            mesh_draw_start,
+            mesh_draw_count,
+        }
+    }
+}

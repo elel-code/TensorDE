@@ -26,9 +26,9 @@ use super::effect_target::{
     scene_effect_target_commands, scene_effect_target_image_plan,
     shared_scene_effect_execution_plans,
 };
-use super::frame_state::{SceneFrameTopology, pack_scene_skinning_palette};
 use super::frame_state::video::pack_scene_video_vertices_into;
-use super::graph_execution::scene_graph_execution_order;
+use super::frame_state::{SceneFrameTopology, pack_scene_skinning_palette};
+use super::graph_execution::{scene_graph_draw_execution_order, scene_graph_execution_order};
 use super::input_attachment_binding::{
     SceneInputAttachmentBindingPlan, scene_input_attachment_binding_cycle,
 };
@@ -43,8 +43,8 @@ use super::pipeline::{
     scene_disabled_pipeline_indices_for_draws_with_local_read,
     scene_pipeline_indices_for_draws_with_local_read,
 };
-use super::sampled_binding::{SceneSampledImageBindingPlan, scene_sampled_image_binding_cycle};
 use super::sampled_binding::video::apply_scene_video_draw_semantics;
+use super::sampled_binding::{SceneSampledImageBindingPlan, scene_sampled_image_binding_cycle};
 use super::scene_owned_uniform::{SceneOwnedUniformArenaPlan, SceneOwnedUniformFrameInputs};
 use super::shared_resources::{
     SharedSceneColdResourceInputs, SharedSceneColdResources, SharedSceneDescriptorInputs,
@@ -69,6 +69,7 @@ pub(super) struct SharedSceneGpuResources {
     pub local_read_mappings: Vec<SharedSceneLocalReadMappings>,
     pub scene_color_draw_ranges: Vec<SceneGpuGraphDrawRange>,
     pub graph_execution_order: Vec<u32>,
+    pub(super) scene_color_clear_graph_order: Vec<u32>,
     pub frame_topology: SceneFrameTopology,
     pub scene_owned_uniform_plan: SceneOwnedUniformArenaPlan,
     pub transform_scratch: Vec<u8>,
@@ -363,6 +364,7 @@ impl SharedSceneGpuResources {
             &local_read_scopes,
         )?;
         let graph_execution_order = scene_graph_execution_order(&graph);
+        let scene_color_clear_graph_order = scene_graph_draw_execution_order(&graph);
         let frame_execution_plan = compile_shared_scene_frame_execution_plan(
             &graph,
             &graph_execution_order,
@@ -398,6 +400,7 @@ impl SharedSceneGpuResources {
             local_read_mappings,
             scene_color_draw_ranges: scene_color_draw_ranges(&graph),
             graph_execution_order,
+            scene_color_clear_graph_order,
             frame_topology: SceneFrameTopology::from_owned_graph(graph.clone()),
             scene_owned_uniform_plan,
             transform_scratch,
