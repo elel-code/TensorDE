@@ -8,8 +8,8 @@ use vulkanalia::{
 
 use crate::backend::DeviceOwner;
 use crate::{
-    BarrierBatch, DescriptorHeap, DescriptorHeapKind, Error, Result, SubmissionLease,
-    SubmissionResource,
+    BarrierBatch, Buffer, BufferUsages, DescriptorHeap, DescriptorHeapKind, Error, Image, Result,
+    SubmissionLease, SubmissionResource, TextureLayout, TextureUsages,
 };
 
 mod compute;
@@ -19,9 +19,13 @@ mod transfer;
 pub use compute::{ComputeEncoder, ComputePassDescriptor};
 pub use rendering::{
     AttachmentView, ColorAttachment, DepthAttachment, IndexFormat, LoadOp, RenderingDescriptor,
-    RenderingEncoder, StencilAttachment, StoreOp,
+    RenderingEncoder, RenderingLocalReadMapping, RenderingLocalReadMappingDescriptor,
+    RenderingLocalReadMappingKind, ResolveMode, StencilAttachment, StoreOp,
 };
-pub use transfer::{BufferCopy, BufferImageCopy, ImageBlit, ImageBlitFilter, ImageCopy};
+pub use transfer::{
+    BufferCopy, BufferImageCopy, ColorBufferImageCopy, ColorImageCopy, ImageBlit, ImageBlitFilter,
+    ImageCopy,
+};
 
 /// Describes one primary command encoder.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -41,6 +45,157 @@ pub struct CommandEncoder {
     submission_leases: Vec<SubmissionLease>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextureState {
+    Undefined,
+    ColorAttachmentWrite,
+    ColorAttachmentReadWrite,
+    RenderingLocalRead,
+    FragmentSampledRead,
+    ComputeSampledRead,
+    TransferSource,
+    TransferDestination,
+    StorageReadWrite,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BufferState {
+    Undefined,
+    TransferSource,
+    TransferDestination,
+    VertexRead,
+    IndexRead,
+    UniformRead,
+    StorageReadWrite,
+    ComputeStorageReadWrite,
+    IndirectRead,
+}
+
+impl BufferState {
+    pub(crate) fn synchronization(
+        self,
+    ) -> (vk::PipelineStageFlags2, vk::AccessFlags2, BufferUsages) {
+        match self {
+            Self::Undefined => (
+                vk::PipelineStageFlags2::NONE,
+                vk::AccessFlags2::NONE,
+                BufferUsages::empty(),
+            ),
+            Self::TransferSource => (
+                vk::PipelineStageFlags2::ALL_TRANSFER,
+                vk::AccessFlags2::TRANSFER_READ,
+                BufferUsages::COPY_SOURCE,
+            ),
+            Self::TransferDestination => (
+                vk::PipelineStageFlags2::ALL_TRANSFER,
+                vk::AccessFlags2::TRANSFER_WRITE,
+                BufferUsages::COPY_DESTINATION,
+            ),
+            Self::VertexRead => (
+                vk::PipelineStageFlags2::VERTEX_ATTRIBUTE_INPUT,
+                vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
+                BufferUsages::VERTEX,
+            ),
+            Self::IndexRead => (
+                vk::PipelineStageFlags2::INDEX_INPUT,
+                vk::AccessFlags2::INDEX_READ,
+                BufferUsages::INDEX,
+            ),
+            Self::UniformRead => (
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::AccessFlags2::UNIFORM_READ,
+                BufferUsages::UNIFORM,
+            ),
+            Self::StorageReadWrite => (
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::AccessFlags2::SHADER_STORAGE_READ | vk::AccessFlags2::SHADER_STORAGE_WRITE,
+                BufferUsages::STORAGE,
+            ),
+            Self::ComputeStorageReadWrite => (
+                vk::PipelineStageFlags2::COMPUTE_SHADER,
+                vk::AccessFlags2::SHADER_STORAGE_READ | vk::AccessFlags2::SHADER_STORAGE_WRITE,
+                BufferUsages::STORAGE,
+            ),
+            Self::IndirectRead => (
+                vk::PipelineStageFlags2::DRAW_INDIRECT,
+                vk::AccessFlags2::INDIRECT_COMMAND_READ,
+                BufferUsages::INDIRECT,
+            ),
+        }
+    }
+}
+
+impl TextureState {
+    fn synchronization(
+        self,
+    ) -> (
+        vk::PipelineStageFlags2,
+        vk::AccessFlags2,
+        TextureLayout,
+        TextureUsages,
+    ) {
+        match self {
+            Self::Undefined => (
+                vk::PipelineStageFlags2::NONE,
+                vk::AccessFlags2::NONE,
+                TextureLayout::Undefined,
+                TextureUsages::empty(),
+            ),
+            Self::ColorAttachmentWrite => (
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                TextureLayout::ColorAttachment,
+                TextureUsages::COLOR_ATTACHMENT,
+            ),
+            Self::ColorAttachmentReadWrite => (
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                TextureLayout::ColorAttachment,
+                TextureUsages::COLOR_ATTACHMENT,
+            ),
+            Self::RenderingLocalRead => (
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+                    | vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::AccessFlags2::COLOR_ATTACHMENT_READ
+                    | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+                    | vk::AccessFlags2::INPUT_ATTACHMENT_READ,
+                TextureLayout::RenderingLocalRead,
+                TextureUsages::COLOR_ATTACHMENT | TextureUsages::INPUT_ATTACHMENT,
+            ),
+            Self::FragmentSampledRead => (
+                vk::PipelineStageFlags2::FRAGMENT_SHADER,
+                vk::AccessFlags2::SHADER_SAMPLED_READ,
+                TextureLayout::ShaderReadOnly,
+                TextureUsages::SAMPLED,
+            ),
+            Self::ComputeSampledRead => (
+                vk::PipelineStageFlags2::COMPUTE_SHADER,
+                vk::AccessFlags2::SHADER_SAMPLED_READ,
+                TextureLayout::ShaderReadOnly,
+                TextureUsages::SAMPLED,
+            ),
+            Self::TransferSource => (
+                vk::PipelineStageFlags2::ALL_TRANSFER,
+                vk::AccessFlags2::TRANSFER_READ,
+                TextureLayout::TransferSource,
+                TextureUsages::COPY_SOURCE,
+            ),
+            Self::TransferDestination => (
+                vk::PipelineStageFlags2::ALL_TRANSFER,
+                vk::AccessFlags2::TRANSFER_WRITE,
+                TextureLayout::TransferDestination,
+                TextureUsages::COPY_DESTINATION,
+            ),
+            Self::StorageReadWrite => (
+                vk::PipelineStageFlags2::ALL_COMMANDS,
+                vk::AccessFlags2::SHADER_STORAGE_READ | vk::AccessFlags2::SHADER_STORAGE_WRITE,
+                TextureLayout::General,
+                TextureUsages::STORAGE,
+            ),
+        }
+    }
+}
+
 impl fmt::Debug for CommandEncoder {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -53,6 +208,109 @@ impl fmt::Debug for CommandEncoder {
 }
 
 impl CommandEncoder {
+    #[cfg(feature = "ffmpeg-vulkan-decode")]
+    pub(crate) fn owner(&self) -> &Arc<DeviceOwner> {
+        &self.owner
+    }
+
+    #[cfg(feature = "ffmpeg-vulkan-decode")]
+    pub(crate) unsafe fn external_image_barrier(&mut self, barrier: vk::ImageMemoryBarrier2) {
+        unsafe {
+            self.owner.device.cmd_pipeline_barrier2(
+                self.raw(),
+                &vk::DependencyInfo::builder()
+                    .image_memory_barriers(&[barrier])
+                    .build(),
+            );
+        }
+    }
+
+    /// Transitions the complete range of one renderer-owned buffer.
+    pub fn transition_buffer(
+        &mut self,
+        buffer: &Buffer,
+        old: BufferState,
+        new: BufferState,
+    ) -> Result<()> {
+        if !buffer.belongs_to(&self.owner) {
+            return Err(Error::Validation(
+                "transition buffer was created by a different Device".into(),
+            ));
+        }
+        let (src_stage, src_access, old_usage) = old.synchronization();
+        let (dst_stage, dst_access, new_usage) = new.synchronization();
+        if !buffer.usage().contains(old_usage | new_usage) {
+            return Err(Error::Validation(
+                "transition buffer is missing usage required by its states".into(),
+            ));
+        }
+        let barrier = vk::BufferMemoryBarrier2::builder()
+            .src_stage_mask(src_stage)
+            .src_access_mask(src_access)
+            .dst_stage_mask(dst_stage)
+            .dst_access_mask(dst_access)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .buffer(buffer.raw())
+            .offset(0)
+            .size(buffer.size())
+            .build();
+        unsafe {
+            self.owner.device.cmd_pipeline_barrier2(
+                self.raw(),
+                &vk::DependencyInfo::builder()
+                    .buffer_memory_barriers(&[barrier])
+                    .build(),
+            );
+        }
+        self.retain_resource(buffer);
+        Ok(())
+    }
+
+    /// Transitions every color subresource of one renderer-owned image.
+    pub fn transition_image(
+        &mut self,
+        image: &Image,
+        old: TextureState,
+        new: TextureState,
+    ) -> Result<()> {
+        if !image.belongs_to(&self.owner) {
+            return Err(Error::Validation(
+                "transition image was created by a different Device".into(),
+            ));
+        }
+        let (src_stage, src_access, old_layout, old_usage) = old.synchronization();
+        let (dst_stage, dst_access, new_layout, new_usage) = new.synchronization();
+        let required_usage = old_usage | new_usage;
+        if !image.usage().contains(required_usage) {
+            return Err(Error::Validation(
+                "transition image is missing usage required by its states".into(),
+            ));
+        }
+        let barrier = vk::ImageMemoryBarrier2::builder()
+            .src_stage_mask(src_stage)
+            .src_access_mask(src_access)
+            .dst_stage_mask(dst_stage)
+            .dst_access_mask(dst_access)
+            .old_layout(old_layout.to_vk())
+            .new_layout(new_layout.to_vk())
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image.raw())
+            .subresource_range(image.full_subresource_range(vk::ImageAspectFlags::COLOR))
+            .build();
+        unsafe {
+            self.owner.device.cmd_pipeline_barrier2(
+                self.raw(),
+                &vk::DependencyInfo::builder()
+                    .image_memory_barriers(&[barrier])
+                    .build(),
+            );
+        }
+        self.retain_resource(image);
+        Ok(())
+    }
+
     pub(crate) fn new(
         owner: Arc<DeviceOwner>,
         descriptor: &CommandEncoderDescriptor,
@@ -76,6 +334,10 @@ impl CommandEncoder {
     pub fn raw(&self) -> vk::CommandBuffer {
         self.handle
             .expect("a live CommandEncoder always owns a command buffer")
+    }
+
+    pub(crate) fn belongs_to(&self, owner: &Arc<DeviceOwner>) -> bool {
+        Arc::ptr_eq(&self.owner, owner)
     }
 
     /// Retains arbitrary shared ownership through this command buffer's
@@ -296,7 +558,9 @@ impl Drop for CommandBuffer {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_push_data;
+    use super::{TextureState, validate_push_data};
+    use crate::{TextureLayout, TextureUsages};
+    use vulkanalia::vk;
 
     #[test]
     fn push_data_range_obeys_alignment_and_device_limit() {
@@ -304,5 +568,26 @@ mod tests {
         assert!(validate_push_data(2, 16, 128).is_err());
         assert!(validate_push_data(0, 6, 128).is_err());
         assert!(validate_push_data(120, 12, 128).is_err());
+    }
+
+    #[test]
+    fn local_read_state_keeps_attachment_and_fragment_input_access() {
+        let (stages, access, layout, usage) = TextureState::RenderingLocalRead.synchronization();
+        assert_eq!(
+            stages,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+                | vk::PipelineStageFlags2::FRAGMENT_SHADER
+        );
+        assert_eq!(
+            access,
+            vk::AccessFlags2::COLOR_ATTACHMENT_READ
+                | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+                | vk::AccessFlags2::INPUT_ATTACHMENT_READ
+        );
+        assert_eq!(layout, TextureLayout::RenderingLocalRead);
+        assert_eq!(
+            usage,
+            TextureUsages::COLOR_ATTACHMENT | TextureUsages::INPUT_ATTACHMENT
+        );
     }
 }

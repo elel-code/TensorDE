@@ -1,4 +1,4 @@
-use vulkan_renderer::vulkanalia::{Version, vk};
+use vulkan_renderer::{ROADMAP_2026_API_VERSION, Version, vulkanalia::vk};
 
 use super::device::{DeviceSelector, DrmNodeId, GpuPreference};
 
@@ -12,7 +12,7 @@ pub struct RendererTarget {
 impl Default for RendererTarget {
     fn default() -> Self {
         Self {
-            api_version: Version::V1_4_0,
+            api_version: ROADMAP_2026_API_VERSION,
             descriptor_heap: DescriptorHeapTarget::Required,
             device: DeviceSelector::new(GpuPreference::default()),
         }
@@ -22,7 +22,7 @@ impl Default for RendererTarget {
 impl RendererTarget {
     pub const fn with_device(preference: GpuPreference, drm_node: Option<DrmNodeId>) -> Self {
         Self {
-            api_version: Version::V1_4_0,
+            api_version: ROADMAP_2026_API_VERSION,
             descriptor_heap: DescriptorHeapTarget::Required,
             device: DeviceSelector::new(preference).with_drm_node(drm_node),
         }

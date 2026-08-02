@@ -1,16 +1,13 @@
-#![allow(unsafe_code)]
-
 use std::{
     collections::{HashMap, HashSet},
-    os::fd::{AsRawFd, IntoRawFd, OwnedFd},
+    os::fd::OwnedFd,
     sync::Arc,
 };
 
 use thiserror::Error;
-use vulkan_renderer::vulkanalia::vk::{
-    DeviceV1_0, HasBuilder, KhrExternalSemaphoreFdExtensionDeviceCommands,
+use vulkan_renderer::{
+    BinarySemaphore, BinarySemaphoreDescriptor, Device as RendererDevice, SemaphoreWait, vk,
 };
-use vulkan_renderer::vulkanalia::{Device, vk};
 
 use crate::{ecs::SurfaceId, render::FrameSubmission};
 
@@ -38,14 +35,14 @@ pub(crate) enum ClientReleaseFence {
 /// protocol layer.
 #[derive(Debug, Default)]
 pub(super) struct ClientSyncManager {
-    ledger: SyncLedger<vk::Semaphore, Arc<OwnedFd>>,
-    retired: Vec<(vk::Semaphore, u64)>,
+    ledger: SyncLedger<BinarySemaphore, Arc<OwnedFd>>,
+    retired: Vec<(BinarySemaphore, u64)>,
 }
 
 impl ClientSyncManager {
     pub(super) fn import_acquire(
         &mut self,
-        device: &Device,
+        device: &RendererDevice,
         surface: SurfaceId,
         fd: OwnedFd,
     ) -> Result<(), ClientSyncError> {
@@ -53,22 +50,14 @@ impl ClientSyncManager {
             return Err(ClientSyncError::AcquireAlreadyPending(surface));
         }
 
-        let semaphore_info = vk::SemaphoreCreateInfo::builder();
-        let semaphore = unsafe { device.create_semaphore(&semaphore_info, None) }
-            .map_err(ClientSyncError::CreateSemaphore)?;
-        let import_info = vk::ImportSemaphoreFdInfoKHR::builder()
-            .semaphore(semaphore)
-            .flags(vk::SemaphoreImportFlags::TEMPORARY)
-            .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD)
-            .fd(fd.as_raw_fd());
-
-        if let Err(error) = unsafe { device.import_semaphore_fd_khr(&import_info) } {
-            unsafe { device.destroy_semaphore(semaphore, None) };
-            return Err(ClientSyncError::ImportSemaphore(error));
-        }
-
-        // Successful Vulkan import transfers ownership of the fd to Vulkan.
-        let _ = fd.into_raw_fd();
+        let semaphore = device
+            .import_sync_fd_semaphore(
+                &BinarySemaphoreDescriptor {
+                    label: Some("tensor-client-acquire".into()),
+                },
+                fd,
+            )
+            .map_err(|source| ClientSyncError::ImportSemaphore(source.to_string()))?;
         self.ledger
             .insert_acquire(surface, semaphore)
             .expect("surface acquire was checked before semaphore import");
@@ -79,10 +68,15 @@ impl ClientSyncManager {
         unique_surface_ids(frame, |surface| self.ledger.contains(surface))
     }
 
-    pub(super) fn wait_semaphores(&self, surfaces: &[SurfaceId]) -> Vec<vk::Semaphore> {
+    pub(super) fn acquire_waits(&self, surfaces: &[SurfaceId]) -> Vec<SemaphoreWait> {
         surfaces
             .iter()
-            .filter_map(|surface| self.ledger.acquire(*surface).copied())
+            .filter_map(|surface| self.ledger.acquire(*surface))
+            .map(|semaphore| {
+                semaphore
+                    .wait(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                    .expect("fragment-shader binary semaphore waits are valid")
+            })
             .collect()
     }
 
@@ -105,18 +99,16 @@ impl ClientSyncManager {
 
     pub(super) fn finish(
         &mut self,
-        device: &Device,
         surface: SurfaceId,
         completed_timeline: u64,
     ) -> ClientReleaseFence {
         let Some(entry) = self.ledger.finish(surface, completed_timeline) else {
             return ClientReleaseFence::Ready;
         };
-        if let Some(semaphore) = entry.acquire {
-            // A pending acquire was never submitted.  It is safe to discard
-            // its imported payload instead of waiting on it.
-            unsafe { device.destroy_semaphore(semaphore, None) };
-        }
+        // A pending acquire was never submitted. Dropping its shared
+        // renderer semaphore discards the temporary imported payload without
+        // waiting on the CPU.
+        drop(entry.acquire);
         match entry.release {
             ReleaseState::Ready => ClientReleaseFence::Ready,
             ReleaseState::SyncFile(fence) => ClientReleaseFence::SyncFile(fence),
@@ -124,11 +116,11 @@ impl ClientSyncManager {
         }
     }
 
-    pub(super) fn retire_completed(&mut self, device: &Device, completed_timeline: u64) {
+    pub(super) fn retire_completed(&mut self, completed_timeline: u64) {
         let mut retained = Vec::with_capacity(self.retired.len());
         for (semaphore, retire_value) in self.retired.drain(..) {
             if retire_value <= completed_timeline {
-                unsafe { device.destroy_semaphore(semaphore, None) };
+                drop(semaphore);
             } else {
                 retained.push((semaphore, retire_value));
             }
@@ -136,13 +128,9 @@ impl ClientSyncManager {
         self.retired = retained;
     }
 
-    pub(super) unsafe fn destroy(&mut self, device: &Device) {
-        for (_, semaphore) in self.ledger.drain() {
-            unsafe { device.destroy_semaphore(semaphore, None) };
-        }
-        for (semaphore, _) in self.retired.drain(..) {
-            unsafe { device.destroy_semaphore(semaphore, None) };
-        }
+    pub(super) fn destroy(&mut self) {
+        drop(self.ledger.drain());
+        self.retired.clear();
     }
 }
 
@@ -164,10 +152,8 @@ fn unique_surface_ids(
 pub(super) enum ClientSyncError {
     #[error("surface {0:?} already has an imported client acquire semaphore")]
     AcquireAlreadyPending(SurfaceId),
-    #[error("failed to create a client acquire semaphore: {0:?}")]
-    CreateSemaphore(vk::ErrorCode),
-    #[error("failed to import client acquire SYNC_FD: {0:?}")]
-    ImportSemaphore(vk::ErrorCode),
+    #[error("shared renderer failed to import client acquire SYNC_FD: {0}")]
+    ImportSemaphore(String),
 }
 
 #[derive(Debug)]

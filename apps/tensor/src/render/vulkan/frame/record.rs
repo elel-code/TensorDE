@@ -4,10 +4,12 @@ use std::{mem, slice};
 
 use tensor_util::Rect;
 use thiserror::Error;
-use vulkan_renderer::vulkanalia::vk::{
-    DeviceV1_0, DeviceV1_3, ExtDescriptorHeapExtensionDeviceCommands, HasBuilder,
+use vulkan_renderer::vulkanalia::vk;
+use vulkan_renderer::{
+    BarrierBatch, ColorAttachment, CommandEncoder, Error as RendererError, ForeignImageState,
+    LoadOp, Rect2D as RendererRect2D, RenderGraphImageState, RenderingDescriptor, ResolveMode,
+    ResourceBinding, ResourceState, StoreOp, TextureLayout, Viewport,
 };
-use vulkan_renderer::vulkanalia::{Device, vk};
 
 use crate::render::{
     FrameSubmission,
@@ -267,21 +269,47 @@ fn descriptor_index(
 
 pub(super) struct SceneRecord<'a> {
     pub(super) frame: &'a FrameSubmission,
-    pub(super) output: NativeOutputImageInfo,
+    pub(super) output: &'a NativeOutputImageInfo,
     pub(super) clients: &'a [ClientImageInfo],
-    pub(super) client_pipeline: Option<vk::Pipeline>,
-    pub(super) focus_ring_pipeline: Option<(vk::Pipeline, vk::PipelineLayout)>,
-    pub(super) cursor_pipeline: Option<(vk::Pipeline, vk::PipelineLayout)>,
+    pub(super) client_pipeline: Option<&'a vulkan_renderer::GraphicsPipeline>,
+    pub(super) focus_ring_pipeline: Option<&'a vulkan_renderer::GraphicsPipeline>,
+    pub(super) cursor_pipeline: Option<&'a vulkan_renderer::GraphicsPipeline>,
     pub(super) graphics_queue_family: u32,
     pub(super) scene_draws: &'a [PreparedSceneDraw],
     pub(super) cursors: &'a PreparedCursorDraws,
 }
 
-pub(super) unsafe fn record_scene(
-    device: &Device,
-    command_buffer: vk::CommandBuffer,
+/// Reusable frame-local synchronization scratch. Its vectors retain capacity
+/// across repaints so scene image count changes do not allocate on the hot
+/// command-recording path.
+#[derive(Debug)]
+pub(super) struct SceneBarrierScratch {
+    upload: BarrierBatch,
+    acquire: BarrierBatch,
+    release: BarrierBatch,
+}
+
+impl SceneBarrierScratch {
+    pub(super) fn new() -> Self {
+        Self {
+            upload: BarrierBatch::with_capacity(0, 64),
+            acquire: BarrierBatch::with_capacity(0, 65),
+            release: BarrierBatch::with_capacity(0, 65),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.upload.clear();
+        self.acquire.clear();
+        self.release.clear();
+    }
+}
+
+pub(super) fn record_scene(
+    encoder: &mut CommandEncoder,
     scene: SceneRecord<'_>,
-) {
+    barriers: &mut SceneBarrierScratch,
+) -> Result<(), RendererError> {
     let SceneRecord {
         frame,
         output,
@@ -293,91 +321,73 @@ pub(super) unsafe fn record_scene(
         scene_draws,
         cursors,
     } = scene;
-    let subresource = color_subresource();
-    let upload_acquires = clients
-        .iter()
-        .copied()
-        .filter(|image| image.upload.is_some())
-        .map(|image| client_upload_acquire(image, subresource))
-        .collect::<Vec<_>>();
-    if !upload_acquires.is_empty() {
-        let upload_dependency =
-            vk::DependencyInfo::builder().image_memory_barriers(&upload_acquires);
-        unsafe { device.cmd_pipeline_barrier2(command_buffer, &upload_dependency) };
-        for image in clients.iter().copied() {
-            let Some(upload) = image.upload else {
-                continue;
-            };
-            let region = vk::BufferImageCopy::builder()
-                .buffer_offset(0)
-                .buffer_row_length(0)
-                .buffer_image_height(0)
-                .image_subresource(
-                    vk::ImageSubresourceLayers::builder()
-                        .aspect_mask(vk::ImageAspectFlags::COLOR)
-                        .mip_level(0)
-                        .base_array_layer(0)
-                        .layer_count(1)
-                        .build(),
-                )
-                .image_offset(vk::Offset3D::default())
-                .image_extent(upload.extent);
-            unsafe {
-                device.cmd_copy_buffer_to_image(
-                    command_buffer,
-                    upload.buffer,
-                    image.image,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    std::slice::from_ref(&region),
-                );
-            }
+    barriers.clear();
+    encoder.retain_resource(&output.image);
+    for image in clients {
+        image.retain_for_submission(encoder);
+        if image.upload_pending {
+            append_image_transition(
+                &mut barriers.upload,
+                image.resource_binding(),
+                local_client_state(image.needs_initial_acquire, graphics_queue_family),
+                transfer_destination_state(graphics_queue_family),
+            )?;
         }
     }
-    let mut acquires = Vec::with_capacity(1 + clients.len());
-    acquires.push(output_acquire(output, subresource, graphics_queue_family));
-    acquires.extend(
-        clients
-            .iter()
-            .copied()
-            .map(|image| client_acquire(image, subresource, graphics_queue_family)),
-    );
-    let acquire_dependency = vk::DependencyInfo::builder().image_memory_barriers(&acquires);
-    unsafe { device.cmd_pipeline_barrier2(command_buffer, &acquire_dependency) };
+    unsafe { encoder.pipeline_barrier(&barriers.upload) };
+    for image in clients {
+        unsafe { image.record_upload(encoder)? };
+    }
 
-    let clear = vk::ClearValue {
-        color: vk::ClearColorValue {
-            float32: [0.018, 0.024, 0.034, 1.0],
-        },
-    };
-    let color_attachment = vk::RenderingAttachmentInfo::builder()
-        .image_view(output.view)
-        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-        .load_op(vk::AttachmentLoadOp::CLEAR)
-        .store_op(vk::AttachmentStoreOp::STORE)
-        .clear_value(clear)
-        .build();
-    let render_area = vk::Rect2D {
-        offset: vk::Offset2D { x: 0, y: 0 },
-        extent: vk::Extent2D {
-            width: frame.target.viewport.width,
-            height: frame.target.viewport.height,
-        },
-    };
-    let rendering = vk::RenderingInfo::builder()
-        .render_area(render_area)
-        .layer_count(1)
-        .color_attachments(slice::from_ref(&color_attachment));
-    unsafe { device.cmd_begin_rendering(command_buffer, &rendering) };
+    append_image_transition(
+        &mut barriers.acquire,
+        output.image.resource_binding(),
+        output_source_state(output.foreign_owned, graphics_queue_family),
+        color_attachment_state(graphics_queue_family),
+    )?;
+    for image in clients {
+        append_image_transition(
+            &mut barriers.acquire,
+            image.resource_binding(),
+            client_source_state(image, graphics_queue_family),
+            sampled_state(graphics_queue_family),
+        )?;
+    }
+    unsafe { encoder.pipeline_barrier(&barriers.acquire) };
 
-    let viewport = vk::Viewport {
+    let color_attachments = [Some(ColorAttachment {
+        view: output.image.as_attachment(),
+        layout: TextureLayout::ColorAttachment,
+        resolve_target: None,
+        resolve_layout: TextureLayout::Undefined,
+        resolve_mode: ResolveMode::None,
+        load_op: LoadOp::Clear([0.018, 0.024, 0.034, 1.0]),
+        store_op: StoreOp::Store,
+    })];
+    let rendering_descriptor = RenderingDescriptor {
+        label: Some("tensor-client-frame"),
+        render_area: RendererRect2D::new(
+            0,
+            0,
+            frame.target.viewport.width,
+            frame.target.viewport.height,
+        ),
+        layer_count: 1,
+        view_mask: 0,
+        color_attachments: &color_attachments,
+        depth_attachment: None,
+        stencil_attachment: None,
+        multisampled_render_to_single_sampled: None,
+    };
+    let mut rendering = unsafe { encoder.begin_rendering(&rendering_descriptor)? };
+    rendering.set_viewport(Viewport {
         x: 0.0,
         y: 0.0,
         width: frame.target.viewport.width as f32,
         height: frame.target.viewport.height as f32,
         min_depth: 0.0,
         max_depth: 1.0,
-    };
-    unsafe { device.cmd_set_viewport(command_buffer, 0, slice::from_ref(&viewport)) };
+    })?;
     #[derive(Clone, Copy, Eq, PartialEq)]
     enum BoundScenePipeline {
         Client,
@@ -391,13 +401,7 @@ pub(super) unsafe fn record_scene(
                     continue;
                 };
                 if bound_pipeline != Some(BoundScenePipeline::Client) {
-                    unsafe {
-                        device.cmd_bind_pipeline(
-                            command_buffer,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            pipeline,
-                        );
-                    }
+                    rendering.bind_pipeline(pipeline)?;
                     bound_pipeline = Some(BoundScenePipeline::Client);
                 }
                 let push_bytes = unsafe {
@@ -406,26 +410,16 @@ pub(super) unsafe fn record_scene(
                         mem::size_of::<DrawPushData>(),
                     )
                 };
-                let push_range = vk::HostAddressRangeConstEXT::builder().address(push_bytes);
-                let push = vk::PushDataInfoEXT::builder().offset(0).data(push_range);
-                unsafe {
-                    device.cmd_set_scissor(command_buffer, 0, slice::from_ref(&draw.scissor));
-                    device.cmd_push_data_ext(command_buffer, &push);
-                    device.cmd_draw(command_buffer, 6, 1, 0, 0);
-                }
+                rendering.set_scissor(renderer_scissor(draw.scissor))?;
+                rendering.push_data(0, push_bytes)?;
+                unsafe { rendering.draw(0..6, 0..1)? };
             }
             PreparedSceneDraw::FocusRing(ring) => {
-                let Some((pipeline, layout)) = focus_ring_pipeline else {
+                let Some(pipeline) = focus_ring_pipeline else {
                     continue;
                 };
                 if bound_pipeline != Some(BoundScenePipeline::FocusRing) {
-                    unsafe {
-                        device.cmd_bind_pipeline(
-                            command_buffer,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            pipeline,
-                        );
-                    }
+                    rendering.bind_pipeline(pipeline)?;
                     bound_pipeline = Some(BoundScenePipeline::FocusRing);
                 }
                 let push_bytes = unsafe {
@@ -434,269 +428,151 @@ pub(super) unsafe fn record_scene(
                         mem::size_of::<FocusRingPushData>(),
                     )
                 };
-                unsafe {
-                    device.cmd_set_scissor(command_buffer, 0, slice::from_ref(&ring.scissor));
-                    device.cmd_push_constants(
-                        command_buffer,
-                        layout,
-                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                        0,
-                        push_bytes,
-                    );
-                    device.cmd_draw(command_buffer, 6, 1, 0, 0);
-                }
+                rendering.set_scissor(renderer_scissor(ring.scissor))?;
+                rendering.push_data(0, push_bytes)?;
+                unsafe { rendering.draw(0..6, 0..1)? };
             }
         }
     }
     for cursor in cursors.iter() {
         match cursor {
             PreparedCursorDraw::Vector { push, scissor } => {
-                let Some((pipeline, layout)) = cursor_pipeline else {
+                let Some(pipeline) = cursor_pipeline else {
                     continue;
                 };
-                unsafe {
-                    device.cmd_bind_pipeline(
-                        command_buffer,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        pipeline,
-                    );
-                }
+                rendering.bind_pipeline(pipeline)?;
                 let push_bytes = unsafe {
                     slice::from_raw_parts(
                         (&push as *const CursorPushData).cast::<u8>(),
                         mem::size_of::<CursorPushData>(),
                     )
                 };
-                unsafe {
-                    device.cmd_set_scissor(command_buffer, 0, slice::from_ref(&scissor));
-                    device.cmd_push_constants(
-                        command_buffer,
-                        layout,
-                        vk::ShaderStageFlags::VERTEX,
-                        0,
-                        push_bytes,
-                    );
-                    device.cmd_draw(command_buffer, 6, 1, 0, 0);
-                }
+                rendering.set_scissor(renderer_scissor(scissor))?;
+                rendering.push_data(0, push_bytes)?;
+                unsafe { rendering.draw(0..6, 0..1)? };
             }
             PreparedCursorDraw::Texture(draw) => {
                 let Some(pipeline) = client_pipeline else {
                     continue;
                 };
-                unsafe {
-                    device.cmd_bind_pipeline(
-                        command_buffer,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        pipeline,
-                    );
-                }
+                rendering.bind_pipeline(pipeline)?;
                 let push_bytes = unsafe {
                     slice::from_raw_parts(
                         (&draw.push as *const DrawPushData).cast::<u8>(),
                         mem::size_of::<DrawPushData>(),
                     )
                 };
-                let push_range = vk::HostAddressRangeConstEXT::builder().address(push_bytes);
-                let push = vk::PushDataInfoEXT::builder().offset(0).data(push_range);
-                unsafe {
-                    device.cmd_set_scissor(command_buffer, 0, slice::from_ref(&draw.scissor));
-                    device.cmd_push_data_ext(command_buffer, &push);
-                    device.cmd_draw(command_buffer, 6, 1, 0, 0);
-                }
+                rendering.set_scissor(renderer_scissor(draw.scissor))?;
+                rendering.push_data(0, push_bytes)?;
+                unsafe { rendering.draw(0..6, 0..1)? };
             }
         }
     }
-    unsafe { device.cmd_end_rendering(command_buffer) };
+    rendering.end();
 
-    let mut releases = Vec::with_capacity(1 + clients.len());
-    releases.extend(
-        clients
-            .iter()
-            .copied()
-            .map(|image| client_release(image, subresource, graphics_queue_family)),
-    );
-    releases.push(output_release(output, subresource, graphics_queue_family));
-    let release_dependency = vk::DependencyInfo::builder().image_memory_barriers(&releases);
-    unsafe { device.cmd_pipeline_barrier2(command_buffer, &release_dependency) };
+    for image in clients {
+        append_image_transition(
+            &mut barriers.release,
+            image.resource_binding(),
+            sampled_state(graphics_queue_family),
+            client_release_state(image.foreign_owned, graphics_queue_family),
+        )?;
+    }
+    append_image_transition(
+        &mut barriers.release,
+        output.image.resource_binding(),
+        color_attachment_state(graphics_queue_family),
+        ResourceState::foreign_image(ForeignImageState::General),
+    )?;
+    unsafe { encoder.pipeline_barrier(&barriers.release) };
+    Ok(())
 }
 
-fn color_subresource() -> vk::ImageSubresourceRange {
-    vk::ImageSubresourceRange::builder()
-        .aspect_mask(vk::ImageAspectFlags::COLOR)
-        .base_mip_level(0)
-        .level_count(1)
-        .base_array_layer(0)
-        .layer_count(1)
-        .build()
+fn renderer_scissor(scissor: vk::Rect2D) -> RendererRect2D {
+    RendererRect2D::new(
+        scissor.offset.x,
+        scissor.offset.y,
+        scissor.extent.width,
+        scissor.extent.height,
+    )
 }
 
-fn output_acquire(
-    image: NativeOutputImageInfo,
-    subresource: vk::ImageSubresourceRange,
-    graphics_queue_family: u32,
-) -> vk::ImageMemoryBarrier2 {
-    let (old_layout, source, destination) = if image.foreign_owned {
-        (
-            vk::ImageLayout::GENERAL,
-            vk::QUEUE_FAMILY_FOREIGN_EXT,
-            graphics_queue_family,
-        )
+fn append_image_transition(
+    barriers: &mut BarrierBatch,
+    binding: ResourceBinding,
+    source: ResourceState,
+    destination: ResourceState,
+) -> Result<(), RendererError> {
+    barriers
+        .add_image_transition(binding, source, destination)
+        .map_err(|error| RendererError::Validation(error.to_string()))
+}
+
+fn color_attachment_state(graphics_queue_family: u32) -> ResourceState {
+    ResourceState::image(
+        RenderGraphImageState::ColorAttachmentWrite,
+        graphics_queue_family,
+    )
+}
+
+fn transfer_destination_state(graphics_queue_family: u32) -> ResourceState {
+    ResourceState::image(
+        RenderGraphImageState::TransferDestination,
+        graphics_queue_family,
+    )
+}
+
+fn sampled_state(graphics_queue_family: u32) -> ResourceState {
+    ResourceState::image(
+        RenderGraphImageState::FragmentSampledReadGeneral,
+        graphics_queue_family,
+    )
+}
+
+fn local_client_state(needs_initial_acquire: bool, graphics_queue_family: u32) -> ResourceState {
+    if needs_initial_acquire {
+        ResourceState::image(RenderGraphImageState::Undefined, graphics_queue_family)
     } else {
-        (
-            vk::ImageLayout::UNDEFINED,
-            vk::QUEUE_FAMILY_IGNORED,
-            vk::QUEUE_FAMILY_IGNORED,
-        )
-    };
-    vk::ImageMemoryBarrier2::builder()
-        .src_stage_mask(vk::PipelineStageFlags2::NONE)
-        .src_access_mask(vk::AccessFlags2::NONE)
-        .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-        .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-        .old_layout(old_layout)
-        .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-        .src_queue_family_index(source)
-        .dst_queue_family_index(destination)
-        .image(image.image)
-        .subresource_range(subresource)
-        .build()
+        sampled_state(graphics_queue_family)
+    }
 }
 
-fn client_acquire(
-    image: ClientImageInfo,
-    subresource: vk::ImageSubresourceRange,
-    graphics_queue_family: u32,
-) -> vk::ImageMemoryBarrier2 {
-    let (old_layout, source, destination, source_stage, source_access) = if image.foreign_owned {
-        let old_layout = if image.needs_initial_acquire {
-            // An imported dma-buf starts with Vulkan's UNDEFINED layout, but
-            // its contents belong to the foreign producer.  Keeping the
-            // FOREIGN ownership transfer paired with UNDEFINED is the
-            // content-preserving first acquire required for explicit DRM
-            // modifiers; later frames use GENERAL after a release/acquire
-            // round-trip.
-            vk::ImageLayout::UNDEFINED
-        } else {
-            vk::ImageLayout::GENERAL
-        };
-        (
-            old_layout,
-            vk::QUEUE_FAMILY_FOREIGN_EXT,
-            graphics_queue_family,
-            vk::PipelineStageFlags2::NONE,
-            vk::AccessFlags2::NONE,
-        )
-    } else if image.upload.is_some() {
-        (
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            vk::QUEUE_FAMILY_IGNORED,
-            vk::QUEUE_FAMILY_IGNORED,
-            vk::PipelineStageFlags2::ALL_TRANSFER,
-            vk::AccessFlags2::TRANSFER_WRITE,
-        )
+fn output_source_state(foreign_owned: bool, graphics_queue_family: u32) -> ResourceState {
+    if foreign_owned {
+        ResourceState::foreign_image(ForeignImageState::General)
     } else {
-        (
-            if image.needs_initial_acquire {
-                vk::ImageLayout::UNDEFINED
-            } else {
-                vk::ImageLayout::GENERAL
-            },
-            vk::QUEUE_FAMILY_IGNORED,
-            vk::QUEUE_FAMILY_IGNORED,
-            vk::PipelineStageFlags2::FRAGMENT_SHADER,
-            vk::AccessFlags2::SHADER_SAMPLED_READ,
-        )
-    };
-    vk::ImageMemoryBarrier2::builder()
-        .src_stage_mask(source_stage)
-        .src_access_mask(source_access)
-        .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
-        .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
-        .old_layout(old_layout)
-        .new_layout(vk::ImageLayout::GENERAL)
-        .src_queue_family_index(source)
-        .dst_queue_family_index(destination)
-        .image(image.image)
-        .subresource_range(subresource)
-        .build()
+        ResourceState::image(RenderGraphImageState::Undefined, graphics_queue_family)
+    }
 }
 
-fn client_upload_acquire(
-    image: ClientImageInfo,
-    subresource: vk::ImageSubresourceRange,
-) -> vk::ImageMemoryBarrier2 {
-    let (old_layout, source_stage, source_access) = if image.needs_initial_acquire {
-        (
-            vk::ImageLayout::UNDEFINED,
-            vk::PipelineStageFlags2::NONE,
-            vk::AccessFlags2::NONE,
-        )
+fn client_source_state(image: &ClientImageInfo, graphics_queue_family: u32) -> ResourceState {
+    if image.foreign_owned {
+        // An imported dma-buf begins in Vulkan's UNDEFINED layout while its
+        // contents still belong to the foreign producer.  Retaining FOREIGN
+        // ownership in this semantic transition preserves the first sampled
+        // contents; later frames round-trip through GENERAL.
+        foreign_client_source_state(image.needs_initial_acquire)
+    } else if image.upload_pending {
+        transfer_destination_state(graphics_queue_family)
     } else {
-        (
-            vk::ImageLayout::GENERAL,
-            vk::PipelineStageFlags2::FRAGMENT_SHADER,
-            vk::AccessFlags2::SHADER_SAMPLED_READ,
-        )
-    };
-    vk::ImageMemoryBarrier2::builder()
-        .src_stage_mask(source_stage)
-        .src_access_mask(source_access)
-        .dst_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
-        .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-        .old_layout(old_layout)
-        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(image.image)
-        .subresource_range(subresource)
-        .build()
+        local_client_state(image.needs_initial_acquire, graphics_queue_family)
+    }
 }
 
-fn client_release(
-    image: ClientImageInfo,
-    subresource: vk::ImageSubresourceRange,
-    graphics_queue_family: u32,
-) -> vk::ImageMemoryBarrier2 {
-    let destination = if image.foreign_owned {
-        vk::QUEUE_FAMILY_FOREIGN_EXT
+fn foreign_client_source_state(needs_initial_acquire: bool) -> ResourceState {
+    ResourceState::foreign_image(if needs_initial_acquire {
+        ForeignImageState::Undefined
     } else {
-        vk::QUEUE_FAMILY_IGNORED
-    };
-    vk::ImageMemoryBarrier2::builder()
-        .src_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
-        .src_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
-        .dst_stage_mask(vk::PipelineStageFlags2::NONE)
-        .dst_access_mask(vk::AccessFlags2::NONE)
-        .old_layout(vk::ImageLayout::GENERAL)
-        .new_layout(vk::ImageLayout::GENERAL)
-        .src_queue_family_index(if image.foreign_owned {
-            graphics_queue_family
-        } else {
-            vk::QUEUE_FAMILY_IGNORED
-        })
-        .dst_queue_family_index(destination)
-        .image(image.image)
-        .subresource_range(subresource)
-        .build()
+        ForeignImageState::General
+    })
 }
 
-fn output_release(
-    image: NativeOutputImageInfo,
-    subresource: vk::ImageSubresourceRange,
-    graphics_queue_family: u32,
-) -> vk::ImageMemoryBarrier2 {
-    vk::ImageMemoryBarrier2::builder()
-        .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-        .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-        .dst_stage_mask(vk::PipelineStageFlags2::NONE)
-        .dst_access_mask(vk::AccessFlags2::NONE)
-        .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-        .new_layout(vk::ImageLayout::GENERAL)
-        .src_queue_family_index(graphics_queue_family)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
-        .image(image.image)
-        .subresource_range(subresource)
-        .build()
+fn client_release_state(foreign_owned: bool, graphics_queue_family: u32) -> ResourceState {
+    if foreign_owned {
+        ResourceState::foreign_image(ForeignImageState::General)
+    } else {
+        sampled_state(graphics_queue_family)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]

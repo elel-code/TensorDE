@@ -1,7 +1,7 @@
 use vulkanalia::{prelude::v1_4::*, vk};
 
 use super::CommandEncoder;
-use crate::{Buffer, ComputePipeline, DescriptorHeap, Error, Result};
+use crate::{Buffer, ComputePipeline, DescriptorHeap, Error, MachineCodeComputePipeline, Result};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ComputePassDescriptor<'a> {
@@ -49,6 +49,29 @@ impl ComputeEncoder<'_> {
         if !pipeline.belongs_to(&self.encoder.owner) {
             return Err(Error::Validation(
                 "compute pipeline was created by a different Device".into(),
+            ));
+        }
+        unsafe {
+            self.encoder.owner.device.cmd_bind_pipeline(
+                self.encoder.raw(),
+                vk::PipelineBindPoint::COMPUTE,
+                pipeline.raw(),
+            )
+        };
+        self.encoder.retain_resource(pipeline);
+        self.pipeline_bound = true;
+        Ok(())
+    }
+
+    /// Binds and retains a machine-code compute pipeline created from the
+    /// shared typed descriptor path.
+    pub fn bind_machine_code_pipeline(
+        &mut self,
+        pipeline: &MachineCodeComputePipeline,
+    ) -> Result<()> {
+        if !pipeline.belongs_to(&self.encoder.owner) || !pipeline.is_compute() {
+            return Err(Error::Validation(
+                "machine-code compute pipeline has the wrong Device or typed pipeline kind".into(),
             ));
         }
         unsafe {
@@ -135,10 +158,7 @@ fn validate_indirect_buffer(
             "indirect buffer was created by a different Device".into(),
         ));
     }
-    if !buffer
-        .usage()
-        .contains(vk::BufferUsageFlags::INDIRECT_BUFFER)
-    {
+    if !buffer.usage().contains(crate::BufferUsages::INDIRECT) {
         return Err(Error::Validation(
             "indirect buffer is missing INDIRECT_BUFFER usage".into(),
         ));

@@ -1,12 +1,162 @@
+use std::ptr;
+
 use vulkanalia::{
     prelude::v1_4::*,
     vk::{self, ExtDescriptorHeapExtensionDeviceCommands},
 };
 
-use super::{DescriptorAllocation, DescriptorHeap, HeapDescriptorType, align_down, align_up};
-use crate::{Error, Result};
+use super::allocator::{align_down, align_up};
+use super::{DescriptorAllocation, DescriptorHeap, HeapDescriptorType};
+use crate::{Error, ExportedDmaBufImage, ImageView, ImportedDmaBufImage, Result, TextureLayout};
+
+/// A sampled-image descriptor source backed by a renderer-owned view or
+/// retained dma-buf image. The source owns no independent Vulkan handle; the
+/// caller keeps the matching image alive through command submission.
+#[derive(Clone, Debug)]
+pub struct SampledImageDescriptor {
+    view: vk::ImageViewCreateInfo,
+}
+
+impl SampledImageDescriptor {
+    pub fn from_image_view(view: &ImageView) -> Self {
+        Self {
+            view: view.create_info(),
+        }
+    }
+
+    pub fn from_imported_dma_buf(image: &ImportedDmaBufImage) -> Self {
+        Self {
+            view: image.view_create_info(),
+        }
+    }
+
+    pub fn from_exported_dma_buf(image: &ExportedDmaBufImage) -> Self {
+        Self {
+            view: image.view_create_info(),
+        }
+    }
+}
+
+/// Reusable backing storage for one batched sampled-image descriptor write.
+///
+/// The vectors are deliberately retained by the caller, typically one frame
+/// executor, so steady-state descriptor updates do not allocate. The raw
+/// descriptor-info pointers are rebuilt after `image_infos` reaches its final
+/// capacity and are consumed before this batch can be mutated again.
+#[derive(Debug, Default)]
+pub struct SampledImageDescriptorWriteBatch {
+    image_infos: Vec<vk::ImageDescriptorInfoEXT>,
+    resource_infos: Vec<vk::ResourceDescriptorInfoEXT>,
+    destinations: Vec<vk::HostAddressRangeEXT>,
+}
+
+impl SampledImageDescriptorWriteBatch {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            image_infos: Vec::with_capacity(capacity),
+            resource_infos: Vec::with_capacity(capacity),
+            destinations: Vec::with_capacity(capacity),
+        }
+    }
+}
 
 impl DescriptorHeap {
+    /// Writes a contiguous sampled-image table from typed renderer image
+    /// sources. `layout` must match the image state used by the upcoming GPU
+    /// commands.
+    ///
+    /// # Safety
+    ///
+    /// Every source image must remain valid and compatible with `layout`
+    /// through every GPU use of the resulting descriptors.
+    pub unsafe fn write_sampled_images(
+        &self,
+        allocation: &DescriptorAllocation,
+        images: &[SampledImageDescriptor],
+        layout: TextureLayout,
+        batch: &mut SampledImageDescriptorWriteBatch,
+    ) -> Result<()> {
+        let layout = layout.to_vk();
+        if images.is_empty()
+            || matches!(
+                layout,
+                vk::ImageLayout::UNDEFINED | vk::ImageLayout::PREINITIALIZED
+            )
+        {
+            return Err(Error::Validation(
+                "sampled-image descriptor table requires non-empty GPU-accessible views".into(),
+            ));
+        }
+        self.validate_allocation(allocation, HeapDescriptorType::SampledImage)?;
+        let stride = self
+            .allocation_stride(HeapDescriptorType::SampledImage)
+            .map_err(|error| Error::Validation(error.to_string()))?;
+        let required_size = stride
+            .checked_mul(u64::try_from(images.len()).map_err(|_| {
+                Error::Validation("sampled-image descriptor count exceeds u64".into())
+            })?)
+            .ok_or_else(|| Error::Validation("sampled-image descriptor table overflows".into()))?;
+        if required_size > allocation.size() {
+            return Err(Error::Validation(
+                "sampled-image descriptor table exceeds its allocation".into(),
+            ));
+        }
+        let descriptor_size = self.limits.image_descriptor_size;
+        let allocation_offset = usize::try_from(allocation.offset())
+            .map_err(|_| Error::Validation("descriptor offset exceeds usize".into()))?;
+        let allocation_size = usize::try_from(allocation.size())
+            .map_err(|_| Error::Validation("descriptor allocation exceeds usize".into()))?;
+        let descriptor_size = usize::try_from(descriptor_size)
+            .map_err(|_| Error::Validation("descriptor size exceeds usize".into()))?;
+        let _write_guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        batch.image_infos.clear();
+        batch.resource_infos.clear();
+        batch.destinations.clear();
+        batch.image_infos.reserve(images.len());
+        batch.resource_infos.reserve(images.len());
+        batch.destinations.reserve(images.len());
+        batch.image_infos.extend(images.iter().map(|image| {
+            vk::ImageDescriptorInfoEXT::builder()
+                .view(&image.view)
+                .layout(layout)
+                .build()
+        }));
+        batch
+            .resource_infos
+            .extend(batch.image_infos.iter().map(|image| {
+                vk::ResourceDescriptorInfoEXT::builder()
+                    .type_(vk::DescriptorType::SAMPLED_IMAGE)
+                    .data(vk::ResourceDescriptorDataEXT {
+                        image: ptr::from_ref(image),
+                    })
+                    .build()
+            }));
+        let base = self.mapped_address as *mut u8;
+        for index in 0..images.len() {
+            let offset = stride
+                .checked_mul(u64::try_from(index).expect("usize always converts to u64"))
+                .and_then(|offset| allocation.offset().checked_add(offset))
+                .ok_or_else(|| Error::Validation("descriptor table offset overflows".into()))?;
+            let offset = usize::try_from(offset)
+                .map_err(|_| Error::Validation("descriptor table offset exceeds usize".into()))?;
+            batch.destinations.push(vk::HostAddressRangeEXT {
+                address: unsafe { base.add(offset).cast() },
+                size: descriptor_size,
+            });
+        }
+        unsafe { ptr::write_bytes(base.add(allocation_offset), 0, allocation_size) };
+        unsafe {
+            self.owner
+                .device
+                .write_resource_descriptors_ext(&batch.resource_infos, &batch.destinations)
+        }
+        .map_err(|source| Error::vulkan("vkWriteResourceDescriptorsEXT", source))?;
+        self.flush(allocation.offset(), allocation.size())
+    }
+
     /// Writes a uniform or storage-buffer descriptor into mapped heap memory.
     ///
     /// # Safety
@@ -127,11 +277,7 @@ impl DescriptorHeap {
         descriptor_type: HeapDescriptorType,
     ) -> Result<()> {
         let (size, alignment, expected_heap) = self.descriptor_layout(descriptor_type);
-        let owns_allocation = self
-            .allocator
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .owns(allocation);
+        let owns_allocation = self.allocator.owns(allocation);
         let end = allocation
             .offset()
             .checked_add(size)
@@ -202,7 +348,7 @@ impl DescriptorHeap {
             vk::WHOLE_SIZE
         };
         let range = vk::MappedMemoryRange::builder()
-            .memory(self.memory)
+            .memory(self.mapped_memory)
             .offset(flush_offset)
             .size(flush_size)
             .build();

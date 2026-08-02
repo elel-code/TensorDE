@@ -22,6 +22,15 @@ FORBIDDEN_COMPIO_FEATURES = {
 }
 SMITHAY_CODE = re.compile(r"\bsmithay::|\bextern\s+crate\s+smithay\b")
 DEFAULT_COMPIO_RUNTIME = re.compile(r"(?:compio::runtime::)?Runtime::new\s*\(")
+RAW_GRAPHICS_PIPELINE_LIFECYCLE = re.compile(
+    r"\b(?:create_graphics_pipelines|create_pipeline_layout|destroy_pipeline_layout)\s*\("
+)
+RAW_TENSOR_RENDER_ESCAPE = re.compile(
+    r"\b(?:native_device|write_sampled_image_array|allocate_primary_command_buffer|submit_raw)\s*\("
+    r"|\bencoder\.raw\s*\("
+    r"|\b(?:device|native)\.cmd_[A-Za-z0-9_]*\s*\("
+    r"|\b(?:device|queue)\.queue_submit2?\s*\("
+)
 
 
 def dependency_tables(manifest: dict) -> list[dict]:
@@ -81,10 +90,19 @@ def main() -> int:
         )
 
     for source in sorted((TENSOR_ROOT / "src").glob("**/*.rs")):
-        if SMITHAY_CODE.search(source.read_text(encoding="utf-8")):
+        text = source.read_text(encoding="utf-8")
+        if SMITHAY_CODE.search(text):
             failures.append(f"{source}: Smithay code paths are forbidden")
-        if DEFAULT_COMPIO_RUNTIME.search(source.read_text(encoding="utf-8")):
+        if DEFAULT_COMPIO_RUNTIME.search(text):
             failures.append(f"{source}: use tensor_runtime::io_uring_runtime with a fixed budget")
+        if RAW_GRAPHICS_PIPELINE_LIFECYCLE.search(text):
+            failures.append(
+                f"{source}: raw graphics-pipeline lifecycle must use vulkan_renderer typed APIs"
+            )
+        if source.is_relative_to(TENSOR_ROOT / "src" / "render") and RAW_TENSOR_RENDER_ESCAPE.search(text):
+            failures.append(
+                f"{source}: raw Tensor renderer recording/lifecycle escape must use vulkan_renderer typed APIs"
+            )
 
     for manifest_path in sorted((WORKSPACE_ROOT / "crates").glob("tensor-*/Cargo.toml")):
         manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))

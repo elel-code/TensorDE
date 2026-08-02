@@ -1,19 +1,19 @@
-use std::{
-    collections::HashMap,
-    os::fd::{AsFd, AsRawFd, IntoRawFd},
-    ptr::NonNull,
-};
+use std::{collections::HashMap, os::fd::AsFd};
 
 use tensor_host::Fourcc;
 use thiserror::Error;
-use vulkan_renderer::vulkanalia::vk::{
-    DeviceV1_0, HasBuilder, KhrExternalMemoryFdExtensionDeviceCommands,
+use vulkan_renderer::vulkanalia::vk;
+use vulkan_renderer::{
+    Buffer, BufferDescriptor, BufferUsages, ColorBufferImageCopy, CommandEncoder,
+    Device as RendererDevice, DmaBufImageDescriptor, DmaBufPlaneLayout, Error as RendererError,
+    Extent2D, Extent3D, Image, ImageDescriptor, ImageDimension, ImageTiling, ImageView,
+    ImageViewDescriptor, ImportedDmaBufImage, MemoryAllocator, MemoryLocation, ResourceBinding,
+    SampleCount, SampledImageDescriptor, TextureUsages,
 };
-use vulkan_renderer::vulkanalia::{Device, vk};
 
 use crate::{ecs::SurfaceBufferId, render::Dmabuf};
 
-use super::vulkan_format_for_fourcc;
+use super::{texture_format_for_fourcc, vulkan_format_for_fourcc};
 
 /// Imported client images are kept separate from compositor-owned output images.
 /// The key is a compositor-assigned stable buffer identity, never a raw file
@@ -24,10 +24,10 @@ pub(super) struct ClientImageCache {
     retired: Vec<ImportedClientImage>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct ClientImageInfo {
-    pub(super) image: vk::Image,
-    pub(super) view_info: vk::ImageViewCreateInfo,
+    backing: ClientImageBacking,
+    pub(super) sampled_descriptor: SampledImageDescriptor,
     /// Imported dma-buf storage is owned by the non-Vulkan producer between
     /// submissions.  The frame executor performs an explicit FOREIGN acquire
     /// and release around every sampling pass.
@@ -39,13 +39,48 @@ pub(super) struct ClientImageInfo {
     pub(super) needs_initial_acquire: bool,
     /// A Tensor-owned SHM image has one pending staging copy after its CPU
     /// snapshot changes. dma-buf imports never carry an upload.
-    pub(super) upload: Option<ClientImageUpload>,
+    pub(super) upload_pending: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(super) struct ClientImageUpload {
-    pub(super) buffer: vk::Buffer,
-    pub(super) extent: vk::Extent3D,
+impl ClientImageInfo {
+    pub(super) fn resource_binding(&self) -> ResourceBinding {
+        self.backing.resource_binding()
+    }
+
+    pub(super) fn retain_for_submission(&self, encoder: &mut CommandEncoder) {
+        self.backing.retain_for_submission(encoder);
+    }
+
+    pub(super) unsafe fn record_upload(
+        &self,
+        encoder: &mut CommandEncoder,
+    ) -> Result<(), RendererError> {
+        if !self.upload_pending {
+            return Ok(());
+        }
+        let ClientImageBacking::Shm(image) = &self.backing else {
+            return Err(RendererError::Validation(
+                "only SHM client images may carry a pending upload".into(),
+            ));
+        };
+        let extent = image.image.extent();
+        unsafe {
+            encoder.copy_buffer_to_color_image(
+                &image.staging,
+                &image.image,
+                &[ColorBufferImageCopy {
+                    buffer_offset: 0,
+                    buffer_row_length: 0,
+                    buffer_image_height: 0,
+                    destination_mip_level: 0,
+                    destination_base_array_layer: 0,
+                    destination_origin: vulkan_renderer::Origin2D::new(0, 0),
+                    extent: Extent2D::new(extent.width, extent.height),
+                    layer_count: 1,
+                }],
+            )
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -60,7 +95,7 @@ impl ClientImageCache {
     pub(super) fn import<F: AsFd>(
         &mut self,
         id: SurfaceBufferId,
-        device: &Device,
+        device: &RendererDevice,
         dmabuf: &Dmabuf<F>,
     ) -> Result<(), ClientImportError> {
         if self.active.contains_key(&id) {
@@ -74,8 +109,7 @@ impl ClientImageCache {
 
     pub(super) fn upload_shm(
         &mut self,
-        device: &Device,
-        memory_properties: &vk::PhysicalDeviceMemoryProperties,
+        allocator: &MemoryAllocator,
         target: ShmUploadTarget,
         fill: impl FnOnce(&mut [u8]) -> Result<(), String>,
     ) -> Result<(), ClientImportError> {
@@ -90,24 +124,22 @@ impl ClientImageCache {
             && image.matches_shm(size, format)
             && image.last_use_timeline <= completed_timeline
         {
-            let result = image.write_shm(device, fill);
+            let result = image.write_shm(fill);
             self.active
                 .insert(id, current.expect("active SHM image was borrowed above"));
             return result;
         }
 
-        let mut image =
-            match ImportedClientImage::create_shm(device, memory_properties, size, format) {
-                Ok(image) => image,
-                Err(error) => {
-                    if let Some(current) = current {
-                        self.active.insert(id, current);
-                    }
-                    return Err(error);
+        let mut image = match ImportedClientImage::create_shm(allocator, size, format) {
+            Ok(image) => image,
+            Err(error) => {
+                if let Some(current) = current {
+                    self.active.insert(id, current);
                 }
-            };
-        if let Err(error) = image.write_shm(device, fill) {
-            image.destroy(device);
+                return Err(error);
+            }
+        };
+        if let Err(error) = image.write_shm(fill) {
             if let Some(current) = current {
                 self.active.insert(id, current);
             }
@@ -128,18 +160,11 @@ impl ClientImageCache {
 
     pub(super) fn image_info(&self, id: SurfaceBufferId) -> Option<ClientImageInfo> {
         self.active.get(&id).map(|image| ClientImageInfo {
-            image: image.image,
-            view_info: image.view_info,
+            backing: image.backing.clone(),
+            sampled_descriptor: image.sampled_descriptor(),
             foreign_owned: image.foreign_owned,
             needs_initial_acquire: !image.initialized,
-            upload: image.upload_pending.then(|| ClientImageUpload {
-                buffer: image
-                    .staging
-                    .as_ref()
-                    .expect("only SHM images have pending uploads")
-                    .buffer,
-                extent: image.extent,
-            }),
+            upload_pending: image.upload_pending,
         })
     }
 
@@ -160,25 +185,19 @@ impl ClientImageCache {
         }
     }
 
-    pub(super) fn retire_completed(&mut self, device: &Device, completed_timeline: u64) {
+    pub(super) fn retire_completed(&mut self, completed_timeline: u64) {
         let mut retained = Vec::with_capacity(self.retired.len());
         for image in self.retired.drain(..) {
-            if image.last_use_timeline <= completed_timeline {
-                image.destroy(device);
-            } else {
+            if image.last_use_timeline > completed_timeline {
                 retained.push(image);
             }
         }
         self.retired = retained;
     }
 
-    pub(super) fn destroy(&mut self, device: &Device) {
-        for (_, image) in std::mem::take(&mut self.active) {
-            image.destroy(device);
-        }
-        for image in self.retired.drain(..) {
-            image.destroy(device);
-        }
+    pub(super) fn destroy(&mut self) {
+        self.active.clear();
+        self.retired.clear();
     }
 
     #[cfg(test)]
@@ -187,31 +206,53 @@ impl ClientImageCache {
     }
 }
 
+#[derive(Clone, Debug)]
+enum ClientImageBacking {
+    DmaBuf(ImportedDmaBufImage),
+    Shm(ShmClientImage),
+}
+
+impl ClientImageBacking {
+    fn resource_binding(&self) -> ResourceBinding {
+        match self {
+            Self::DmaBuf(image) => image.resource_binding(),
+            Self::Shm(image) => ResourceBinding::whole_color_image(&image.image),
+        }
+    }
+
+    fn retain_for_submission(&self, encoder: &mut CommandEncoder) {
+        match self {
+            Self::DmaBuf(image) => encoder.retain_resource(image),
+            Self::Shm(image) => {
+                encoder.retain_resource(&image.image);
+                encoder.retain_resource(&image.view);
+                encoder.retain_resource(&image.staging);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ShmClientImage {
+    image: Image,
+    view: ImageView,
+    staging: Buffer,
+    staging_len: usize,
+}
+
 struct ImportedClientImage {
-    image: vk::Image,
-    memory: vk::DeviceMemory,
-    view: vk::ImageView,
-    view_info: vk::ImageViewCreateInfo,
-    extent: vk::Extent3D,
+    backing: ClientImageBacking,
+    extent: Extent3D,
     format: Fourcc,
     foreign_owned: bool,
-    staging: Option<StagingBuffer>,
     upload_pending: bool,
     initialized: bool,
     last_use_timeline: u64,
 }
 
-struct StagingBuffer {
-    buffer: vk::Buffer,
-    memory: vk::DeviceMemory,
-    mapped: NonNull<u8>,
-    len: usize,
-    coherent: bool,
-}
-
 impl ImportedClientImage {
     fn create_dmabuf<F: AsFd>(
-        device: &Device,
+        device: &RendererDevice,
         dmabuf: &Dmabuf<F>,
     ) -> Result<Self, ClientImportError> {
         let format = dmabuf.format;
@@ -219,98 +260,34 @@ impl ImportedClientImage {
         let vulkan_format = vulkan_format_for_fourcc(host_code)
             .ok_or(ClientImportError::UnsupportedFourcc(host_code))?;
         let shape = validate_shape(dmabuf)?;
+        let components = component_mapping(host_code);
         let fd = &dmabuf.planes.first().ok_or(ClientImportError::NoPlanes)?.fd;
-        let plane_layout = vk::SubresourceLayout::builder()
-            .offset(u64::from(shape.offset))
-            .size(0)
-            .row_pitch(u64::from(shape.stride))
-            .array_pitch(0)
-            .depth_pitch(0)
-            .build();
-        let plane_layouts = [plane_layout];
-        let mut modifier_info = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::builder()
-            .drm_format_modifier(format.modifier.raw())
-            .plane_layouts(&plane_layouts);
-        let mut external_info = vk::ExternalMemoryImageCreateInfo::builder()
-            .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
-        let image_info = vk::ImageCreateInfo::builder()
-            .image_type(vk::ImageType::_2D)
-            .format(vulkan_format)
-            .extent(vk::Extent3D {
-                width: shape.width,
-                height: shape.height,
-                depth: 1,
-            })
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::_1)
-            .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
-            .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .push_next(&mut modifier_info)
-            .push_next(&mut external_info);
-        let image = unsafe { device.create_image(&image_info, None) }
-            .map_err(ClientImportError::CreateImage)?;
-
-        let result = Self::allocate_and_bind(device, image, fd);
-        let memory = match result {
-            Ok(memory) => memory,
-            Err(error) => {
-                unsafe { device.destroy_image(image, None) };
-                return Err(error);
-            }
-        };
-
-        let components = vk::ComponentMapping {
-            r: vk::ComponentSwizzle::IDENTITY,
-            g: vk::ComponentSwizzle::IDENTITY,
-            b: vk::ComponentSwizzle::IDENTITY,
-            a: if is_opaque(host_code) {
-                vk::ComponentSwizzle::ONE
-            } else {
-                vk::ComponentSwizzle::IDENTITY
-            },
-        };
-        let view_info = vk::ImageViewCreateInfo::builder()
-            .image(image)
-            .view_type(vk::ImageViewType::_2D)
-            .format(vulkan_format)
-            .components(components)
-            .subresource_range(
-                vk::ImageSubresourceRange::builder()
-                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .base_mip_level(0)
-                    .level_count(1)
-                    .base_array_layer(0)
-                    .layer_count(1)
-                    .build(),
-            );
-        let view_info = view_info.build();
-        let view = match unsafe { device.create_image_view(&view_info, None) } {
-            Ok(view) => view,
-            Err(error) => {
-                unsafe {
-                    device.destroy_image(image, None);
-                    device.free_memory(memory, None);
-                }
-                return Err(ClientImportError::CreateView(error));
-            }
-        };
+        let shared_dma_buf = device
+            .import_dma_buf_image(
+                &DmaBufImageDescriptor {
+                    label: Some("tensor-client-dmabuf".into()),
+                    format: vulkan_format,
+                    extent: vk::Extent2D {
+                        width: shape.width,
+                        height: shape.height,
+                    },
+                    modifier: format.modifier.raw(),
+                    planes: vec![DmaBufPlaneLayout {
+                        offset: u64::from(shape.offset),
+                        row_pitch: u64::from(shape.stride),
+                    }],
+                    usage: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC,
+                    components,
+                },
+                fd,
+            )
+            .map_err(|source| ClientImportError::SharedDmaBuf(source.to_string()))?;
 
         Ok(Self {
-            image,
-            memory,
-            view,
-            view_info,
-            extent: vk::Extent3D {
-                width: shape.width,
-                height: shape.height,
-                depth: 1,
-            },
+            backing: ClientImageBacking::DmaBuf(shared_dma_buf),
+            extent: Extent3D::new(shape.width, shape.height, 1),
             format: host_code,
             foreign_owned: true,
-            staging: None,
             upload_pending: false,
             initialized: false,
             last_use_timeline: 0,
@@ -318,117 +295,59 @@ impl ImportedClientImage {
     }
 
     fn create_shm(
-        device: &Device,
-        memory_properties: &vk::PhysicalDeviceMemoryProperties,
+        allocator: &MemoryAllocator,
         size: tensor_util::Size,
         format: Fourcc,
     ) -> Result<Self, ClientImportError> {
-        let vulkan_format =
-            vulkan_format_for_fourcc(format).ok_or(ClientImportError::UnsupportedFourcc(format))?;
-        let extent = vk::Extent3D {
-            width: size.width,
-            height: size.height,
-            depth: 1,
-        };
-        if extent.width == 0 || extent.height == 0 {
+        let texture_format = texture_format_for_fourcc(format)
+            .ok_or(ClientImportError::UnsupportedFourcc(format))?;
+        let extent = Extent3D::new(size.width, size.height, 1);
+        if extent.is_empty() {
             return Err(ClientImportError::InvalidDimensions);
         }
-        let image_info = vk::ImageCreateInfo::builder()
-            .image_type(vk::ImageType::_2D)
-            .format(vulkan_format)
-            .extent(extent)
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
-        let image = unsafe { device.create_image(&image_info, None) }
-            .map_err(ClientImportError::CreateImage)?;
-        let requirements = unsafe { device.get_image_memory_requirements(image) };
-        let Some(memory_type_index) = select_memory_type(
-            memory_properties,
-            requirements.memory_type_bits,
-            vk::MemoryPropertyFlags::empty(),
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        ) else {
-            unsafe { device.destroy_image(image, None) };
-            return Err(ClientImportError::NoCompatibleMemoryType);
-        };
-        let allocation = vk::MemoryAllocateInfo::builder()
-            .allocation_size(requirements.size)
-            .memory_type_index(memory_type_index);
-        let memory = match unsafe { device.allocate_memory(&allocation, None) } {
-            Ok(memory) => memory,
-            Err(error) => {
-                unsafe { device.destroy_image(image, None) };
-                return Err(ClientImportError::AllocateMemory(error));
-            }
-        };
-        if let Err(error) = unsafe { device.bind_image_memory(image, memory, 0) } {
-            unsafe {
-                device.free_memory(memory, None);
-                device.destroy_image(image, None);
-            }
-            return Err(ClientImportError::BindMemory(error));
-        }
-
-        let components = vk::ComponentMapping {
-            r: vk::ComponentSwizzle::IDENTITY,
-            g: vk::ComponentSwizzle::IDENTITY,
-            b: vk::ComponentSwizzle::IDENTITY,
-            a: if is_opaque(format) {
-                vk::ComponentSwizzle::ONE
-            } else {
-                vk::ComponentSwizzle::IDENTITY
-            },
-        };
-        let view_info = vk::ImageViewCreateInfo::builder()
-            .image(image)
-            .view_type(vk::ImageViewType::_2D)
-            .format(vulkan_format)
-            .components(components)
-            .subresource_range(
-                vk::ImageSubresourceRange::builder()
-                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .base_mip_level(0)
-                    .level_count(1)
-                    .base_array_layer(0)
-                    .layer_count(1)
-                    .build(),
-            )
-            .build();
-        let view = match unsafe { device.create_image_view(&view_info, None) } {
-            Ok(view) => view,
-            Err(error) => {
-                unsafe {
-                    device.free_memory(memory, None);
-                    device.destroy_image(image, None);
-                }
-                return Err(ClientImportError::CreateView(error));
-            }
-        };
-        let staging = match StagingBuffer::new(device, memory_properties, size) {
-            Ok(staging) => staging,
-            Err(error) => {
-                unsafe {
-                    device.destroy_image_view(view, None);
-                    device.free_memory(memory, None);
-                    device.destroy_image(image, None);
-                }
-                return Err(error);
-            }
-        };
+        let image = allocator
+            .create_image(&ImageDescriptor {
+                label: Some("tensor-client-shm-image".into()),
+                dimension: ImageDimension::D2,
+                format: texture_format,
+                extent,
+                mip_levels: 1,
+                array_layers: 1,
+                samples: SampleCount::One,
+                tiling: ImageTiling::Optimal,
+                usage: TextureUsages::SAMPLED | TextureUsages::COPY_DESTINATION,
+                memory: MemoryLocation::Device,
+            })
+            .map_err(|source| ClientImportError::SharedShm(source.to_string()))?;
+        let view = image
+            .create_view(&ImageViewDescriptor {
+                label: Some("tensor-client-shm-view".into()),
+                view_type: vk::ImageViewType::_2D,
+                format: texture_format,
+                components: component_mapping(format),
+                subresource_range: image.full_subresource_range(vk::ImageAspectFlags::COLOR),
+            })
+            .map_err(|source| ClientImportError::SharedShm(source.to_string()))?;
+        let staging_len = shm_staging_len(size)?;
+        let staging = allocator
+            .create_buffer(&BufferDescriptor {
+                label: Some("tensor-client-shm-upload".into()),
+                size: u64::try_from(staging_len)
+                    .map_err(|_| ClientImportError::InvalidDimensions)?,
+                usage: BufferUsages::COPY_SOURCE,
+                memory: MemoryLocation::Upload,
+            })
+            .map_err(|source| ClientImportError::SharedShm(source.to_string()))?;
         Ok(Self {
-            image,
-            memory,
-            view,
-            view_info,
+            backing: ClientImageBacking::Shm(ShmClientImage {
+                image,
+                view,
+                staging,
+                staging_len,
+            }),
             extent,
             format,
             foreign_owned: false,
-            staging: Some(staging),
             upload_pending: false,
             initialized: false,
             last_use_timeline: 0,
@@ -436,7 +355,7 @@ impl ImportedClientImage {
     }
 
     fn matches_shm(&self, size: tensor_util::Size, format: Fourcc) -> bool {
-        !self.foreign_owned
+        matches!(&self.backing, ClientImageBacking::Shm(_))
             && self.extent.width == size.width
             && self.extent.height == size.height
             && self.format == format
@@ -444,193 +363,52 @@ impl ImportedClientImage {
 
     fn write_shm(
         &mut self,
-        device: &Device,
         fill: impl FnOnce(&mut [u8]) -> Result<(), String>,
     ) -> Result<(), ClientImportError> {
-        let staging = self
-            .staging
-            .as_mut()
-            .ok_or(ClientImportError::NotShmImage)?;
-        let destination =
-            unsafe { std::slice::from_raw_parts_mut(staging.mapped.as_ptr(), staging.len) };
-        if let Err(error) = fill(destination) {
+        let result = {
+            let ClientImageBacking::Shm(image) = &self.backing else {
+                return Err(ClientImportError::NotShmImage);
+            };
+            unsafe { image.staging.write_with(0, image.staging_len, fill) }
+                .map_err(|source| ClientImportError::SharedShm(source.to_string()))?
+        };
+        if let Err(error) = result {
             self.upload_pending = false;
             return Err(ClientImportError::ShmSource(error));
-        }
-        if !staging.coherent {
-            let range = vk::MappedMemoryRange::builder()
-                .memory(staging.memory)
-                .offset(0)
-                .size(vk::WHOLE_SIZE);
-            unsafe { device.flush_mapped_memory_ranges(std::slice::from_ref(&range)) }
-                .map_err(ClientImportError::FlushMemory)?;
         }
         self.upload_pending = true;
         Ok(())
     }
 
-    fn allocate_and_bind(
-        device: &Device,
-        image: vk::Image,
-        fd: impl AsFd,
-    ) -> Result<vk::DeviceMemory, ClientImportError> {
-        let requirements = unsafe { device.get_image_memory_requirements(image) };
-        let mut fd_properties = vk::MemoryFdPropertiesKHR::default();
-        let raw_fd = fd.as_fd().as_raw_fd();
-        unsafe {
-            device
-                .get_memory_fd_properties_khr(
-                    vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT,
-                    raw_fd,
-                    &mut fd_properties,
-                )
-                .map_err(ClientImportError::FdProperties)?;
-        }
-        let compatible_bits = requirements.memory_type_bits & fd_properties.memory_type_bits;
-        if compatible_bits == 0 {
-            return Err(ClientImportError::NoCompatibleMemoryType);
-        }
-        let memory_type_index = compatible_bits.trailing_zeros();
-        let owned_fd = fd
-            .as_fd()
-            .try_clone_to_owned()
-            .map_err(|error| ClientImportError::DuplicateFd(error.to_string()))?;
-        let mut import_info = vk::ImportMemoryFdInfoKHR::builder()
-            .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
-            .fd(owned_fd.into_raw_fd());
-        let mut dedicated_info = vk::MemoryDedicatedAllocateInfo::builder().image(image);
-        let allocation_info = vk::MemoryAllocateInfo::builder()
-            .allocation_size(requirements.size)
-            .memory_type_index(memory_type_index)
-            .push_next(&mut import_info)
-            .push_next(&mut dedicated_info);
-        let memory = unsafe { device.allocate_memory(&allocation_info, None) }
-            .map_err(ClientImportError::AllocateMemory)?;
-        if let Err(error) = unsafe { device.bind_image_memory(image, memory, 0) } {
-            unsafe { device.free_memory(memory, None) };
-            return Err(ClientImportError::BindMemory(error));
-        }
-        Ok(memory)
-    }
-
-    fn destroy(self, device: &Device) {
-        unsafe {
-            if let Some(staging) = self.staging {
-                staging.destroy(device);
+    fn sampled_descriptor(&self) -> SampledImageDescriptor {
+        match &self.backing {
+            ClientImageBacking::DmaBuf(image) => {
+                SampledImageDescriptor::from_imported_dma_buf(image)
             }
-            device.destroy_image_view(self.view, None);
-            device.destroy_image(self.image, None);
-            device.free_memory(self.memory, None);
+            ClientImageBacking::Shm(image) => SampledImageDescriptor::from_image_view(&image.view),
         }
     }
 }
 
-impl StagingBuffer {
-    fn new(
-        device: &Device,
-        memory_properties: &vk::PhysicalDeviceMemoryProperties,
-        size: tensor_util::Size,
-    ) -> Result<Self, ClientImportError> {
-        let len = usize::try_from(size.width)
-            .ok()
-            .and_then(|width| width.checked_mul(4))
-            .and_then(|stride| stride.checked_mul(usize::try_from(size.height).ok()?))
-            .ok_or(ClientImportError::InvalidDimensions)?;
-        let buffer_info = vk::BufferCreateInfo::builder()
-            .size(u64::try_from(len).map_err(|_| ClientImportError::InvalidDimensions)?)
-            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-        let buffer = unsafe { device.create_buffer(&buffer_info, None) }
-            .map_err(ClientImportError::CreateStagingBuffer)?;
-        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
-        let Some(memory_type_index) = select_memory_type(
-            memory_properties,
-            requirements.memory_type_bits,
-            vk::MemoryPropertyFlags::HOST_VISIBLE,
-            vk::MemoryPropertyFlags::HOST_COHERENT,
-        ) else {
-            unsafe { device.destroy_buffer(buffer, None) };
-            return Err(ClientImportError::NoHostVisibleMemoryType);
-        };
-        let memory_type = memory_properties.memory_types[memory_type_index as usize];
-        let allocation = vk::MemoryAllocateInfo::builder()
-            .allocation_size(requirements.size)
-            .memory_type_index(memory_type_index);
-        let memory = match unsafe { device.allocate_memory(&allocation, None) } {
-            Ok(memory) => memory,
-            Err(error) => {
-                unsafe { device.destroy_buffer(buffer, None) };
-                return Err(ClientImportError::AllocateStagingMemory(error));
-            }
-        };
-        if let Err(error) = unsafe { device.bind_buffer_memory(buffer, memory, 0) } {
-            unsafe {
-                device.free_memory(memory, None);
-                device.destroy_buffer(buffer, None);
-            }
-            return Err(ClientImportError::BindStagingMemory(error));
-        }
-        let mapped = match unsafe {
-            device.map_memory(memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())
-        } {
-            Ok(mapped) => match NonNull::new(mapped.cast::<u8>()) {
-                Some(mapped) => mapped,
-                None => {
-                    unsafe {
-                        device.unmap_memory(memory);
-                        device.free_memory(memory, None);
-                        device.destroy_buffer(buffer, None);
-                    }
-                    return Err(ClientImportError::NullStagingMap);
-                }
-            },
-            Err(error) => {
-                unsafe {
-                    device.free_memory(memory, None);
-                    device.destroy_buffer(buffer, None);
-                }
-                return Err(ClientImportError::MapStagingMemory(error));
-            }
-        };
-        Ok(Self {
-            buffer,
-            memory,
-            mapped,
-            len,
-            coherent: memory_type
-                .property_flags
-                .contains(vk::MemoryPropertyFlags::HOST_COHERENT),
-        })
-    }
-
-    unsafe fn destroy(self, device: &Device) {
-        unsafe {
-            device.unmap_memory(self.memory);
-            device.destroy_buffer(self.buffer, None);
-            device.free_memory(self.memory, None);
-        }
+fn component_mapping(format: Fourcc) -> vk::ComponentMapping {
+    vk::ComponentMapping {
+        r: vk::ComponentSwizzle::IDENTITY,
+        g: vk::ComponentSwizzle::IDENTITY,
+        b: vk::ComponentSwizzle::IDENTITY,
+        a: if is_opaque(format) {
+            vk::ComponentSwizzle::ONE
+        } else {
+            vk::ComponentSwizzle::IDENTITY
+        },
     }
 }
 
-fn select_memory_type(
-    properties: &vk::PhysicalDeviceMemoryProperties,
-    compatible_bits: u32,
-    required: vk::MemoryPropertyFlags,
-    preferred: vk::MemoryPropertyFlags,
-) -> Option<u32> {
-    let count = usize::try_from(properties.memory_type_count).ok()?;
-    let compatible =
-        properties.memory_types[..count]
-            .iter()
-            .enumerate()
-            .filter(|(index, memory_type)| {
-                compatible_bits & (1 << index) != 0 && memory_type.property_flags.contains(required)
-            });
-    compatible
-        .clone()
-        .find(|(_, memory_type)| memory_type.property_flags.contains(preferred))
-        .or_else(|| compatible.into_iter().next())
-        .and_then(|(index, _)| u32::try_from(index).ok())
+fn shm_staging_len(size: tensor_util::Size) -> Result<usize, ClientImportError> {
+    usize::try_from(size.width)
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .and_then(|stride| stride.checked_mul(usize::try_from(size.height).ok()?))
+        .ok_or(ClientImportError::InvalidDimensions)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -690,38 +468,14 @@ pub(super) enum ClientImportError {
     ImplicitModifier,
     #[error("client dma-buf has a zero row stride")]
     InvalidStride,
-    #[error("failed to query dma-buf memory compatibility: {0:?}")]
-    FdProperties(vk::ErrorCode),
-    #[error("client dma-buf has no Vulkan-compatible memory type")]
-    NoCompatibleMemoryType,
-    #[error("failed to duplicate client dma-buf fd: {0}")]
-    DuplicateFd(String),
-    #[error("failed to create client dma-buf image: {0:?}")]
-    CreateImage(vk::ErrorCode),
-    #[error("failed to allocate imported client dma-buf memory: {0:?}")]
-    AllocateMemory(vk::ErrorCode),
-    #[error("failed to bind imported client dma-buf memory: {0:?}")]
-    BindMemory(vk::ErrorCode),
-    #[error("failed to create client dma-buf image view: {0:?}")]
-    CreateView(vk::ErrorCode),
+    #[error("shared renderer failed to import the explicit-modifier client dma-buf: {0}")]
+    SharedDmaBuf(String),
+    #[error("shared renderer failed to create or update a client SHM image: {0}")]
+    SharedShm(String),
     #[error("renderer image is not backed by SHM staging memory")]
     NotShmImage,
     #[error("failed to read client SHM pixels: {0}")]
     ShmSource(String),
-    #[error("failed to create client SHM staging buffer: {0:?}")]
-    CreateStagingBuffer(vk::ErrorCode),
-    #[error("client SHM staging has no host-visible Vulkan memory type")]
-    NoHostVisibleMemoryType,
-    #[error("failed to allocate client SHM staging memory: {0:?}")]
-    AllocateStagingMemory(vk::ErrorCode),
-    #[error("failed to bind client SHM staging memory: {0:?}")]
-    BindStagingMemory(vk::ErrorCode),
-    #[error("failed to map client SHM staging memory: {0:?}")]
-    MapStagingMemory(vk::ErrorCode),
-    #[error("Vulkan returned a null client SHM staging mapping")]
-    NullStagingMap,
-    #[error("failed to flush client SHM staging memory: {0:?}")]
-    FlushMemory(vk::ErrorCode),
 }
 
 #[cfg(test)]

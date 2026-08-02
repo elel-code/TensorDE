@@ -19,13 +19,17 @@ pub use binary::{
     graphics_pipeline_binary_key,
 };
 pub use binary_cache::{PipelineBinaryArchiveCache, PipelineBinaryCacheIdentity};
-pub use compute::{ComputePipeline, ComputePipelineDescriptor};
+pub use compute::{
+    ComputePipeline, ComputePipelineDescriptor, MachineCodeComputePipelineDescriptor,
+};
 
 pub use graphics::{
-    BlendComponent, BlendState, ColorTargetState, DepthBiasState, DepthState, DepthStencilState,
-    FragmentState, GraphicsPipeline, GraphicsPipelineDescriptor, MultisampleState, PrimitiveState,
-    ProgrammableStage, StencilState, VertexAttribute, VertexBufferLayout, VertexState,
-    VertexStepMode,
+    AdvancedBlendState, BlendComponent, BlendFactor, BlendOperation, BlendOverlap, BlendState,
+    ColorTargetState, ColorWrites, CullMode, DepthBiasState, DepthState, DepthStencilState,
+    FragmentState, FrontFace, GraphicsPipeline, GraphicsPipelineDescriptor,
+    MachineCodeGraphicsPipelineDescriptor, MultisampleState, PolygonMode, PrimitiveState,
+    PrimitiveTopology, ProgrammableStage, StencilState, VertexAttribute, VertexBufferLayout,
+    VertexFormat, VertexState, VertexStepMode,
 };
 pub(crate) use graphics::{format_has_depth, format_has_stencil};
 pub use mapping::{

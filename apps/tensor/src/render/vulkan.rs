@@ -9,10 +9,15 @@ use std::{
 
 use tensor_host::Fourcc;
 use tracing::{debug, info};
-use vulkan_renderer::vulkanalia::{
-    Device, Entry, Instance, Version,
-    loader::{LIBRARY, LibloadingLoader},
-    prelude::v1_4::*,
+use vulkan_renderer::vulkanalia::{Version, vk};
+use vulkan_renderer::{
+    BackendProfile, DeviceDescriptor, Features, Instance as RendererInstance, InstanceDescriptor,
+    Limits, ROADMAP_2026_API_VERSION, TextureFormat,
+};
+#[cfg(feature = "tty")]
+use vulkan_renderer::{
+    DescriptorHeapDescriptor, DescriptorHeapKind, DescriptorHeapMemory, HeapDescriptorType,
+    MemoryAllocator, MemoryAllocatorConfig,
 };
 
 #[cfg(feature = "tty")]
@@ -30,8 +35,6 @@ use crate::ecs::SurfaceBufferId;
 mod error;
 #[cfg(feature = "tty")]
 mod frame;
-#[cfg(feature = "tty")]
-mod heap;
 #[cfg(feature = "tty")]
 mod import;
 #[cfg(feature = "tty")]
@@ -98,25 +101,18 @@ pub(crate) struct SelectedDevice {
 
 impl VulkanRenderer {
     pub(crate) fn new(target: RendererTarget) -> Result<Self, RendererError> {
-        let entry = load_entry()?;
-        let loader_version = entry.version().map_err(RendererError::LoaderVersion)?;
-        if loader_version < target.api_version {
-            return Err(RendererError::UnsupportedLoaderVersion {
-                required: target.api_version,
-                found: loader_version,
+        if target.api_version != ROADMAP_2026_API_VERSION {
+            return Err(RendererError::UnsupportedRendererProfile {
+                required: ROADMAP_2026_API_VERSION,
+                requested: target.api_version,
             });
         }
-
-        let application = vk::ApplicationInfo::builder()
-            .application_name(b"tensor-compositor\0")
-            .engine_name(b"tensor-renderer\0")
-            .api_version(target.api_version.into());
-        let instance_info = vk::InstanceCreateInfo::builder().application_info(&application);
-        let instance = unsafe { entry.create_instance(&instance_info, None) }
-            .map_err(RendererError::CreateInstance)?;
-        let instance = InstanceOwner { entry, instance };
-
-        let probed = probe_devices(&instance.instance)?;
+        let instance = RendererInstance::new(InstanceDescriptor {
+            profile: BackendProfile::Roadmap2026,
+            extra_instance_extensions: Vec::new(),
+        })
+        .map_err(|source| RendererError::Probe(source.to_string()))?;
+        let probed = probe_devices(&instance)?;
         for device in &probed {
             debug!(
                 ordinal = device.candidate.ordinal,
@@ -141,58 +137,38 @@ impl VulkanRenderer {
                 timeline_semaphore = device.candidate.timeline_semaphore_supported,
                 dynamic_rendering = device.candidate.dynamic_rendering_supported,
                 maintenance5 = device.candidate.maintenance5_supported,
-                maintenance5_extension = device.maintenance5_extension_available,
                 graphics_queue_family = ?device.candidate.graphics_queue_family,
                 native_output_formats = device.candidate.native_output_format_count,
-                "Vulkan physical device probed"
+                "shared Vulkan renderer adapter probed"
             );
         }
-        let selected = target
+        let selected_ordinal = target
             .device
-            .select(probed.iter().map(|device| &device.candidate))?;
-        let selected = &probed[selected.ordinal];
+            .select(probed.iter().map(|device| &device.candidate))?
+            .ordinal;
+        let selected = probed
+            .into_iter()
+            .find(|device| device.candidate.ordinal == selected_ordinal)
+            .ok_or_else(|| {
+                RendererError::Probe("selected Vulkan adapter disappeared during setup".into())
+            })?;
         #[cfg(feature = "tty")]
-        let frame_heap_alignment = selected
-            .candidate
-            .descriptor_heap
-            .resource_heap_alignment
-            .max(
-                selected
-                    .candidate
-                    .descriptor_heap
-                    .image_descriptor_alignment,
-            );
-        #[cfg(feature = "tty")]
-        let frames = FrameScheduler::new(
-            selected
-                .candidate
-                .descriptor_heap
-                .min_resource_heap_reserved_range
-                .saturating_add(DESCRIPTOR_HEAP_BYTES)
-                .min(selected.candidate.descriptor_heap.max_resource_heap_size),
-            frame_heap_alignment,
-            selected
-                .candidate
-                .descriptor_heap
-                .min_resource_heap_reserved_range,
-            selected.candidate.descriptor_heap.image_descriptor_size,
-        )
-        .map_err(|error| RendererError::Frame(error.to_string()))?;
-        #[cfg(feature = "tty")]
-        let frame_heap_layout = frames.layout();
-        #[cfg(feature = "tty")]
-        let sampler_heap_layout = frame::sampler_heap_layout(selected.candidate.descriptor_heap)
-            .map_err(|error| RendererError::Frame(error.to_string()))?;
-        #[cfg(feature = "tty")]
-        let bootstrap_pipeline_format = selected
+        let bootstrap_output_format = selected
             .formats
             .iter()
             .copied()
             .find(|format| format.supports_output_export())
-            .and_then(|format| vulkan_format_for_fourcc(format.format.code))
             .ok_or_else(|| {
                 RendererError::Frame(
                     "the selected device has no exportable format for the client pipeline".into(),
+                )
+            })?;
+        #[cfg(feature = "tty")]
+        let bootstrap_client_pipeline_format =
+            texture_format_for_fourcc(bootstrap_output_format.format.code).ok_or_else(|| {
+                RendererError::Frame(
+                    "the selected device has no typed exportable format for the client pipeline"
+                        .into(),
                 )
             })?;
         let graphics_queue_family = selected
@@ -206,33 +182,83 @@ impl VulkanRenderer {
             .ok_or(DeviceSelectionError::MissingDrmNodePair)?;
         #[cfg(feature = "tty")]
         let native_targets = target::NativeTargetManager::new(render_node);
-        let device = create_device(
-            &instance.instance,
-            selected.handle,
-            graphics_queue_family,
-            selected.maintenance5_extension_available,
-        )?;
+        let (backend, _queue) = selected
+            .adapter
+            .request_device(DeviceDescriptor {
+                label: Some("tensor-compositor".into()),
+                required_features: Features::STANDARD_DEFAULTS
+                    | Features::EXTERNAL_MEMORY_DMA_BUF
+                    | Features::EXTERNAL_SEMAPHORE_SYNC_FD,
+                required_limits: Limits::downlevel_defaults(),
+                required_extensions: Vec::new(),
+                video_decode: None,
+            })
+            .map_err(|source| RendererError::CreateSharedDevice(source.to_string()))?;
         #[cfg(feature = "tty")]
-        if let Err(source) = pipeline::validate_shader_modules(&device) {
-            unsafe { device.destroy_device(None) };
-            return Err(RendererError::ValidateClientShaders(source.to_string()));
-        }
-        let graphics_queue = unsafe { device.get_device_queue(graphics_queue_family, 0) };
+        let client_image_allocator = backend
+            .create_memory_allocator(client_image_allocator_config())
+            .map_err(|source| RendererError::CreateFrameResources(source.to_string()))?;
         #[cfg(feature = "tty")]
-        let frame_executor = match frame::VulkanFrameExecutor::new(
-            &instance.instance,
-            &device,
-            selected.handle,
-            graphics_queue_family,
-            frame_heap_layout,
-            sampler_heap_layout,
-            bootstrap_pipeline_format,
-        ) {
-            Ok(executor) => executor,
-            Err(source) => {
-                unsafe { device.destroy_device(None) };
-                return Err(RendererError::CreateFrameResources(source.to_string()));
+        let (resource_heap, sampler_heap, frames) = {
+            let properties = selected.candidate.descriptor_heap;
+            let descriptor_capacity =
+                preferred_resource_heap_capacity(properties).ok_or_else(|| {
+                    RendererError::Frame(
+                    "selected device has no usable device-local resource descriptor heap capacity"
+                        .into(),
+                )
+                })?;
+            let resource_heap = backend
+                .create_descriptor_heap_with_memory(
+                    &DescriptorHeapDescriptor {
+                        label: Some("tensor-resource-descriptor-heap".into()),
+                        kind: DescriptorHeapKind::Resource,
+                        descriptor_capacity,
+                        embedded_samplers: false,
+                    },
+                    DescriptorHeapMemory::DeviceLocal,
+                )
+                .map_err(|source| RendererError::CreateFrameResources(source.to_string()))?;
+            let descriptor_stride = resource_heap
+                .allocation_stride(HeapDescriptorType::SampledImage)
+                .map_err(|error| RendererError::CreateFrameResources(error.to_string()))?;
+            let descriptor_alignment = resource_heap
+                .allocation_alignment(HeapDescriptorType::SampledImage)
+                .map_err(|error| RendererError::CreateFrameResources(error.to_string()))?;
+            let frames = FrameScheduler::with_descriptor_allocator(
+                resource_heap.allocator(),
+                descriptor_stride,
+                descriptor_alignment,
+            )
+            .map_err(|error| RendererError::Frame(error.to_string()))?;
+            let sampler_capacity = backend
+                .descriptor_heap_capacity_bytes(DescriptorHeapKind::Sampler, 1)
+                .map_err(|source| RendererError::CreateFrameResources(source.to_string()))?;
+            let sampler_heap = backend
+                .create_descriptor_heap_with_memory(
+                    &DescriptorHeapDescriptor {
+                        label: Some("tensor-sampler-descriptor-heap".into()),
+                        kind: DescriptorHeapKind::Sampler,
+                        descriptor_capacity: sampler_capacity,
+                        embedded_samplers: true,
+                    },
+                    DescriptorHeapMemory::DeviceLocal,
+                )
+                .map_err(|source| RendererError::CreateFrameResources(source.to_string()))?;
+            (resource_heap, sampler_heap, frames)
+        };
+        #[cfg(feature = "tty")]
+        let frame_executor = {
+            if let Err(source) = pipeline::validate_shader_modules(&backend) {
+                return Err(RendererError::ValidateClientShaders(source.to_string()));
             }
+            frame::VulkanFrameExecutor::new(
+                &backend,
+                resource_heap,
+                sampler_heap,
+                bootstrap_client_pipeline_format,
+            )
+            .map_err(|source| RendererError::CreateFrameResources(source.to_string()))?
         };
         let selected_info = SelectedDevice {
             name: selected.candidate.name.clone(),
@@ -294,12 +320,11 @@ impl VulkanRenderer {
             #[cfg(feature = "tty")]
             client_images: import::ClientImageCache::default(),
             _owner: VulkanOwner {
-                device,
-                instance,
-                _physical_device: selected.handle,
-                _graphics_queue: graphics_queue,
                 #[cfg(feature = "tty")]
                 frame_executor,
+                #[cfg(feature = "tty")]
+                client_image_allocator,
+                backend,
             },
             target,
             selected: selected_info,
@@ -343,13 +368,7 @@ impl VulkanRenderer {
         self.refresh_completed()?;
         let buffers = self
             .native_targets
-            .register(
-                &self._owner.instance.instance,
-                &self._owner.device,
-                self._owner._physical_device,
-                target,
-                cursor,
-            )
+            .register(&self._owner.backend, target, cursor)
             .map_err(|error| RendererError::NativeTarget(error.to_string()))?;
         self.frames
             .register_output(target)
@@ -384,7 +403,7 @@ impl VulkanRenderer {
     ) -> Result<(), RendererError> {
         self.refresh_completed()?;
         self.client_images
-            .import(id, &self._owner.device, dmabuf)
+            .import(id, &self._owner.backend, dmabuf)
             .map_err(|error| RendererError::ClientImport(error.to_string()))
     }
 
@@ -397,16 +416,9 @@ impl VulkanRenderer {
         fill: impl FnOnce(&mut [u8]) -> Result<(), String>,
     ) -> Result<(), RendererError> {
         let completed = self.refresh_completed()?;
-        let memory_properties = unsafe {
-            self._owner
-                .instance
-                .instance
-                .get_physical_device_memory_properties(self._owner._physical_device)
-        };
         self.client_images
             .upload_shm(
-                &self._owner.device,
-                &memory_properties,
+                &self._owner.client_image_allocator,
                 import::ShmUploadTarget {
                     id,
                     size,
@@ -425,7 +437,7 @@ impl VulkanRenderer {
         fd: OwnedFd,
     ) -> Result<(), RendererError> {
         self.client_sync
-            .import_acquire(&self._owner.device, surface, fd)
+            .import_acquire(&self._owner.backend, surface, fd)
             .map_err(|error| RendererError::ClientSync(error.to_string()))
     }
 
@@ -435,29 +447,28 @@ impl VulkanRenderer {
         surface: crate::ecs::SurfaceId,
         completed_timeline: u64,
     ) -> ClientReleaseFence {
-        self.client_sync
-            .finish(&self._owner.device, surface, completed_timeline)
+        self.client_sync.finish(surface, completed_timeline)
     }
 
     #[cfg(feature = "tty")]
     pub(crate) fn completed_timeline(&self) -> Result<u64, RendererError> {
         self._owner
-            .frame_executor
-            .completed(&self._owner.device)
-            .map_err(RendererError::QueryTimeline)
+            .backend
+            .completed_timeline()
+            .map_err(|source| RendererError::QueryTimeline(source.to_string()))
     }
 
     #[cfg(feature = "tty")]
     pub(crate) fn refresh_completed(&mut self) -> Result<u64, RendererError> {
-        let completed = match self._owner.frame_executor.completed(&self._owner.device) {
+        let completed = match self._owner.backend.completed_timeline() {
             Ok(value) => value,
-            Err(error) => {
+            Err(source) => {
                 // Any timeline-query failure makes completion ownership
                 // unknowable. Fail closed instead of polling forever or
                 // recycling GPU-visible resources after a transient-looking
                 // Vulkan error.
                 self.frames.mark_device_lost();
-                return Err(RendererError::QueryTimeline(error));
+                return Err(RendererError::QueryTimeline(source.to_string()));
             }
         };
         self.retire_completed(completed);
@@ -467,12 +478,10 @@ impl VulkanRenderer {
     #[cfg(feature = "tty")]
     fn retire_completed(&mut self, completed: u64) {
         self.frames.retire_completed(completed);
-        self.native_targets
-            .retire_completed(&self._owner.device, completed);
-        self.client_images
-            .retire_completed(&self._owner.device, completed);
-        self.client_sync
-            .retire_completed(&self._owner.device, completed);
+        self.native_targets.retire_completed(completed);
+        self.client_images.retire_completed(completed);
+        self._owner.client_image_allocator.trim();
+        self.client_sync.retire_completed(completed);
     }
 
     #[cfg(feature = "tty")]
@@ -502,7 +511,6 @@ impl VulkanRenderer {
     }
 
     #[cfg(feature = "tty")]
-    #[cfg(feature = "tty")]
     pub(crate) fn advance_output_slot(&mut self, output: RenderOutputId) -> Option<u8> {
         self.frames.advance_output_slot(output)
     }
@@ -515,11 +523,25 @@ impl VulkanRenderer {
         cursors: CursorOverlays,
     ) -> Result<FrameSubmission, RendererError> {
         let completed = self.refresh_completed()?;
+        // Tensor's compositor thread owns frame scheduling. Reserve its
+        // timeline value from the renderer before descriptor allocation so
+        // the product cannot create a second timeline namespace.
+        let submission = self
+            ._owner
+            .backend
+            .next_frame()
+            .map_err(|source| RendererError::ReserveFrame(source.to_string()))?;
         let frame = self
             .frames
-            .prepare_with_cursors(output, scene, cursors, completed)
+            .prepare_with_cursors_for_timeline(
+                output,
+                scene,
+                cursors,
+                completed,
+                submission.value(),
+            )
             .map_err(|error| RendererError::Frame(error.to_string()))?;
-        let client_ids = frame.draw_plan.images().to_vec();
+        let client_ids = frame.draw_plan.images();
         debug!(
             output = ?output,
             serial = frame.serial,
@@ -530,23 +552,8 @@ impl VulkanRenderer {
             damage_regions = frame.damage.regions().len(),
             "prepared Vulkan scene frame"
         );
-        let client_images = match client_ids
-            .iter()
-            .map(|id| {
-                self.client_images
-                    .image_info(*id)
-                    .ok_or(RendererError::MissingClientImage(*id))
-            })
-            .collect::<Result<Vec<_>, _>>()
-        {
-            Ok(descriptors) => descriptors,
-            Err(error) => {
-                let _ = self.frames.abort(&frame);
-                return Err(error);
-            }
-        };
         let tracked_surfaces = self.client_sync.tracked_surface_ids(&frame);
-        let acquire_semaphores = self.client_sync.wait_semaphores(&tracked_surfaces);
+        let acquire_waits = self.client_sync.acquire_waits(&tracked_surfaces);
         let image = self
             .native_targets
             .image_info(output, frame.output_slot)
@@ -557,23 +564,29 @@ impl VulkanRenderer {
                     frame.output_slot
                 ))
             })?;
+        let descriptor_allocation = self
+            .frames
+            .descriptor_allocation(&frame)
+            .map_err(|error| RendererError::Frame(error.to_string()))?;
         let sync_fd = match self._owner.frame_executor.submit(
-            &self._owner.device,
-            self._owner._graphics_queue,
+            &self._owner.backend,
             frame::FrameExecution {
                 frame: &frame,
+                descriptor_allocation,
+                submission,
                 output: &image,
-                client_images: &client_images,
-                acquire_semaphores: &acquire_semaphores,
+                client_image_cache: &self.client_images,
+                acquire_waits: &acquire_waits,
                 completed_value: completed,
             },
         ) {
             Ok(fd) => fd,
+            Err(frame::VulkanFrameError::MissingClientImage(id)) => {
+                let _ = self.frames.abort(&frame);
+                return Err(RendererError::MissingClientImage(id));
+            }
             Err(source) => {
-                if matches!(
-                    &source,
-                    frame::VulkanFrameError::Vulkan(vk::ErrorCode::DEVICE_LOST)
-                ) {
+                if source.is_device_lost() {
                     self.frames.mark_device_lost();
                 }
                 if source.was_submitted() {
@@ -666,56 +679,59 @@ impl VulkanRenderer {
 impl Drop for VulkanRenderer {
     fn drop(&mut self) {
         #[cfg(feature = "tty")]
-        unsafe {
-            let _ = self._owner.device.device_wait_idle();
-            self.client_sync.destroy(&self._owner.device);
+        {
+            let _ = self._owner.backend.wait_idle();
+            self.client_sync.destroy();
+            self.client_images.destroy();
+            self.native_targets.destroy();
+            self._owner.frame_executor.destroy();
         }
-        #[cfg(feature = "tty")]
-        self.client_images.destroy(&self._owner.device);
-        #[cfg(feature = "tty")]
-        self.native_targets.destroy(&self._owner.device);
-    }
-}
-
-struct InstanceOwner {
-    entry: Entry,
-    instance: Instance,
-}
-
-impl Drop for InstanceOwner {
-    fn drop(&mut self) {
-        unsafe { self.instance.destroy_instance(None) };
-        let _ = &self.entry;
     }
 }
 
 struct VulkanOwner {
-    device: Device,
-    instance: InstanceOwner,
-    _physical_device: vk::PhysicalDevice,
-    _graphics_queue: vk::Queue,
     #[cfg(feature = "tty")]
     frame_executor: frame::VulkanFrameExecutor,
+    #[cfg(feature = "tty")]
+    client_image_allocator: MemoryAllocator,
+    backend: vulkan_renderer::Device,
 }
 
-impl Drop for VulkanOwner {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = self.device.device_wait_idle();
-            #[cfg(feature = "tty")]
-            self.frame_executor.destroy(&self.device);
-        }
-        unsafe { self.device.destroy_device(None) };
-        let _ = &self.instance;
+#[cfg(feature = "tty")]
+fn preferred_resource_heap_capacity(properties: DescriptorHeapProperties) -> Option<u64> {
+    let alignment = properties.resource_heap_alignment;
+    if alignment == 0 || !alignment.is_power_of_two() {
+        return None;
     }
+    let reserved = align_up(properties.min_resource_heap_reserved_range, alignment)?;
+    let available = properties.max_resource_heap_size.checked_sub(reserved)?;
+    let requested = DESCRIPTOR_HEAP_BYTES.min(available);
+    let capacity = requested & !(alignment - 1);
+    (capacity > 0).then_some(capacity)
 }
 
-fn load_entry() -> Result<Entry, RendererError> {
-    // Vulkanalia deliberately exposes loader and dispatch construction as unsafe. The library
-    // path is its platform constant and both owners outlive every command loaded from it.
-    let loader = unsafe { LibloadingLoader::new(LIBRARY) }
-        .map_err(|error| RendererError::LoadLibrary(error.to_string()))?;
-    unsafe { Entry::new(loader) }.map_err(|error| RendererError::LoadEntry(error.to_string()))
+#[cfg(feature = "tty")]
+fn align_up(value: u64, alignment: u64) -> Option<u64> {
+    value
+        .checked_add(alignment - 1)
+        .map(|value| value & !(alignment - 1))
+}
+
+#[cfg(feature = "tty")]
+fn client_image_allocator_config() -> MemoryAllocatorConfig {
+    // Client SHM images are long-lived enough to benefit from retained,
+    // persistently mapped storage, but a compositor must not reserve the
+    // renderer's large scene-engine pools for a small surface. Empty pools
+    // remain bounded at 2 MiB per matching class/type; allocations at that
+    // size or above receive exact-size blocks and disappear on trim.
+    const MIB: u64 = 1024 * 1024;
+    MemoryAllocatorConfig {
+        device_block_size: 2 * MIB,
+        image_block_size: 2 * MIB,
+        upload_block_size: 2 * MIB,
+        readback_block_size: 2 * MIB,
+        dedicated_threshold: 2 * MIB,
+    }
 }
 
 fn native_image_usage() -> vk::ImageUsageFlags {
@@ -732,60 +748,15 @@ fn vulkan_format_for_fourcc(fourcc: Fourcc) -> Option<vk::Format> {
         .find_map(|(candidate, format)| (*candidate == fourcc).then_some(*format))
 }
 
-fn create_device(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
-    graphics_queue_family: u32,
-    maintenance5_extension_available: bool,
-) -> Result<Device, RendererError> {
-    let priorities = [1.0];
-    let queue = vk::DeviceQueueCreateInfo::builder()
-        .queue_family_index(graphics_queue_family)
-        .queue_priorities(&priorities);
-    let queues = [queue];
-    let mut extensions = vec![
-        vk::EXT_DESCRIPTOR_HEAP_EXTENSION.name.as_cstr().as_ptr(),
-        vk::KHR_EXTERNAL_MEMORY_FD_EXTENSION.name.as_cstr().as_ptr(),
-        vk::EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION
-            .name
-            .as_cstr()
-            .as_ptr(),
-        vk::EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION
-            .name
-            .as_cstr()
-            .as_ptr(),
-        vk::EXT_QUEUE_FAMILY_FOREIGN_EXTENSION
-            .name
-            .as_cstr()
-            .as_ptr(),
-        vk::KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION
-            .name
-            .as_cstr()
-            .as_ptr(),
-    ];
-    if maintenance5_extension_available {
-        extensions.push(vk::KHR_MAINTENANCE5_EXTENSION.name.as_cstr().as_ptr());
+fn texture_format_for_fourcc(fourcc: Fourcc) -> Option<TextureFormat> {
+    match fourcc {
+        Fourcc::XRGB8888 | Fourcc::ARGB8888 => Some(TextureFormat::Bgra8Srgb),
+        Fourcc::XBGR8888 | Fourcc::ABGR8888 => Some(TextureFormat::Rgba8Srgb),
+        Fourcc::XRGB2101010 | Fourcc::ARGB2101010 => Some(TextureFormat::A2R10G10B10UnormPack32),
+        Fourcc::XBGR2101010 | Fourcc::ABGR2101010 => Some(TextureFormat::A2B10G10R10UnormPack32),
+        _ => None,
     }
-    let mut descriptor_heap = vk::PhysicalDeviceDescriptorHeapFeaturesEXT::builder()
-        .descriptor_heap(true)
-        .build();
-    let mut vulkan12 = vk::PhysicalDeviceVulkan12Features::builder()
-        .buffer_device_address(true)
-        .timeline_semaphore(true)
-        .build();
-    let mut vulkan13 = vk::PhysicalDeviceVulkan13Features::builder()
-        .dynamic_rendering(true)
-        .build();
-    let mut vulkan14 = vk::PhysicalDeviceVulkan14Features::builder()
-        .maintenance5(true)
-        .build();
-    let info = vk::DeviceCreateInfo::builder()
-        .queue_create_infos(&queues)
-        .enabled_extension_names(&extensions)
-        .push_next(&mut vulkan12)
-        .push_next(&mut vulkan13)
-        .push_next(&mut vulkan14)
-        .push_next(&mut descriptor_heap);
-    unsafe { instance.create_device(physical_device, &info, None) }
-        .map_err(RendererError::CreateDevice)
 }
+
+#[cfg(all(test, feature = "tty"))]
+mod tests;

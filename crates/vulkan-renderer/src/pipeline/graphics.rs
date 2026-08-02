@@ -7,7 +7,19 @@ use vulkanalia::{prelude::v1_4::*, vk};
 
 use super::{PipelineCache, ShaderBindingMap};
 use crate::backend::DeviceOwner;
-use crate::{Backend, Error, Features, Result, ShaderModule};
+use crate::{Backend, Error, Features, Result, SampleCount, ShaderModule};
+
+mod advanced_blend;
+mod machine_code;
+mod state;
+mod vertex;
+
+pub use advanced_blend::{AdvancedBlendState, BlendOverlap};
+pub use machine_code::MachineCodeGraphicsPipelineDescriptor;
+pub use state::{
+    BlendFactor, BlendOperation, ColorWrites, CullMode, FrontFace, PolygonMode, PrimitiveTopology,
+    VertexFormat,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct ProgrammableStage<'a> {
@@ -18,7 +30,7 @@ pub struct ProgrammableStage<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VertexAttribute {
-    pub format: vk::Format,
+    pub format: VertexFormat,
     pub offset: u64,
     pub shader_location: u32,
 }
@@ -32,6 +44,7 @@ pub enum VertexStepMode {
 
 #[derive(Clone, Copy, Debug)]
 pub struct VertexBufferLayout<'a> {
+    pub slot: u32,
     pub array_stride: u64,
     pub step_mode: VertexStepMode,
     pub attributes: &'a [VertexAttribute],
@@ -51,16 +64,16 @@ pub struct FragmentState<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BlendComponent {
-    pub src_factor: vk::BlendFactor,
-    pub dst_factor: vk::BlendFactor,
-    pub operation: vk::BlendOp,
+    pub src_factor: BlendFactor,
+    pub dst_factor: BlendFactor,
+    pub operation: BlendOperation,
 }
 
 impl BlendComponent {
     pub const REPLACE: Self = Self {
-        src_factor: vk::BlendFactor::ONE,
-        dst_factor: vk::BlendFactor::ZERO,
-        operation: vk::BlendOp::ADD,
+        src_factor: BlendFactor::One,
+        dst_factor: BlendFactor::Zero,
+        operation: BlendOperation::Add,
     };
 }
 
@@ -73,62 +86,62 @@ pub struct BlendState {
 impl BlendState {
     pub const ALPHA_BLENDING: Self = Self {
         color: BlendComponent {
-            src_factor: vk::BlendFactor::SRC_ALPHA,
-            dst_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
-            operation: vk::BlendOp::ADD,
+            src_factor: BlendFactor::SourceAlpha,
+            dst_factor: BlendFactor::OneMinusSourceAlpha,
+            operation: BlendOperation::Add,
         },
         alpha: BlendComponent {
-            src_factor: vk::BlendFactor::ONE,
-            dst_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
-            operation: vk::BlendOp::ADD,
+            src_factor: BlendFactor::One,
+            dst_factor: BlendFactor::OneMinusSourceAlpha,
+            operation: BlendOperation::Add,
         },
     };
 
     pub const PREMULTIPLIED_ALPHA_BLENDING: Self = Self {
         color: BlendComponent {
-            src_factor: vk::BlendFactor::ONE,
-            dst_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
-            operation: vk::BlendOp::ADD,
+            src_factor: BlendFactor::One,
+            dst_factor: BlendFactor::OneMinusSourceAlpha,
+            operation: BlendOperation::Add,
         },
         alpha: BlendComponent {
-            src_factor: vk::BlendFactor::ONE,
-            dst_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
-            operation: vk::BlendOp::ADD,
+            src_factor: BlendFactor::One,
+            dst_factor: BlendFactor::OneMinusSourceAlpha,
+            operation: BlendOperation::Add,
         },
     };
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ColorTargetState {
-    pub format: vk::Format,
+    pub format: crate::TextureFormat,
     pub blend: Option<BlendState>,
-    pub write_mask: vk::ColorComponentFlags,
+    pub write_mask: ColorWrites,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PrimitiveState {
-    pub topology: vk::PrimitiveTopology,
+    pub topology: PrimitiveTopology,
     pub primitive_restart_enable: bool,
-    pub polygon_mode: vk::PolygonMode,
-    pub cull_mode: vk::CullModeFlags,
-    pub front_face: vk::FrontFace,
+    pub polygon_mode: PolygonMode,
+    pub cull_mode: CullMode,
+    pub front_face: FrontFace,
 }
 
 impl Default for PrimitiveState {
     fn default() -> Self {
         Self {
-            topology: vk::PrimitiveTopology::TRIANGLE_LIST,
+            topology: PrimitiveTopology::TriangleList,
             primitive_restart_enable: false,
-            polygon_mode: vk::PolygonMode::FILL,
-            cull_mode: vk::CullModeFlags::NONE,
-            front_face: vk::FrontFace::COUNTER_CLOCKWISE,
+            polygon_mode: PolygonMode::Fill,
+            cull_mode: CullMode::None,
+            front_face: FrontFace::CounterClockwise,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MultisampleState {
-    pub count: vk::SampleCountFlags,
+    pub count: SampleCount,
     pub mask: u64,
     pub alpha_to_coverage_enabled: bool,
 }
@@ -136,7 +149,7 @@ pub struct MultisampleState {
 impl Default for MultisampleState {
     fn default() -> Self {
         Self {
-            count: vk::SampleCountFlags::_1,
+            count: SampleCount::One,
             mask: u64::MAX,
             alpha_to_coverage_enabled: false,
         }
@@ -178,6 +191,8 @@ pub struct GraphicsPipelineDescriptor<'a> {
     pub depth_stencil: Option<DepthStencilState>,
     pub multisample: MultisampleState,
     pub fragment: FragmentState<'a>,
+    pub advanced_blend: Option<AdvancedBlendState>,
+    pub local_read_mapping: Option<&'a crate::RenderingLocalReadMapping>,
     pub cache: Option<&'a PipelineCache>,
 }
 
@@ -190,11 +205,11 @@ struct GraphicsPipelineInner {
     owner: Arc<DeviceOwner>,
     raw: vk::Pipeline,
     label: Option<String>,
-    color_formats: Vec<vk::Format>,
+    color_formats: Vec<Option<crate::TextureFormat>>,
     depth_format: vk::Format,
     stencil_format: vk::Format,
-    sample_count: vk::SampleCountFlags,
-    vertex_buffer_count: u32,
+    sample_count: SampleCount,
+    vertex_buffer_slots: Vec<u32>,
 }
 
 impl GraphicsPipeline {
@@ -206,7 +221,7 @@ impl GraphicsPipeline {
         self.inner.label.as_deref()
     }
 
-    pub fn color_formats(&self) -> &[vk::Format] {
+    pub fn color_formats(&self) -> &[Option<crate::TextureFormat>] {
         &self.inner.color_formats
     }
 
@@ -218,12 +233,12 @@ impl GraphicsPipeline {
         self.inner.stencil_format
     }
 
-    pub fn sample_count(&self) -> vk::SampleCountFlags {
+    pub fn sample_count(&self) -> SampleCount {
         self.inner.sample_count
     }
 
-    pub fn vertex_buffer_count(&self) -> u32 {
-        self.inner.vertex_buffer_count
+    pub fn vertex_buffer_slots(&self) -> &[u32] {
+        &self.inner.vertex_buffer_slots
     }
 
     pub(crate) fn belongs_to(&self, owner: &Arc<DeviceOwner>) -> bool {
@@ -241,7 +256,7 @@ impl fmt::Debug for GraphicsPipeline {
             .field("depth_format", &self.inner.depth_format)
             .field("stencil_format", &self.inner.stencil_format)
             .field("sample_count", &self.inner.sample_count)
-            .field("vertex_buffer_count", &self.inner.vertex_buffer_count)
+            .field("vertex_buffer_slots", &self.inner.vertex_buffer_slots)
             .finish_non_exhaustive()
     }
 }
@@ -265,27 +280,51 @@ impl Backend {
         &self,
         descriptor: &GraphicsPipelineDescriptor<'_>,
     ) -> Result<GraphicsPipeline> {
-        if !self.features().contains(Features::DESCRIPTOR_HEAP) {
-            return Err(Error::Validation(
-                "graphics pipelines require enabled Features::DESCRIPTOR_HEAP".into(),
-            ));
-        }
-        let heap_limits = self.device_info().limits.descriptor_heap;
-        descriptor
-            .vertex
-            .stage
-            .bindings
-            .validate_for_device(heap_limits)
-            .map_err(|error| Error::Validation(format!("vertex shader binding map: {error}")))?;
-        descriptor
-            .fragment
-            .stage
-            .bindings
-            .validate_for_device(heap_limits)
-            .map_err(|error| Error::Validation(format!("fragment shader binding map: {error}")))?;
-        validate_descriptor(descriptor, &self.shared_owner())?;
+        validate_graphics_pipeline_descriptor(self, descriptor)?;
         create_graphics_pipeline(self.shared_owner(), descriptor)
     }
+}
+
+pub(super) fn validate_graphics_pipeline_descriptor(
+    backend: &Backend,
+    descriptor: &GraphicsPipelineDescriptor<'_>,
+) -> Result<()> {
+    if !backend.features().contains(Features::DESCRIPTOR_HEAP) {
+        return Err(Error::Validation(
+            "graphics pipelines require enabled Features::DESCRIPTOR_HEAP".into(),
+        ));
+    }
+    if descriptor.advanced_blend.is_some() && !backend.features().contains(Features::ADVANCED_BLEND)
+    {
+        return Err(Error::Validation(
+            "advanced blend state requires enabled Features::ADVANCED_BLEND".into(),
+        ));
+    }
+    if !backend
+        .device_info()
+        .properties
+        .framebuffer_color_sample_counts
+        .contains(descriptor.multisample.count.as_supported_set())
+    {
+        return Err(Error::Validation(format!(
+            "graphics pipeline sample count {:?} is unsupported by the selected Device",
+            descriptor.multisample.count
+        )));
+    }
+    let heap_limits = backend.device_info().limits.descriptor_heap;
+    descriptor
+        .vertex
+        .stage
+        .bindings
+        .validate_for_device(heap_limits)
+        .map_err(|error| Error::Validation(format!("vertex shader binding map: {error}")))?;
+    descriptor
+        .fragment
+        .stage
+        .bindings
+        .validate_for_device(heap_limits)
+        .map_err(|error| Error::Validation(format!("fragment shader binding map: {error}")))?;
+    validate_descriptor(descriptor, &backend.shared_owner())
 }
 
 fn validate_descriptor(
@@ -309,41 +348,32 @@ fn validate_descriptor(
             "pipeline cache was created by a different Device".into(),
         ));
     }
+    if let Some(mapping) = descriptor.local_read_mapping {
+        mapping.validate_for_device(
+            owner.enabled_features,
+            owner.limits.max_color_attachments,
+            owner.limits.max_per_stage_descriptor_input_attachments,
+        )?;
+        if mapping.color_attachment_count() != descriptor.fragment.targets.len() {
+            return Err(Error::Validation(
+                "graphics pipeline local-read mapping count must match color target count".into(),
+            ));
+        }
+    }
     validate_fixed_state(descriptor)
 }
 
 fn validate_fixed_state(descriptor: &GraphicsPipelineDescriptor<'_>) -> Result<()> {
-    if descriptor.multisample.count.is_empty()
-        || descriptor.multisample.count.bits().count_ones() != 1
-    {
-        return Err(Error::Validation(
-            "multisample count must contain exactly one sample-count bit".into(),
-        ));
-    }
+    advanced_blend::validate_advanced_blend(descriptor)?;
     if descriptor.fragment.targets.iter().all(Option::is_none) && descriptor.depth_stencil.is_none()
     {
         return Err(Error::Validation(
             "graphics pipeline must declare an active color or depth/stencil target".into(),
         ));
     }
-    if descriptor
-        .fragment
-        .targets
-        .iter()
-        .flatten()
-        .any(|target| target.format == vk::Format::UNDEFINED)
-    {
-        return Err(Error::Validation(
-            "active color target format must not be UNDEFINED".into(),
-        ));
-    }
-    if descriptor
-        .fragment
-        .targets
-        .iter()
-        .flatten()
-        .any(|target| format_has_depth(target.format) || format_has_stencil(target.format))
-    {
+    if descriptor.fragment.targets.iter().flatten().any(|target| {
+        format_has_depth(target.format.to_vk()) || format_has_stencil(target.format.to_vk())
+    }) {
         return Err(Error::Validation(
             "color target format must not contain depth or stencil aspects".into(),
         ));
@@ -372,7 +402,14 @@ fn validate_fixed_state(descriptor: &GraphicsPipelineDescriptor<'_>) -> Result<(
     }
 
     let mut locations = BTreeSet::new();
+    let mut buffer_slots = BTreeSet::new();
     for buffer in descriptor.vertex.buffers {
+        if !buffer_slots.insert(buffer.slot) {
+            return Err(Error::Validation(format!(
+                "duplicate vertex-buffer slot {}",
+                buffer.slot
+            )));
+        }
         if buffer.array_stride > u32::MAX as u64 {
             return Err(Error::Validation(
                 "vertex buffer array_stride exceeds Vulkan's u32 range".into(),
@@ -399,44 +436,69 @@ fn create_graphics_pipeline(
     owner: Arc<DeviceOwner>,
     descriptor: &GraphicsPipelineDescriptor<'_>,
 ) -> Result<GraphicsPipeline> {
-    let vertex_bindings = descriptor
-        .vertex
-        .buffers
-        .iter()
-        .enumerate()
-        .map(|(binding, buffer)| {
-            vk::VertexInputBindingDescription::builder()
-                .binding(binding as u32)
-                .stride(buffer.array_stride as u32)
-                .input_rate(match buffer.step_mode {
-                    VertexStepMode::Vertex => vk::VertexInputRate::VERTEX,
-                    VertexStepMode::Instance => vk::VertexInputRate::INSTANCE,
-                })
-                .build()
-        })
-        .collect::<Vec<_>>();
-    let vertex_attributes = descriptor
-        .vertex
-        .buffers
-        .iter()
-        .enumerate()
-        .flat_map(|(binding, buffer)| {
-            buffer.attributes.iter().map(move |attribute| {
-                vk::VertexInputAttributeDescription::builder()
-                    .location(attribute.shader_location)
-                    .binding(binding as u32)
-                    .format(attribute.format)
-                    .offset(attribute.offset as u32)
-                    .build()
-            })
-        })
-        .collect::<Vec<_>>();
+    let facts = graphics_pipeline_facts(descriptor);
+    let raw = with_graphics_pipeline_create_info(
+        descriptor,
+        vk::PipelineCreateFlags2::empty(),
+        None,
+        |info| create_pipeline_with_cache(&owner, descriptor.cache, info),
+    )?;
+    Ok(GraphicsPipeline {
+        inner: Arc::new(GraphicsPipelineInner {
+            owner,
+            raw,
+            label: descriptor.label.map(str::to_owned),
+            color_formats: facts.color_formats,
+            depth_format: facts.depth_format,
+            stencil_format: facts.stencil_format,
+            sample_count: facts.sample_count,
+            vertex_buffer_slots: facts.vertex_buffer_slots,
+        }),
+    })
+}
+
+pub(super) fn graphics_pipeline_facts(
+    descriptor: &GraphicsPipelineDescriptor<'_>,
+) -> super::binary::MachineCodeGraphicsFacts {
+    super::binary::MachineCodeGraphicsFacts {
+        color_formats: descriptor
+            .fragment
+            .targets
+            .iter()
+            .map(|target| target.map(|target| target.format))
+            .collect(),
+        depth_format: descriptor
+            .depth_stencil
+            .filter(|state| state.depth.is_some())
+            .map_or(vk::Format::UNDEFINED, |state| state.format),
+        stencil_format: descriptor
+            .depth_stencil
+            .filter(|state| state.stencil.is_some())
+            .map_or(vk::Format::UNDEFINED, |state| state.format),
+        sample_count: descriptor.multisample.count,
+        vertex_buffer_slots: descriptor
+            .vertex
+            .buffers
+            .iter()
+            .map(|buffer| buffer.slot)
+            .collect(),
+    }
+}
+
+pub(super) fn with_graphics_pipeline_create_info<T>(
+    descriptor: &GraphicsPipelineDescriptor<'_>,
+    additional_flags: vk::PipelineCreateFlags2,
+    ready_binaries: Option<&[vk::PipelineBinaryKHR]>,
+    use_info: impl FnOnce(vk::GraphicsPipelineCreateInfo) -> Result<T>,
+) -> Result<T> {
+    let (vertex_bindings, vertex_attributes) =
+        vertex::vertex_input_descriptions(descriptor.vertex.buffers);
     let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder()
         .vertex_binding_descriptions(&vertex_bindings)
         .vertex_attribute_descriptions(&vertex_attributes)
         .build();
     let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
-        .topology(descriptor.primitive.topology)
+        .topology(descriptor.primitive.topology.to_vk())
         .primitive_restart_enable(descriptor.primitive.primitive_restart_enable)
         .build();
     let viewport = vk::PipelineViewportStateCreateInfo::builder()
@@ -464,9 +526,9 @@ fn create_graphics_pipeline(
                 .depth_stencil
                 .map_or(0.0, |state| state.bias.slope_factor),
         )
-        .polygon_mode(descriptor.primitive.polygon_mode)
-        .cull_mode(descriptor.primitive.cull_mode)
-        .front_face(descriptor.primitive.front_face)
+        .polygon_mode(descriptor.primitive.polygon_mode.to_vk())
+        .cull_mode(descriptor.primitive.cull_mode.to_vk())
+        .front_face(descriptor.primitive.front_face.to_vk())
         .line_width(1.0)
         .build();
     let sample_masks = [
@@ -474,7 +536,7 @@ fn create_graphics_pipeline(
         (descriptor.multisample.mask >> 32) as u32,
     ];
     let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
-        .rasterization_samples(descriptor.multisample.count)
+        .rasterization_samples(descriptor.multisample.count.to_vk())
         .sample_mask(&sample_masks)
         .alpha_to_coverage_enable(descriptor.multisample.alpha_to_coverage_enabled)
         .build();
@@ -496,23 +558,36 @@ fn create_graphics_pipeline(
             .back(stencil.back)
             .build()
     });
-    let (color_formats, color_blend_attachments) = descriptor
+    let color_blend_attachments = descriptor
         .fragment
         .targets
         .iter()
         .map(|target| match target {
-            Some(target) => (target.format, color_blend_attachment(*target)),
-            None => (
-                vk::Format::UNDEFINED,
-                vk::PipelineColorBlendAttachmentState::builder()
-                    .color_write_mask(vk::ColorComponentFlags::empty())
-                    .build(),
-            ),
+            Some(target) => color_blend_attachment(*target),
+            None => vk::PipelineColorBlendAttachmentState::builder()
+                .color_write_mask(vk::ColorComponentFlags::empty())
+                .build(),
         })
-        .unzip::<_, _, Vec<_>, Vec<_>>();
-    let color_blend = vk::PipelineColorBlendStateCreateInfo::builder()
-        .attachments(&color_blend_attachments)
-        .build();
+        .collect::<Vec<_>>();
+    let color_formats = descriptor
+        .fragment
+        .targets
+        .iter()
+        .map(|target| target.map_or(vk::Format::UNDEFINED, |target| target.format.to_vk()))
+        .collect::<Vec<_>>();
+    let mut advanced_blend = descriptor.advanced_blend.map(|state| {
+        vk::PipelineColorBlendAdvancedStateCreateInfoEXT::builder()
+            .src_premultiplied(state.source_premultiplied)
+            .dst_premultiplied(state.destination_premultiplied)
+            .blend_overlap(state.overlap.to_vk())
+            .build()
+    });
+    let mut color_blend_builder =
+        vk::PipelineColorBlendStateCreateInfo::builder().attachments(&color_blend_attachments);
+    if let Some(advanced_blend) = advanced_blend.as_mut() {
+        color_blend_builder = color_blend_builder.push_next(advanced_blend);
+    }
+    let color_blend = color_blend_builder.build();
     let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
     let dynamic = vk::PipelineDynamicStateCreateInfo::builder()
         .dynamic_states(&dynamic_states)
@@ -531,10 +606,21 @@ fn create_graphics_pipeline(
         .stencil_attachment_format(stencil_format)
         .build();
     let mut flags = vk::PipelineCreateFlags2CreateInfo::builder()
-        .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT)
+        .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT | additional_flags)
         .build();
+    let mut attachment_locations = descriptor
+        .local_read_mapping
+        .map(crate::RenderingLocalReadMapping::attachment_location_info);
+    let mut input_attachment_indices = descriptor
+        .local_read_mapping
+        .map(crate::RenderingLocalReadMapping::input_attachment_index_info);
+    let mut binary_info = ready_binaries.map(|binaries| {
+        vk::PipelineBinaryInfoKHR::builder()
+            .pipeline_binaries(binaries)
+            .build()
+    });
 
-    let raw = descriptor
+    descriptor
         .vertex
         .stage
         .bindings
@@ -566,25 +652,22 @@ fn create_graphics_pipeline(
                         if let Some(depth_stencil) = depth_stencil.as_ref() {
                             info = info.depth_stencil_state(depth_stencil);
                         }
-                        create_pipeline_with_cache(&owner, descriptor.cache, info.build())
+                        if let Some(locations) = attachment_locations.as_mut() {
+                            info = info.push_next(locations);
+                        }
+                        if let Some(indices) = input_attachment_indices.as_mut() {
+                            info = info.push_next(indices);
+                        }
+                        if let Some(binary_info) = binary_info.as_mut() {
+                            info = info.push_next(binary_info);
+                        }
+                        use_info(info.build())
                     },
                 )
             },
         )
         .map_err(|error| Error::Validation(error.to_string()))?
-        .map_err(|error| Error::Validation(error.to_string()))??;
-    Ok(GraphicsPipeline {
-        inner: Arc::new(GraphicsPipelineInner {
-            owner,
-            raw,
-            label: descriptor.label.map(str::to_owned),
-            color_formats,
-            depth_format,
-            stencil_format,
-            sample_count: descriptor.multisample.count,
-            vertex_buffer_count: descriptor.vertex.buffers.len() as u32,
-        }),
-    })
+        .map_err(|error| Error::Validation(error.to_string()))?
 }
 
 fn create_pipeline_with_cache(
@@ -592,19 +675,28 @@ fn create_pipeline_with_cache(
     cache: Option<&PipelineCache>,
     info: vk::GraphicsPipelineCreateInfo,
 ) -> Result<vk::Pipeline> {
-    let create = |cache| unsafe { owner.device.create_graphics_pipelines(cache, &[info], None) };
-    let (mut pipelines, _) = match cache {
-        Some(cache) => cache.with_raw(create),
-        None => create(vk::PipelineCache::null()),
-    }
-    .map_err(|source| Error::vulkan("vkCreateGraphicsPipelines", source))?;
-    if pipelines.len() != 1 {
-        for pipeline in pipelines {
-            unsafe { owner.device.destroy_pipeline(pipeline, None) };
+    match cache {
+        Some(cache) => {
+            cache.with_raw(|cache| create_pipeline_with_device(&owner.device, cache, info))
         }
-        return Err(Error::Validation(
-            "vkCreateGraphicsPipelines returned an unexpected pipeline count".into(),
-        ));
+        None => create_pipeline_with_device(&owner.device, vk::PipelineCache::null(), info),
+    }
+}
+
+pub(super) fn create_pipeline_with_device(
+    device: &vulkanalia::Device,
+    cache: vk::PipelineCache,
+    info: vk::GraphicsPipelineCreateInfo,
+) -> Result<vk::Pipeline> {
+    let (mut pipelines, status) = unsafe { device.create_graphics_pipelines(cache, &[info], None) }
+        .map_err(|source| Error::vulkan("vkCreateGraphicsPipelines", source))?;
+    if status != vk::SuccessCode::SUCCESS || pipelines.len() != 1 {
+        for pipeline in pipelines {
+            unsafe { device.destroy_pipeline(pipeline, None) };
+        }
+        return Err(Error::Validation(format!(
+            "vkCreateGraphicsPipelines did not return exactly one ready pipeline: status={status:?}"
+        )));
     }
     Ok(pipelines.remove(0))
 }
@@ -616,13 +708,13 @@ fn color_blend_attachment(target: ColorTargetState) -> vk::PipelineColorBlendAtt
     });
     vk::PipelineColorBlendAttachmentState::builder()
         .blend_enable(target.blend.is_some())
-        .src_color_blend_factor(blend.color.src_factor)
-        .dst_color_blend_factor(blend.color.dst_factor)
-        .color_blend_op(blend.color.operation)
-        .src_alpha_blend_factor(blend.alpha.src_factor)
-        .dst_alpha_blend_factor(blend.alpha.dst_factor)
-        .alpha_blend_op(blend.alpha.operation)
-        .color_write_mask(target.write_mask)
+        .src_color_blend_factor(blend.color.src_factor.to_vk())
+        .dst_color_blend_factor(blend.color.dst_factor.to_vk())
+        .color_blend_op(blend.color.operation.to_vk())
+        .src_alpha_blend_factor(blend.alpha.src_factor.to_vk())
+        .dst_alpha_blend_factor(blend.alpha.dst_factor.to_vk())
+        .alpha_blend_op(blend.alpha.operation.to_vk())
+        .color_write_mask(target.write_mask.to_vk())
         .build()
 }
 
@@ -656,11 +748,11 @@ mod tests {
     fn blend_presets_match_straight_and_premultiplied_alpha_contracts() {
         assert_eq!(
             BlendState::ALPHA_BLENDING.color.src_factor,
-            vk::BlendFactor::SRC_ALPHA
+            BlendFactor::SourceAlpha
         );
         assert_eq!(
             BlendState::PREMULTIPLIED_ALPHA_BLENDING.color.src_factor,
-            vk::BlendFactor::ONE
+            BlendFactor::One
         );
     }
 
@@ -668,8 +760,8 @@ mod tests {
     fn default_pipeline_state_is_dynamic_triangle_list() {
         assert_eq!(
             PrimitiveState::default().topology,
-            vk::PrimitiveTopology::TRIANGLE_LIST
+            PrimitiveTopology::TriangleList
         );
-        assert_eq!(MultisampleState::default().count, vk::SampleCountFlags::_1);
+        assert_eq!(MultisampleState::default().count, SampleCount::One);
     }
 }

@@ -60,15 +60,36 @@ the requested limits exceed the adapter, an alignment is invalid, or no usable
 payload remains beside the aligned reserved range. Extension-name presence alone is
 not treated as support.
 
-`Device::create_descriptor_heap` realizes that contract as a persistently
-mapped buffer with `DESCRIPTOR_HEAP_EXT | SHADER_DEVICE_ADDRESS` usage. The
-application descriptor region comes first and the aligned implementation
-reserved range is appended; both values are copied into `VkBindHeapInfoEXT`.
+`Device::create_descriptor_heap` creates a host-visible heap for cold tables.
+`Device::create_descriptor_heap_with_memory` additionally offers explicit
+`HostVisible` and `DeviceLocal` placement: a device-local heap retains one
+persistently mapped staging buffer, while shader descriptor reads stay in the
+target device-local buffer. The application descriptor region comes first and
+the aligned implementation-reserved range is appended; both values are copied
+into `VkBindHeapInfoEXT`.
+
 Resource and sampler descriptor types are size/alignment checked against the
 queried properties before `vkWriteResourceDescriptorsEXT` or
 `vkWriteSamplerDescriptorsEXT`. Non-coherent writes flush atom-aligned ranges.
+For a device-local heap, reusable `DescriptorHeapUploadBatch` scratch records
+the host-write visibility barrier, compact staged copies, the transfer-to-heap
+read barrier, and the resource/sampler heap bind in one composable command
+sequence. Host-visible heaps use the same recording API but skip the copy.
 `CommandEncoder::bind_descriptor_heap` dispatches to the resource or sampler
 heap command without a legacy descriptor-set path.
+
+`SampledImageDescriptor` is the typed batched descriptor source for owned
+`ImageView` objects and imported/exported dma-buf images. It keeps
+`VkImageViewCreateInfo` construction inside the renderer; callers provide
+retained renderer resources plus an explicit `TextureLayout` instead of raw
+descriptor image structs.
+
+`DescriptorHeap::allocator` returns a cloneable handle to the heap's single
+allocation state. Products may keep their own frame or render-graph policy,
+but ranges remain owned by the actual heap and must be released before use or
+retired against the shared device timeline after submission. This permits
+independent single-pass and multi-pass clients to compose allocation policy
+without inventing parallel offset or retirement namespaces.
 
 Sampled images, storage images, input attachments, uniform/storage buffers,
 and samplers use the corresponding descriptor-heap representations. Small
@@ -160,8 +181,9 @@ The device owns a resettable graphics command pool and a timeline semaphore.
 `Device::create_command_encoder` begins a primary one-time command buffer;
 `CommandEncoder::finish` is the only transition to the executable state.
 `Queue::submit` consumes finished buffers, signals a monotonic `FrameToken`,
-and frees their Vulkan handles only after the completed timeline reaches that
-token. Command-pool allocation and reclamation are host-synchronized, and
+and recycles their Vulkan handles only after the completed timeline reaches
+that token. The recycler retains at most 64 primary buffers; excess buffers
+are freed. Command-pool allocation and reclamation are host-synchronized, and
 timeline allocation plus `vkQueueSubmit2` form one serialized transaction so
 concurrent callers cannot submit value N+1 before value N. Raw command-buffer
 submission remains available only as an explicitly unsafe interoperability
@@ -198,6 +220,9 @@ optimal-image memory classes are kept separate, so `bufferImageGranularity`
 cannot be violated by accidental mixed suballocation. Images and image views
 use shared RAII ownership, and dynamic-rendering compatibility can query their
 format and sample count without raw Vulkan calls.
+`Buffer::write_with` exposes a bounded, persistently mapped upload slice to a
+host producer and performs the required non-coherent flush without exposing a
+device-memory handle.
 
 `UploadBelt` replaces repeated queue-side write allocations with bounded,
 persistently mapped staging chunks. A batch can stage buffer and image copies,
@@ -218,6 +243,10 @@ cycles, and resolves abstract resources into owned
 one `vkCmdPipelineBarrier2` at the corresponding pass boundary without CPU
 readback. Equal queue families are encoded as `VK_QUEUE_FAMILY_IGNORED`;
 different families remain explicit ownership transfers.
+For dynamic compositor-style streams, reusable `BarrierBatch` scratch can add
+the same typed image transition directly from a retained `ResourceBinding` and
+two `ResourceState` values, without allocating a graph or exposing raw
+synchronization2 flags.
 
 ## Linux compositor interop
 

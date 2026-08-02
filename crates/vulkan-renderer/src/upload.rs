@@ -220,7 +220,7 @@ impl UploadBelt {
         let buffer = self.allocator.create_buffer(&BufferDescriptor {
             label: Some(format!("upload-belt-chunk-{}", self.chunks.len())),
             size: chunk_size,
-            usage: vk::BufferUsageFlags::TRANSFER_SRC,
+            usage: crate::BufferUsages::COPY_SOURCE,
             memory: MemoryLocation::Upload,
         })?;
         let index = self.chunks.len();
@@ -380,6 +380,22 @@ impl UploadBatch<'_> {
                 .copy_buffer_to_image(source, image, layout, &[copy])?;
         }
         Ok(slice)
+    }
+
+    /// Typed-layout variant of [`Self::write_image_data`].
+    ///
+    /// # Safety
+    ///
+    /// The caller must transition `image` into and out of `layout` for the
+    /// declared transfer access.
+    pub unsafe fn write_image_data_typed(
+        &mut self,
+        image: &Image,
+        layout: crate::TextureLayout,
+        upload: ImageUpload,
+        data: &[u8],
+    ) -> Result<UploadSlice> {
+        unsafe { self.write_image_data(image, layout.to_vk(), upload, data) }
     }
 
     fn stage(&mut self, data: &[u8]) -> Result<UploadSlice> {

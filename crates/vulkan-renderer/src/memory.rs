@@ -2,6 +2,10 @@ use std::fmt;
 
 use vulkanalia::vk;
 
+use crate::{
+    BufferUsages, Extent3D, ImageDimension, ImageTiling, SampleCount, TextureFormat, TextureUsages,
+};
+
 /// Intended CPU/GPU access pattern. It affects memory-type ranking but never
 /// weakens the hard Vulkan memory-property requirements.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -183,7 +187,7 @@ impl std::error::Error for MemoryPlanError {}
 pub struct BufferDescriptor {
     pub label: Option<String>,
     pub size: u64,
-    pub usage: vk::BufferUsageFlags,
+    pub usage: BufferUsages,
     pub memory: MemoryLocation,
 }
 
@@ -204,20 +208,20 @@ impl BufferDescriptor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImageDescriptor {
     pub label: Option<String>,
-    pub image_type: vk::ImageType,
-    pub format: vk::Format,
-    pub extent: vk::Extent3D,
+    pub dimension: ImageDimension,
+    pub format: TextureFormat,
+    pub extent: Extent3D,
     pub mip_levels: u32,
     pub array_layers: u32,
-    pub samples: vk::SampleCountFlags,
-    pub tiling: vk::ImageTiling,
-    pub usage: vk::ImageUsageFlags,
+    pub samples: SampleCount,
+    pub tiling: ImageTiling,
+    pub usage: TextureUsages,
     pub memory: MemoryLocation,
 }
 
 impl ImageDescriptor {
     pub fn validate(&self) -> Result<(), ResourceDescriptorError> {
-        if self.extent.width == 0 || self.extent.height == 0 || self.extent.depth == 0 {
+        if self.extent.is_empty() {
             return Err(ResourceDescriptorError::ZeroImageExtent);
         }
         if self.mip_levels == 0 {
@@ -226,13 +230,10 @@ impl ImageDescriptor {
         if self.array_layers == 0 {
             return Err(ResourceDescriptorError::ZeroArrayLayers);
         }
-        if self.samples.is_empty() || !self.samples.bits().is_power_of_two() {
-            return Err(ResourceDescriptorError::InvalidSampleCount);
-        }
         if self.usage.is_empty() {
             return Err(ResourceDescriptorError::EmptyImageUsage);
         }
-        if self.memory != MemoryLocation::Device && self.tiling == vk::ImageTiling::OPTIMAL {
+        if self.memory != MemoryLocation::Device && self.tiling == ImageTiling::Optimal {
             return Err(ResourceDescriptorError::HostVisibleOptimalImage);
         }
         Ok(())
@@ -355,18 +356,14 @@ mod tests {
     fn resource_descriptors_reject_cpu_visible_optimal_images() {
         let image = ImageDescriptor {
             label: None,
-            image_type: vk::ImageType::_2D,
-            format: vk::Format::R8G8B8A8_UNORM,
-            extent: vk::Extent3D {
-                width: 64,
-                height: 64,
-                depth: 1,
-            },
+            dimension: ImageDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            extent: Extent3D::new(64, 64, 1),
             mip_levels: 1,
             array_layers: 1,
-            samples: vk::SampleCountFlags::_1,
-            tiling: vk::ImageTiling::OPTIMAL,
-            usage: vk::ImageUsageFlags::SAMPLED,
+            samples: SampleCount::One,
+            tiling: ImageTiling::Optimal,
+            usage: TextureUsages::SAMPLED,
             memory: MemoryLocation::Upload,
         };
         assert_eq!(

@@ -55,40 +55,7 @@ fn cache_release_uses_a_stable_buffer_id() {
 }
 
 #[test]
-fn staging_memory_requires_host_visibility_and_prefers_coherence() {
-    let mut properties = vk::PhysicalDeviceMemoryProperties {
-        memory_type_count: 3,
-        ..Default::default()
-    };
-    properties.memory_types[0].property_flags = vk::MemoryPropertyFlags::DEVICE_LOCAL;
-    properties.memory_types[1].property_flags = vk::MemoryPropertyFlags::HOST_VISIBLE;
-    properties.memory_types[2].property_flags =
-        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
-    assert_eq!(
-        select_memory_type(
-            &properties,
-            0b111,
-            vk::MemoryPropertyFlags::HOST_VISIBLE,
-            vk::MemoryPropertyFlags::HOST_COHERENT,
-        ),
-        Some(2)
-    );
-    assert_eq!(
-        select_memory_type(
-            &properties,
-            0b011,
-            vk::MemoryPropertyFlags::HOST_VISIBLE,
-            vk::MemoryPropertyFlags::HOST_COHERENT,
-        ),
-        Some(1)
-    );
-    assert_eq!(
-        select_memory_type(
-            &properties,
-            0b001,
-            vk::MemoryPropertyFlags::HOST_VISIBLE,
-            vk::MemoryPropertyFlags::HOST_COHERENT,
-        ),
-        None
-    );
+fn shm_staging_size_uses_tightly_packed_rgba_rows() {
+    assert_eq!(shm_staging_len(Size::new(640, 480)).unwrap(), 640 * 480 * 4);
+    assert!(shm_staging_len(Size::new(u32::MAX, u32::MAX)).is_err());
 }

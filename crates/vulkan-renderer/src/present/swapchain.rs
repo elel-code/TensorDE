@@ -8,29 +8,32 @@ use vulkanalia::{
 
 use super::{PresentMode, Surface, SurfaceCapabilities};
 use crate::backend::DeviceOwner;
-use crate::{Backend, BinarySemaphore, Error, Features, Queue, Result};
+use crate::{
+    Backend, BinarySemaphore, CompositeAlphaMode, Error, Extent2D, Features, Queue,
+    ResourceBinding, Result, SurfaceFormat, SurfaceTransform, TextureFormat, TextureUsages,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct SurfaceConfigurationRequest<'a> {
     pub width: u32,
     pub height: u32,
-    pub usage: vk::ImageUsageFlags,
-    pub formats: &'a [vk::SurfaceFormatKHR],
+    pub usage: TextureUsages,
+    pub formats: &'a [SurfaceFormat],
     pub present_modes: &'a [PresentMode],
-    pub composite_alpha: &'a [vk::CompositeAlphaFlagsKHR],
-    pub pre_transforms: &'a [vk::SurfaceTransformFlagsKHR],
+    pub composite_alpha: &'a [CompositeAlphaMode],
+    pub pre_transforms: &'a [SurfaceTransform],
     pub desired_image_count: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SurfaceConfiguration {
-    pub format: vk::Format,
-    pub color_space: vk::ColorSpaceKHR,
-    pub extent: vk::Extent2D,
-    pub usage: vk::ImageUsageFlags,
+    pub format: TextureFormat,
+    pub color_space: crate::ColorSpace,
+    pub extent: Extent2D,
+    pub usage: TextureUsages,
     pub present_mode: PresentMode,
-    pub composite_alpha: vk::CompositeAlphaFlagsKHR,
-    pub pre_transform: vk::SurfaceTransformFlagsKHR,
+    pub composite_alpha: CompositeAlphaMode,
+    pub pre_transform: SurfaceTransform,
     pub image_count: u32,
 }
 
@@ -85,7 +88,7 @@ impl SurfaceConfiguration {
             .copied()
             .find(|transform| capabilities.supported_transforms.contains(*transform))
             .ok_or_else(|| Error::Validation("surface has no requested pre-transform".into()))?;
-        let extent = capabilities.current_extent.unwrap_or(vk::Extent2D {
+        let extent = capabilities.current_extent.unwrap_or(Extent2D {
             width: request.width.clamp(
                 capabilities.min_image_extent.width,
                 capabilities.max_image_extent.width,
@@ -160,7 +163,7 @@ impl fmt::Debug for Swapchain {
 }
 
 impl Swapchain {
-    pub const fn raw(&self) -> vk::SwapchainKHR {
+    pub(crate) const fn raw(&self) -> vk::SwapchainKHR {
         self.raw
     }
 
@@ -273,24 +276,38 @@ impl AcquiredSurfaceTexture<'_> {
         self.index
     }
 
-    pub const fn image(&self) -> vk::Image {
+    pub(crate) const fn image(&self) -> vk::Image {
         self.image
     }
 
-    pub const fn view(&self) -> vk::ImageView {
+    pub(crate) const fn view(&self) -> vk::ImageView {
         self.view
     }
 
-    pub const fn format(&self) -> vk::Format {
+    pub const fn format(&self) -> TextureFormat {
         self.swapchain.configuration.format
     }
 
-    pub const fn extent(&self) -> vk::Extent2D {
+    pub const fn extent(&self) -> Extent2D {
         self.swapchain.configuration.extent
     }
 
     pub const fn status(&self) -> PresentStatus {
         self.status
+    }
+
+    /// Returns the complete color-image binding for this acquired surface slot.
+    pub fn resource_binding(&self) -> ResourceBinding {
+        ResourceBinding::raw_image(
+            self.image,
+            vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+        )
     }
 
     pub(crate) fn owner(&self) -> &Arc<DeviceOwner> {
@@ -338,7 +355,7 @@ impl Backend {
             surface,
         )?;
         validate_configuration(&capabilities, self.features(), descriptor.configuration)?;
-        create_swapchain(owner, surface.clone(), descriptor)
+        create_swapchain(owner, surface.clone(), descriptor, self.features())
     }
 }
 
@@ -352,7 +369,7 @@ fn validate_configuration(
             "selected graphics queue cannot present to this surface".into(),
         ));
     }
-    if !capabilities.formats.contains(&vk::SurfaceFormatKHR {
+    if !capabilities.formats.contains(&SurfaceFormat {
         format: configuration.format,
         color_space: configuration.color_space,
     }) {
@@ -366,6 +383,16 @@ fn validate_configuration(
     {
         return Err(Error::Validation(
             "swapchain present mode is unsupported or was not enabled".into(),
+        ));
+    }
+    if features.contains(Features::PRESENT_ID2) && !capabilities.present_id2_supported {
+        return Err(Error::Validation(
+            "device enables present-id2 but the surface does not support it".into(),
+        ));
+    }
+    if features.contains(Features::PRESENT_WAIT2) && !capabilities.present_wait2_supported {
+        return Err(Error::Validation(
+            "device enables present-wait2 but the surface does not support it".into(),
         ));
     }
     if configuration.extent.width == 0
@@ -415,19 +442,28 @@ fn create_swapchain(
     owner: Arc<DeviceOwner>,
     surface: Surface,
     descriptor: &SwapchainDescriptor<'_>,
+    features: Features,
 ) -> Result<Swapchain> {
     let configuration = descriptor.configuration;
+    let mut flags = vk::SwapchainCreateFlagsKHR::empty();
+    if features.contains(Features::PRESENT_ID2) {
+        flags |= vk::SwapchainCreateFlagsKHR::PRESENT_ID_2;
+    }
+    if features.contains(Features::PRESENT_WAIT2) {
+        flags |= vk::SwapchainCreateFlagsKHR::PRESENT_WAIT_2;
+    }
     let create = vk::SwapchainCreateInfoKHR::builder()
+        .flags(flags)
         .surface(surface.raw())
         .min_image_count(configuration.image_count)
-        .image_format(configuration.format)
-        .image_color_space(configuration.color_space)
-        .image_extent(configuration.extent)
+        .image_format(configuration.format.to_vk())
+        .image_color_space(configuration.color_space.to_vk())
+        .image_extent(configuration.extent.to_vk())
         .image_array_layers(1)
-        .image_usage(configuration.usage)
+        .image_usage(configuration.usage.to_vk())
         .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .pre_transform(configuration.pre_transform)
-        .composite_alpha(configuration.composite_alpha)
+        .pre_transform(configuration.pre_transform.to_vk())
+        .composite_alpha(configuration.composite_alpha.to_vk())
         .present_mode(configuration.present_mode.as_vk())
         .clipped(true)
         .old_swapchain(
@@ -437,7 +473,7 @@ fn create_swapchain(
         );
     let raw = unsafe { owner.device.create_swapchain_khr(&create, None) }
         .map_err(|source| Error::vulkan("vkCreateSwapchainKHR", source))?;
-    let result = create_swapchain_images(&owner, raw, configuration.format);
+    let result = create_swapchain_images(&owner, raw, configuration.format.to_vk());
     match result {
         Ok(images) => Ok(Swapchain {
             owner,
@@ -503,70 +539,64 @@ mod tests {
             min_image_count: 2,
             max_image_count: Some(4),
             current_extent: None,
-            min_image_extent: vk::Extent2D {
-                width: 16,
-                height: 16,
-            },
-            max_image_extent: vk::Extent2D {
-                width: 4096,
-                height: 4096,
-            },
+            min_image_extent: Extent2D::new(16, 16),
+            max_image_extent: Extent2D::new(4096, 4096),
             max_image_array_layers: 1,
-            supported_transforms: vk::SurfaceTransformFlagsKHR::IDENTITY,
-            current_transform: vk::SurfaceTransformFlagsKHR::IDENTITY,
-            supported_composite_alpha: vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED,
-            supported_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
-            formats: vec![vk::SurfaceFormatKHR {
-                format: vk::Format::B8G8R8A8_UNORM,
-                color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
-            }],
+            supported_transforms: crate::SurfaceTransforms::from_vk(
+                vk::SurfaceTransformFlagsKHR::IDENTITY,
+            ),
+            current_transform: SurfaceTransform::Identity,
+            supported_composite_alpha: crate::CompositeAlphaModes::from_vk(
+                vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED,
+            ),
+            supported_usage: TextureUsages::COLOR_ATTACHMENT,
+            formats: vec![SurfaceFormat::new(
+                TextureFormat::Bgra8Unorm,
+                crate::ColorSpace::SrgbNonlinear,
+            )],
             present_modes: SurfacePresentCapabilities::from_vk(&[
                 vk::PresentModeKHR::FIFO,
                 vk::PresentModeKHR::FIFO_LATEST_READY,
             ]),
+            present_id2_supported: true,
+            present_wait2_supported: true,
         }
     }
 
     #[test]
     fn configuration_preferences_are_explicit_and_extent_is_clamped() {
-        let formats = [vk::SurfaceFormatKHR {
-            format: vk::Format::B8G8R8A8_UNORM,
-            color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
-        }];
+        let formats = [SurfaceFormat::new(
+            TextureFormat::Bgra8Unorm,
+            crate::ColorSpace::SrgbNonlinear,
+        )];
         let modes = [PresentMode::FifoLatestReady, PresentMode::Fifo];
-        let alpha = [vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED];
+        let alpha = [CompositeAlphaMode::PreMultiplied];
         let configuration = SurfaceConfiguration::choose(
             &capabilities(),
             Features::FIFO_LATEST_READY,
             SurfaceConfigurationRequest {
                 width: 8,
                 height: 8192,
-                usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                usage: TextureUsages::COLOR_ATTACHMENT,
                 formats: &formats,
                 present_modes: &modes,
                 composite_alpha: &alpha,
-                pre_transforms: &[vk::SurfaceTransformFlagsKHR::IDENTITY],
+                pre_transforms: &[SurfaceTransform::Identity],
                 desired_image_count: 3,
             },
         )
         .unwrap();
-        assert_eq!(
-            configuration.extent,
-            vk::Extent2D {
-                width: 16,
-                height: 4096
-            }
-        );
+        assert_eq!(configuration.extent, Extent2D::new(16, 4096));
         assert_eq!(configuration.present_mode, PresentMode::FifoLatestReady);
         assert_eq!(configuration.image_count, 3);
     }
 
     #[test]
     fn missing_preference_is_not_replaced_by_an_implicit_fallback() {
-        let formats = [vk::SurfaceFormatKHR {
-            format: vk::Format::R8G8B8A8_UNORM,
-            color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
-        }];
+        let formats = [SurfaceFormat::new(
+            TextureFormat::Rgba8Unorm,
+            crate::ColorSpace::SrgbNonlinear,
+        )];
         assert!(
             SurfaceConfiguration::choose(
                 &capabilities(),
@@ -574,11 +604,11 @@ mod tests {
                 SurfaceConfigurationRequest {
                     width: 1280,
                     height: 720,
-                    usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                    usage: TextureUsages::COLOR_ATTACHMENT,
                     formats: &formats,
                     present_modes: &[PresentMode::Fifo],
-                    composite_alpha: &[vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED],
-                    pre_transforms: &[vk::SurfaceTransformFlagsKHR::IDENTITY],
+                    composite_alpha: &[CompositeAlphaMode::PreMultiplied],
+                    pre_transforms: &[SurfaceTransform::Identity],
                     desired_image_count: 3,
                 },
             )
@@ -589,27 +619,25 @@ mod tests {
     #[test]
     fn requested_identity_transform_is_not_replaced_by_the_surface_rotation() {
         let mut capabilities = capabilities();
-        capabilities.supported_transforms =
-            vk::SurfaceTransformFlagsKHR::IDENTITY | vk::SurfaceTransformFlagsKHR::ROTATE_180;
-        capabilities.current_transform = vk::SurfaceTransformFlagsKHR::ROTATE_180;
+        capabilities.supported_transforms = crate::SurfaceTransforms::from_vk(
+            vk::SurfaceTransformFlagsKHR::IDENTITY | vk::SurfaceTransformFlagsKHR::ROTATE_180,
+        );
+        capabilities.current_transform = SurfaceTransform::Rotate180;
         let configuration = SurfaceConfiguration::choose(
             &capabilities,
             Features::FIFO_LATEST_READY,
             SurfaceConfigurationRequest {
                 width: 1280,
                 height: 720,
-                usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                usage: TextureUsages::COLOR_ATTACHMENT,
                 formats: &capabilities.formats,
                 present_modes: &[PresentMode::FifoLatestReady],
-                composite_alpha: &[vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED],
-                pre_transforms: &[vk::SurfaceTransformFlagsKHR::IDENTITY],
+                composite_alpha: &[CompositeAlphaMode::PreMultiplied],
+                pre_transforms: &[SurfaceTransform::Identity],
                 desired_image_count: 3,
             },
         )
         .unwrap();
-        assert_eq!(
-            configuration.pre_transform,
-            vk::SurfaceTransformFlagsKHR::IDENTITY
-        );
+        assert_eq!(configuration.pre_transform, SurfaceTransform::Identity);
     }
 }

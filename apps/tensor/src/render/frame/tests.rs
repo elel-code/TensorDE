@@ -1,4 +1,5 @@
 use tensor_host::{DrmFormat, Fourcc, Modifier};
+use vulkan_renderer::DescriptorHeapAllocator;
 
 use super::*;
 use crate::{
@@ -82,6 +83,41 @@ fn first_frame_and_scene_change_produce_damage() {
         .unwrap();
     assert!(!second.damage.is_empty());
     assert_eq!(second.serial, 2);
+}
+
+#[test]
+fn shared_renderer_timeline_value_controls_frame_retirement() {
+    let mut scheduler = FrameScheduler::new(4096, 32, 0, 32).unwrap();
+    scheduler.register_output(target(OUTPUT)).unwrap();
+
+    let frame = scheduler
+        .prepare_with_cursors_for_timeline(OUTPUT, scene(1), CursorOverlays::default(), 0, 41)
+        .unwrap();
+    assert_eq!(frame.timeline_value, 41);
+    scheduler.commit(&frame).unwrap();
+
+    scheduler.retire_completed(40);
+    assert!(scheduler.output_waiting_for_gpu(OUTPUT));
+    scheduler.retire_completed(41);
+    assert!(!scheduler.output_waiting_for_gpu(OUTPUT));
+}
+
+#[test]
+fn frame_policy_retires_the_same_allocator_owned_by_the_resource_heap() {
+    let allocator = DescriptorHeapAllocator::new(4096, 96, 32).unwrap();
+    let mut scheduler =
+        FrameScheduler::with_descriptor_allocator(allocator.clone(), 32, 32).unwrap();
+    scheduler.register_output(target(OUTPUT)).unwrap();
+
+    let frame = scheduler
+        .prepare_with_cursors_for_timeline(OUTPUT, scene(1), CursorOverlays::default(), 0, 41)
+        .unwrap();
+    assert_eq!(scheduler.descriptor_allocation(&frame).unwrap().offset(), 0);
+    scheduler.commit(&frame).unwrap();
+
+    assert_eq!(allocator.pending_retirements(), 1);
+    assert_eq!(allocator.reclaim(40), 0);
+    assert_eq!(allocator.reclaim(41), 1);
 }
 
 #[test]
@@ -171,9 +207,10 @@ fn descriptor_heap_respects_reserved_range_and_stride() {
     let mut scheduler = FrameScheduler::new(4096, 32, 96, 64).unwrap();
     scheduler.register_output(target(OUTPUT)).unwrap();
     let frame = scheduler.submit(OUTPUT, scene(1), 0).unwrap();
-    // Bindless indexing keeps every allocation on a descriptor-size
-    // boundary, including the first one after the reserved range.
-    assert_eq!(frame.descriptors.offset, 128);
+    // The shared direct heap reserves its implementation range as a suffix,
+    // so application descriptors begin at byte zero rather than recreating
+    // Tensor's former prefix-reservation layout.
+    assert_eq!(frame.descriptors.offset, 0);
     assert!(frame.descriptors.offset.is_multiple_of(64));
     assert!(frame.descriptors.size.is_multiple_of(64));
 }
@@ -188,11 +225,9 @@ fn invalid_descriptor_heap_layout_fails_before_output_registration() {
         FrameScheduler::new(4096, 64, 4096, 64),
         Err(FrameError::DescriptorHeapTooSmall { .. })
     ));
-    // Bindless heaps require exactly size-strided descriptors.
-    assert!(matches!(
-        FrameScheduler::new(4096, 64, 0, 48),
-        Err(FrameError::InvalidDescriptorAlignment { .. })
-    ));
+    // The shared allocator accepts an exact descriptor ABI that rounds to
+    // its declared alignment; it does not impose a power-of-two stride.
+    assert!(FrameScheduler::new(4096, 64, 0, 48).is_ok());
 }
 
 #[test]
@@ -278,11 +313,12 @@ fn idle_output_can_rotate_around_kms_owned_slots() {
 }
 
 #[test]
-fn descriptor_heap_layout_exposes_raw_descriptor_size_and_aligned_start() {
-    let scheduler = FrameScheduler::new(4096, 32, 96, 64).unwrap();
-    assert_eq!(scheduler.layout().reserved_range, 128);
-    assert_eq!(scheduler.layout().descriptor_size, 64);
-    assert_eq!(scheduler.layout().capacity, 4096);
+fn descriptor_heap_suffix_reservation_keeps_application_offsets_dense() {
+    let mut scheduler = FrameScheduler::new(4096, 32, 96, 64).unwrap();
+    scheduler.register_output(target(OUTPUT)).unwrap();
+    let frame = scheduler.prepare(OUTPUT, scene(1), 0).unwrap();
+    assert_eq!(frame.descriptors.offset, 0);
+    assert_eq!(frame.descriptors.size, 128);
 }
 
 #[test]

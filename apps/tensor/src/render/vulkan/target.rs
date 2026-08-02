@@ -1,23 +1,17 @@
-use std::{
-    collections::BTreeMap,
-    os::fd::{FromRawFd, OwnedFd},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use tensor_host::Fourcc;
 use thiserror::Error;
-use vulkan_renderer::vulkanalia::vk::{
-    DeviceV1_0, ExtImageDrmFormatModifierExtensionDeviceCommands, HasBuilder, InstanceV1_0,
-    KhrExternalMemoryFdExtensionDeviceCommands,
+use vulkan_renderer::{
+    Device, DmaBufExportDescriptor, ExportedDmaBufImage, SampledImageDescriptor, TextureFormat, vk,
 };
-use vulkan_renderer::vulkanalia::{Device, Instance, vk};
 
 use crate::render::{
     DmabufPlane, DrmNodeId, ExportedDmabuf, NativeCursorTarget, NativeOutputTarget, OutputFormat,
     RenderOutputId,
 };
 
-use super::{native_image_usage, vulkan_format_for_fourcc};
+use super::{native_image_usage, texture_format_for_fourcc, vulkan_format_for_fourcc};
 
 const OUTPUT_IMAGE_COUNT: usize = 3;
 const CURSOR_IMAGE_COUNT: usize = 3;
@@ -41,11 +35,11 @@ pub(crate) struct NativeOutputBuffers {
     pub(crate) cursor: Vec<NativeCursorBuffer>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct NativeOutputImageInfo {
-    pub(super) image: vk::Image,
-    pub(super) view: vk::ImageView,
-    pub(super) view_info: vk::ImageViewCreateInfo,
+    pub(super) image: ExportedDmaBufImage,
+    pub(super) sampled_descriptor: SampledImageDescriptor,
+    pub(super) format: TextureFormat,
     pub(super) foreign_owned: bool,
 }
 
@@ -57,6 +51,9 @@ impl NativeCursorBuffer {
     pub(crate) const COUNT: usize = CURSOR_IMAGE_COUNT;
 }
 
+/// Tensor owns output topology and KMS presentation policy; the shared
+/// renderer owns every Vulkan image, dedicated export allocation, image view,
+/// and exported dma-buf fd behind these retained output slots.
 pub(super) struct NativeTargetManager {
     render_node: DrmNodeId,
     active: BTreeMap<RenderOutputId, NativeTargetSet>,
@@ -78,9 +75,7 @@ impl NativeTargetManager {
 
     pub(super) fn register(
         &mut self,
-        instance: &Instance,
         device: &Device,
-        physical_device: vk::PhysicalDevice,
         target: NativeOutputTarget,
         cursor: Option<NativeCursorTarget>,
     ) -> Result<NativeOutputBuffers, NativeTargetError> {
@@ -99,22 +94,11 @@ impl NativeTargetManager {
             return Ok(self.buffers(target.output));
         }
 
-        let replacement =
-            NativeTargetSet::create(instance, device, physical_device, self.render_node, target)?;
+        let replacement = NativeTargetSet::create(device, self.render_node, target)?;
         let cursor_replacement = match cursor {
-            Some(cursor) => match NativeCursorTargetSet::create(
-                instance,
-                device,
-                physical_device,
-                self.render_node,
-                cursor,
-            ) {
-                Ok(replacement) => Some(replacement),
-                Err(error) => {
-                    replacement.destroy(device);
-                    return Err(error);
-                }
-            },
+            Some(cursor) => {
+                NativeCursorTargetSet::create(device, self.render_node, cursor).map(Some)?
+            }
             None => None,
         };
         if let Some(previous) = self.active.insert(target.output, replacement) {
@@ -152,12 +136,7 @@ impl NativeTargetManager {
         self.active
             .get(&output)
             .and_then(|target| target.images.get(usize::from(slot)))
-            .map(|image| NativeOutputImageInfo {
-                image: image.image,
-                view: image.view,
-                view_info: image.view_info,
-                foreign_owned: image.foreign_owned,
-            })
+            .map(NativeOutputImage::info)
     }
 
     pub(super) fn unregister(&mut self, output: RenderOutputId) {
@@ -169,40 +148,16 @@ impl NativeTargetManager {
         }
     }
 
-    pub(super) fn retire_completed(&mut self, device: &Device, completed_timeline: u64) {
-        let mut retained = Vec::with_capacity(self.retired.len());
-        for target in self.retired.drain(..) {
-            if target.last_use_timeline <= completed_timeline {
-                target.destroy(device);
-            } else {
-                retained.push(target);
-            }
-        }
-        self.retired = retained;
-        let mut retained = Vec::with_capacity(self.cursor_retired.len());
-        for target in self.cursor_retired.drain(..) {
-            if target.last_use_timeline <= completed_timeline {
-                target.destroy(device);
-            } else {
-                retained.push(target);
-            }
-        }
-        self.cursor_retired = retained;
+    pub(super) fn retire_completed(&mut self, completed_timeline: u64) {
+        retain_pending_targets(&mut self.retired, completed_timeline);
+        retain_pending_targets(&mut self.cursor_retired, completed_timeline);
     }
 
-    pub(super) fn destroy(&mut self, device: &Device) {
-        for (_, target) in std::mem::take(&mut self.active) {
-            target.destroy(device);
-        }
-        for target in self.retired.drain(..) {
-            target.destroy(device);
-        }
-        for (_, target) in std::mem::take(&mut self.cursor_active) {
-            target.destroy(device);
-        }
-        for target in self.cursor_retired.drain(..) {
-            target.destroy(device);
-        }
+    pub(super) fn destroy(&mut self) {
+        self.active.clear();
+        self.retired.clear();
+        self.cursor_active.clear();
+        self.cursor_retired.clear();
     }
 
     fn buffers(&self, output: RenderOutputId) -> NativeOutputBuffers {
@@ -232,49 +187,44 @@ impl NativeTargetManager {
     }
 }
 
+trait RetainedNativeTarget {
+    fn last_use_timeline(&self) -> u64;
+}
+
+fn retain_pending_targets<T: RetainedNativeTarget>(targets: &mut Vec<T>, completed_timeline: u64) {
+    targets.retain(|target| target.last_use_timeline() > completed_timeline);
+}
+
 struct NativeTargetSet {
     target: NativeOutputTarget,
     images: Vec<NativeOutputImage>,
     last_use_timeline: u64,
 }
 
+impl RetainedNativeTarget for NativeTargetSet {
+    fn last_use_timeline(&self) -> u64 {
+        self.last_use_timeline
+    }
+}
+
 impl NativeTargetSet {
     fn create(
-        instance: &Instance,
         device: &Device,
-        physical_device: vk::PhysicalDevice,
         render_node: DrmNodeId,
         target: NativeOutputTarget,
     ) -> Result<Self, NativeTargetError> {
-        let mut images = Vec::with_capacity(OUTPUT_IMAGE_COUNT);
-        for slot in 0..OUTPUT_IMAGE_COUNT {
-            match NativeOutputImage::create(
-                instance,
-                device,
-                physical_device,
-                render_node,
-                ExportImageTarget::from_output(target),
-            ) {
-                Ok(image) => images.push(image),
-                Err(source) => {
-                    for image in images {
-                        image.destroy(device);
-                    }
-                    return Err(NativeTargetError::CreateSlot { slot, source });
-                }
-            }
-        }
+        let images = create_images(
+            device,
+            render_node,
+            ExportImageTarget::from_output(target),
+            OUTPUT_IMAGE_COUNT,
+            false,
+        )?;
         Ok(Self {
             target,
             images,
             last_use_timeline: 0,
         })
-    }
-
-    fn destroy(self, device: &Device) {
-        for image in self.images {
-            image.destroy(device);
-        }
     }
 }
 
@@ -284,44 +234,54 @@ struct NativeCursorTargetSet {
     last_use_timeline: u64,
 }
 
+impl RetainedNativeTarget for NativeCursorTargetSet {
+    fn last_use_timeline(&self) -> u64 {
+        self.last_use_timeline
+    }
+}
+
 impl NativeCursorTargetSet {
     fn create(
-        instance: &Instance,
         device: &Device,
-        physical_device: vk::PhysicalDevice,
         render_node: DrmNodeId,
         target: NativeCursorTarget,
     ) -> Result<Self, NativeTargetError> {
-        let mut images = Vec::with_capacity(CURSOR_IMAGE_COUNT);
-        for slot in 0..CURSOR_IMAGE_COUNT {
-            match NativeOutputImage::create(
-                instance,
-                device,
-                physical_device,
-                render_node,
-                ExportImageTarget::from_cursor(target),
-            ) {
-                Ok(image) => images.push(image),
-                Err(source) => {
-                    for image in images {
-                        image.destroy(device);
-                    }
-                    return Err(NativeTargetError::CreateCursorSlot { slot, source });
-                }
-            }
-        }
+        let images = create_images(
+            device,
+            render_node,
+            ExportImageTarget::from_cursor(target),
+            CURSOR_IMAGE_COUNT,
+            true,
+        )?;
         Ok(Self {
             target,
             images,
             last_use_timeline: 0,
         })
     }
+}
 
-    fn destroy(self, device: &Device) {
-        for image in self.images {
-            image.destroy(device);
+fn create_images(
+    device: &Device,
+    render_node: DrmNodeId,
+    target: ExportImageTarget,
+    count: usize,
+    cursor: bool,
+) -> Result<Vec<NativeOutputImage>, NativeTargetError> {
+    let mut images = Vec::with_capacity(count);
+    for slot in 0..count {
+        match NativeOutputImage::create(device, render_node, target) {
+            Ok(image) => images.push(image),
+            Err(source) => {
+                return Err(if cursor {
+                    NativeTargetError::CreateCursorSlot { slot, source }
+                } else {
+                    NativeTargetError::CreateSlot { slot, source }
+                });
+            }
         }
     }
+    Ok(images)
 }
 
 #[derive(Clone, Copy)]
@@ -347,230 +307,88 @@ impl ExportImageTarget {
 }
 
 struct NativeOutputImage {
-    image: vk::Image,
-    memory: vk::DeviceMemory,
-    view: vk::ImageView,
-    view_info: vk::ImageViewCreateInfo,
+    image: ExportedDmaBufImage,
+    format: TextureFormat,
     foreign_owned: bool,
     dmabuf: ExportedDmabuf,
 }
 
 impl NativeOutputImage {
     fn create(
-        instance: &Instance,
         device: &Device,
-        physical_device: vk::PhysicalDevice,
         render_node: DrmNodeId,
         target: ExportImageTarget,
     ) -> Result<Self, NativeImageError> {
-        let vulkan_format = vulkan_format_for_fourcc(target.format.format.code).ok_or(
-            NativeImageError::UnsupportedFourcc(target.format.format.code),
-        )?;
-        let drm_modifier = target.format.format.modifier.raw();
-        let modifiers = [drm_modifier];
-        let mut modifier_info =
-            vk::ImageDrmFormatModifierListCreateInfoEXT::builder().drm_format_modifiers(&modifiers);
-        let mut external_info = vk::ExternalMemoryImageCreateInfo::builder()
-            .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
-        let image_info = vk::ImageCreateInfo::builder()
-            .image_type(vk::ImageType::_2D)
-            .format(vulkan_format)
-            .extent(vk::Extent3D {
-                width: target.size.width,
-                height: target.size.height,
-                depth: 1,
+        let fourcc = target.format.format.code;
+        let format =
+            vulkan_format_for_fourcc(fourcc).ok_or(NativeImageError::UnsupportedFourcc(fourcc))?;
+        let texture_format =
+            texture_format_for_fourcc(fourcc).ok_or(NativeImageError::UnsupportedFourcc(fourcc))?;
+        let image = device
+            .create_exportable_dma_buf_image(&DmaBufExportDescriptor {
+                label: Some("tensor-native-output".into()),
+                format,
+                extent: vk::Extent2D {
+                    width: target.size.width,
+                    height: target.size.height,
+                },
+                modifiers: vec![target.format.format.modifier.raw()],
+                usage: native_image_usage(),
+                components: vk::ComponentMapping::default(),
             })
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::_1)
-            .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
-            .usage(native_image_usage())
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .push_next(&mut modifier_info)
-            .push_next(&mut external_info);
-        let image = unsafe { device.create_image(&image_info, None) }
-            .map_err(NativeImageError::CreateImage)?;
-
-        let result = Self::allocate_and_export(
-            instance,
-            device,
-            physical_device,
-            render_node,
-            target,
-            vulkan_format,
-            drm_modifier,
-            image,
+            .map_err(|source| NativeImageError::Create(source.to_string()))?;
+        let expected_plane_count = usize::try_from(target.format.plane_count)
+            .map_err(|_| NativeImageError::InvalidPlaneCount(target.format.plane_count))?;
+        if expected_plane_count == 0 || expected_plane_count > MAX_DMABUF_PLANES {
+            return Err(NativeImageError::InvalidPlaneCount(
+                target.format.plane_count,
+            ));
+        }
+        if image.planes().len() != expected_plane_count {
+            return Err(NativeImageError::PlaneCountMismatch {
+                expected: target.format.plane_count,
+                actual: image.planes().len(),
+            });
+        }
+        let fd = Arc::new(
+            image
+                .try_clone_fd()
+                .map_err(|source| NativeImageError::DuplicateFd(source.to_string()))?,
         );
-        if result.is_err() {
-            unsafe { device.destroy_image(image, None) };
-        }
-        result
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn allocate_and_export(
-        instance: &Instance,
-        device: &Device,
-        physical_device: vk::PhysicalDevice,
-        render_node: DrmNodeId,
-        target: ExportImageTarget,
-        vulkan_format: vk::Format,
-        drm_modifier: u64,
-        image: vk::Image,
-    ) -> Result<Self, NativeImageError> {
-        let requirements = unsafe { device.get_image_memory_requirements(image) };
-        let memory_properties =
-            unsafe { instance.get_physical_device_memory_properties(physical_device) };
-        let memory_type_index = select_memory_type(
-            &memory_properties,
-            requirements.memory_type_bits,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        )
-        .ok_or(NativeImageError::NoCompatibleMemoryType)?;
-        let mut export_info = vk::ExportMemoryAllocateInfo::builder()
-            .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
-        let mut dedicated_info = vk::MemoryDedicatedAllocateInfo::builder().image(image);
-        let allocation_info = vk::MemoryAllocateInfo::builder()
-            .allocation_size(requirements.size)
-            .memory_type_index(memory_type_index)
-            .push_next(&mut export_info)
-            .push_next(&mut dedicated_info);
-        let memory = unsafe { device.allocate_memory(&allocation_info, None) }
-            .map_err(NativeImageError::AllocateMemory)?;
-        if let Err(source) = unsafe { device.bind_image_memory(image, memory, 0) } {
-            unsafe { device.free_memory(memory, None) };
-            return Err(NativeImageError::BindMemory(source));
-        }
-
-        let view_info = vk::ImageViewCreateInfo::builder()
-            .image(image)
-            .view_type(vk::ImageViewType::_2D)
-            .format(vulkan_format)
-            .subresource_range(
-                vk::ImageSubresourceRange::builder()
-                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .base_mip_level(0)
-                    .level_count(1)
-                    .base_array_layer(0)
-                    .layer_count(1)
-                    .build(),
-            );
-        let view = match unsafe { device.create_image_view(&view_info, None) } {
-            Ok(view) => view,
-            Err(source) => {
-                unsafe { device.free_memory(memory, None) };
-                return Err(NativeImageError::CreateView(source));
-            }
-        };
-        let dmabuf = match export_dmabuf(device, render_node, target, drm_modifier, image, memory) {
-            Ok(dmabuf) => dmabuf,
-            Err(source) => {
-                unsafe {
-                    device.destroy_image_view(view, None);
-                    device.free_memory(memory, None);
-                }
-                return Err(source);
-            }
-        };
+        let planes = image
+            .planes()
+            .iter()
+            .map(|plane| {
+                Ok(DmabufPlane {
+                    fd: Arc::clone(&fd),
+                    offset: u32::try_from(plane.offset)
+                        .map_err(|_| NativeImageError::LayoutOverflow)?,
+                    stride: u32::try_from(plane.row_pitch)
+                        .map_err(|_| NativeImageError::LayoutOverflow)?,
+                })
+            })
+            .collect::<Result<Vec<_>, NativeImageError>>()?;
         Ok(Self {
+            dmabuf: ExportedDmabuf {
+                size: target.size,
+                format: target.format.format,
+                node: Some(render_node),
+                planes,
+            },
             image,
-            memory,
-            view,
-            view_info: view_info.build(),
+            format: texture_format,
             foreign_owned: false,
-            dmabuf,
         })
     }
 
-    fn destroy(self, device: &Device) {
-        unsafe {
-            device.destroy_image_view(self.view, None);
-            device.destroy_image(self.image, None);
-            device.free_memory(self.memory, None);
+    fn info(&self) -> NativeOutputImageInfo {
+        NativeOutputImageInfo {
+            image: self.image.clone(),
+            sampled_descriptor: SampledImageDescriptor::from_exported_dma_buf(&self.image),
+            format: self.format,
+            foreign_owned: self.foreign_owned,
         }
     }
-}
-
-fn export_dmabuf(
-    device: &Device,
-    render_node: DrmNodeId,
-    target: ExportImageTarget,
-    expected_modifier: u64,
-    image: vk::Image,
-    memory: vk::DeviceMemory,
-) -> Result<ExportedDmabuf, NativeImageError> {
-    let mut modifier_properties = vk::ImageDrmFormatModifierPropertiesEXT::default();
-    unsafe { device.get_image_drm_format_modifier_properties_ext(image, &mut modifier_properties) }
-        .map_err(NativeImageError::QueryModifier)?;
-    if modifier_properties.drm_format_modifier != expected_modifier {
-        return Err(NativeImageError::ModifierMismatch {
-            expected: expected_modifier,
-            actual: modifier_properties.drm_format_modifier,
-        });
-    }
-    let fd_info = vk::MemoryGetFdInfoKHR::builder()
-        .memory(memory)
-        .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
-    let raw_fd =
-        unsafe { device.get_memory_fd_khr(&fd_info) }.map_err(NativeImageError::ExportMemoryFd)?;
-    let fd = Arc::new(unsafe { OwnedFd::from_raw_fd(raw_fd) });
-    let plane_count = usize::try_from(target.format.plane_count)
-        .map_err(|_| NativeImageError::InvalidPlaneCount(target.format.plane_count))?;
-    if plane_count == 0 || plane_count > MAX_DMABUF_PLANES {
-        return Err(NativeImageError::InvalidPlaneCount(
-            target.format.plane_count,
-        ));
-    }
-    let mut planes = Vec::with_capacity(plane_count);
-    for plane in 0..plane_count {
-        let subresource = vk::ImageSubresource::builder()
-            .aspect_mask(memory_plane_aspect(plane))
-            .mip_level(0)
-            .array_layer(0);
-        let layout = unsafe { device.get_image_subresource_layout(image, &subresource) };
-        let offset = u32::try_from(layout.offset).map_err(|_| NativeImageError::LayoutOverflow)?;
-        let stride =
-            u32::try_from(layout.row_pitch).map_err(|_| NativeImageError::LayoutOverflow)?;
-        planes.push(DmabufPlane {
-            fd: Arc::clone(&fd),
-            offset,
-            stride,
-        });
-    }
-    Ok(ExportedDmabuf {
-        size: target.size,
-        format: target.format.format,
-        node: Some(render_node),
-        planes,
-    })
-}
-
-fn memory_plane_aspect(plane: usize) -> vk::ImageAspectFlags {
-    match plane {
-        0 => vk::ImageAspectFlags::MEMORY_PLANE_0_EXT,
-        1 => vk::ImageAspectFlags::MEMORY_PLANE_1_EXT,
-        2 => vk::ImageAspectFlags::MEMORY_PLANE_2_EXT,
-        3 => vk::ImageAspectFlags::MEMORY_PLANE_3_EXT,
-        _ => unreachable!("plane count is bounded by MAX_DMABUF_PLANES"),
-    }
-}
-
-fn select_memory_type(
-    properties: &vk::PhysicalDeviceMemoryProperties,
-    compatible_bits: u32,
-    preferred: vk::MemoryPropertyFlags,
-) -> Option<u32> {
-    let count = usize::try_from(properties.memory_type_count).ok()?;
-    let compatible = properties.memory_types[..count]
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| compatible_bits & (1 << index) != 0);
-    compatible
-        .clone()
-        .find(|(_, memory_type)| memory_type.property_flags.contains(preferred))
-        .or_else(|| compatible.into_iter().next())
-        .and_then(|(index, _)| u32::try_from(index).ok())
 }
 
 #[derive(Debug, Error)]
@@ -591,26 +409,16 @@ pub(super) enum NativeTargetError {
 pub(super) enum NativeImageError {
     #[error("DRM fourcc {0} has no Vulkan output format")]
     UnsupportedFourcc(Fourcc),
-    #[error("failed to create the explicit-modifier Vulkan image: {0:?}")]
-    CreateImage(vk::ErrorCode),
-    #[error("the output image has no compatible Vulkan memory type")]
-    NoCompatibleMemoryType,
-    #[error("failed to allocate exportable dedicated image memory: {0:?}")]
-    AllocateMemory(vk::ErrorCode),
-    #[error("failed to bind output image memory: {0:?}")]
-    BindMemory(vk::ErrorCode),
-    #[error("failed to create the output image view: {0:?}")]
-    CreateView(vk::ErrorCode),
-    #[error("failed to query the created image modifier: {0:?}")]
-    QueryModifier(vk::ErrorCode),
-    #[error("Vulkan created modifier {actual:#x} instead of requested modifier {expected:#x}")]
-    ModifierMismatch { expected: u64, actual: u64 },
-    #[error("failed to export Vulkan image memory as a dma-buf fd: {0:?}")]
-    ExportMemoryFd(vk::ErrorCode),
-    #[error("dma-buf plane offset or stride exceeds the Linux u32 ABI")]
-    LayoutOverflow,
+    #[error("shared renderer failed to create an explicit-modifier output image: {0}")]
+    Create(String),
     #[error("native output reports unsupported plane count {0}")]
     InvalidPlaneCount(u32),
+    #[error("native output expected {expected} DRM planes, but the created image has {actual}")]
+    PlaneCountMismatch { expected: u32, actual: usize },
+    #[error("failed to duplicate the shared renderer dma-buf fd: {0}")]
+    DuplicateFd(String),
+    #[error("dma-buf plane offset or stride exceeds the Linux u32 ABI")]
+    LayoutOverflow,
 }
 
 #[cfg(test)]
@@ -618,41 +426,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn memory_type_prefers_device_local_and_falls_back_to_compatible() {
-        let mut properties = vk::PhysicalDeviceMemoryProperties {
-            memory_type_count: 3,
-            ..Default::default()
-        };
-        properties.memory_types[0].property_flags = vk::MemoryPropertyFlags::HOST_VISIBLE;
-        properties.memory_types[1].property_flags = vk::MemoryPropertyFlags::DEVICE_LOCAL;
-        properties.memory_types[2].property_flags = vk::MemoryPropertyFlags::empty();
-
-        assert_eq!(
-            select_memory_type(&properties, 0b111, vk::MemoryPropertyFlags::DEVICE_LOCAL),
-            Some(1)
-        );
-        assert_eq!(
-            select_memory_type(&properties, 0b100, vk::MemoryPropertyFlags::DEVICE_LOCAL),
-            Some(2)
-        );
-        assert_eq!(
-            select_memory_type(&properties, 0, vk::MemoryPropertyFlags::DEVICE_LOCAL),
-            None
-        );
+    fn native_slot_counts_remain_triple_buffered() {
+        assert_eq!(NativeOutputBuffer::COUNT, 3);
+        assert_eq!(NativeCursorBuffer::COUNT, 3);
     }
 
     #[test]
-    fn every_supported_dmabuf_plane_has_a_vulkan_memory_aspect() {
-        assert_eq!(
-            (0..MAX_DMABUF_PLANES)
-                .map(memory_plane_aspect)
-                .collect::<Vec<_>>(),
-            vec![
-                vk::ImageAspectFlags::MEMORY_PLANE_0_EXT,
-                vk::ImageAspectFlags::MEMORY_PLANE_1_EXT,
-                vk::ImageAspectFlags::MEMORY_PLANE_2_EXT,
-                vk::ImageAspectFlags::MEMORY_PLANE_3_EXT,
-            ]
-        );
+    fn completed_timeline_retires_only_old_native_targets() {
+        struct Target(u64);
+        impl RetainedNativeTarget for Target {
+            fn last_use_timeline(&self) -> u64 {
+                self.0
+            }
+        }
+        let mut targets = vec![Target(2), Target(4)];
+        retain_pending_targets(&mut targets, 2);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0, 4);
     }
 }

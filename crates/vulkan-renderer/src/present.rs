@@ -4,31 +4,46 @@ use std::sync::Arc;
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use vulkanalia::vk::{
-    self, HasBuilder, KhrSurfaceExtensionInstanceCommands,
-    KhrWaylandSurfaceExtensionInstanceCommands,
+    self, HasBuilder, KhrGetSurfaceCapabilities2ExtensionInstanceCommands,
+    KhrSurfaceExtensionInstanceCommands, KhrWaylandSurfaceExtensionInstanceCommands,
 };
 
 use crate::backend::InstanceOwner;
-use crate::{Error, Features, Instance, Result};
+use crate::{
+    CompositeAlphaModes, Error, Extent2D, Features, Instance, Result, SurfaceFormat,
+    SurfaceTransform, SurfaceTransforms, TextureUsages,
+};
 
+mod bootstrap;
 mod offscreen;
 mod swapchain;
+mod terminal;
 mod transaction;
 
+pub use bootstrap::{
+    PresentationAdapterRequest, PresentationBootstrap, PresentationBootstrapDescriptor,
+    PresentationImageCount, PresentationSurfaceConfigurationDescriptor,
+};
 pub use offscreen::{
     DirectSurfaceBlocker, FrameTargetPreference, OffscreenColorTarget, OffscreenColorTargets,
-    OffscreenColorTargetsDescriptor, OffscreenSampledBindings, PresentationPathDescriptor,
-    PresentationPathPlan, PresentationRequirements, PresentationTarget, SurfaceAcquireStrategy,
-    TerminalAlphaMode, TerminalCompositeDescriptor, TerminalSampling,
+    OffscreenColorTargetsDescriptor, OffscreenSampledBindings, OffscreenSamplerTopology,
+    PresentationPathDescriptor, PresentationPathPlan, PresentationRequirements, PresentationTarget,
+    SurfaceAcquireStrategy, TerminalAlphaMode, TerminalCompositeDescriptor, TerminalSampling,
 };
 pub use swapchain::{
     AcquiredSurfaceTexture, PresentStatus, SurfaceConfiguration, SurfaceConfigurationRequest,
     Swapchain, SwapchainDescriptor,
 };
+pub use terminal::{
+    FullscreenSampledSurfaceTerminal, FullscreenSampledSurfaceTerminalDescriptor,
+    FullscreenSampledSurfaceTerminalProgram,
+};
 pub use transaction::{
     PresentTransactionOutcome, PresentationTransaction, PresentationTransactionDescriptor,
     PresentationTransactionPhase, PresentationTransactionSchedule, PresentationTransactionStep,
 };
+#[cfg(feature = "ffmpeg-vulkan-decode")]
+pub use transaction::{PresentationDependencyScope, PresentationFrameDependencies};
 
 /// Vulkan presentation surface retaining the host window/display lease and
 /// instance lifetime.
@@ -119,16 +134,18 @@ pub struct SurfaceCapabilities {
     pub present_supported: bool,
     pub min_image_count: u32,
     pub max_image_count: Option<u32>,
-    pub current_extent: Option<vk::Extent2D>,
-    pub min_image_extent: vk::Extent2D,
-    pub max_image_extent: vk::Extent2D,
+    pub current_extent: Option<Extent2D>,
+    pub min_image_extent: Extent2D,
+    pub max_image_extent: Extent2D,
     pub max_image_array_layers: u32,
-    pub supported_transforms: vk::SurfaceTransformFlagsKHR,
-    pub current_transform: vk::SurfaceTransformFlagsKHR,
-    pub supported_composite_alpha: vk::CompositeAlphaFlagsKHR,
-    pub supported_usage: vk::ImageUsageFlags,
-    pub formats: Vec<vk::SurfaceFormatKHR>,
+    pub supported_transforms: SurfaceTransforms,
+    pub current_transform: SurfaceTransform,
+    pub supported_composite_alpha: CompositeAlphaModes,
+    pub supported_usage: TextureUsages,
+    pub formats: Vec<SurfaceFormat>,
     pub present_modes: SurfacePresentCapabilities,
+    pub present_id2_supported: bool,
+    pub present_wait2_supported: bool,
 }
 
 impl SurfaceCapabilities {
@@ -157,7 +174,7 @@ impl SurfaceCapabilities {
                 .get_physical_device_surface_capabilities_khr(physical_device, surface.raw())
         }
         .map_err(|source| Error::vulkan("vkGetPhysicalDeviceSurfaceCapabilitiesKHR", source))?;
-        let formats = unsafe {
+        let raw_formats = unsafe {
             owner
                 .instance
                 .get_physical_device_surface_formats_khr(physical_device, surface.raw())
@@ -169,20 +186,63 @@ impl SurfaceCapabilities {
                 .get_physical_device_surface_present_modes_khr(physical_device, surface.raw())
         }
         .map_err(|source| Error::vulkan("vkGetPhysicalDeviceSurfacePresentModesKHR", source))?;
+        let surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::builder()
+            .surface(surface.raw())
+            .build();
+        let mut present_id2 = vk::SurfaceCapabilitiesPresentId2KHR::default();
+        let mut present_wait2 = vk::SurfaceCapabilitiesPresentWait2KHR::default();
+        let mut capabilities2 = vk::SurfaceCapabilities2KHR::builder()
+            .push_next(&mut present_id2)
+            .push_next(&mut present_wait2)
+            .build();
+        unsafe {
+            owner
+                .instance
+                .get_physical_device_surface_capabilities2_khr(
+                    physical_device,
+                    &surface_info,
+                    &mut capabilities2,
+                )
+        }
+        .map_err(|source| Error::vulkan("vkGetPhysicalDeviceSurfaceCapabilities2KHR", source))?;
+        let formats = raw_formats
+            .into_iter()
+            .filter_map(SurfaceFormat::from_vk)
+            .collect::<Vec<_>>();
+        if formats.is_empty() {
+            return Err(Error::Validation(
+                "surface exposes no renderer-supported typed format/color-space pair".into(),
+            ));
+        }
+        let current_transform =
+            SurfaceTransform::from_vk(raw.current_transform).ok_or_else(|| {
+                Error::Validation("surface reports an unsupported current transform".into())
+            })?;
         Ok(Self {
             present_supported,
             min_image_count: raw.min_image_count,
             max_image_count: (raw.max_image_count != 0).then_some(raw.max_image_count),
-            current_extent: (raw.current_extent.width != u32::MAX).then_some(raw.current_extent),
-            min_image_extent: raw.min_image_extent,
-            max_image_extent: raw.max_image_extent,
+            current_extent: (raw.current_extent.width != u32::MAX).then_some(Extent2D::new(
+                raw.current_extent.width,
+                raw.current_extent.height,
+            )),
+            min_image_extent: Extent2D::new(
+                raw.min_image_extent.width,
+                raw.min_image_extent.height,
+            ),
+            max_image_extent: Extent2D::new(
+                raw.max_image_extent.width,
+                raw.max_image_extent.height,
+            ),
             max_image_array_layers: raw.max_image_array_layers,
-            supported_transforms: raw.supported_transforms,
-            current_transform: raw.current_transform,
-            supported_composite_alpha: raw.supported_composite_alpha,
-            supported_usage: raw.supported_usage_flags,
+            supported_transforms: SurfaceTransforms::from_vk(raw.supported_transforms),
+            current_transform,
+            supported_composite_alpha: CompositeAlphaModes::from_vk(raw.supported_composite_alpha),
+            supported_usage: TextureUsages::from_vk(raw.supported_usage_flags),
             formats,
             present_modes: SurfacePresentCapabilities::from_vk(&modes),
+            present_id2_supported: present_id2.present_id2_supported != 0,
+            present_wait2_supported: present_wait2.present_wait2_supported != 0,
         })
     }
 }

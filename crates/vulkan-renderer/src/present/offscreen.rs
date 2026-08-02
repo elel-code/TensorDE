@@ -10,9 +10,10 @@ use vulkanalia::vk;
 
 use crate::pipeline::{format_has_depth, format_has_stencil};
 use crate::{
-    Backend, DescriptorHeap, DescriptorHeapDescriptor, DescriptorHeapKind, Error, Image,
+    Backend, DescriptorHeap, DescriptorHeapDescriptor, DescriptorHeapKind, Error, Extent2D, Image,
     ImageDescriptor, ImageView, ImageViewDescriptor, MemoryAllocator, MemoryLocation, Result,
     SampledImageBinding, SampledTextureHeapIndices, SamplerBinding, SamplerDescriptor,
+    TextureFormat, TextureUsages,
 };
 
 /// Caller preference for the color target that precedes presentation.
@@ -61,10 +62,10 @@ pub struct TerminalCompositeDescriptor {
 /// Complete graph facts needed to decide whether swapchain aliasing is legal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PresentationRequirements {
-    pub surface_extent: vk::Extent2D,
-    pub target_extent: vk::Extent2D,
-    pub surface_format: vk::Format,
-    pub target_format: vk::Format,
+    pub surface_extent: Extent2D,
+    pub target_extent: Extent2D,
+    pub surface_format: TextureFormat,
+    pub target_format: TextureFormat,
     pub frame_slots: u32,
     pub physical_pass_count: u32,
     pub sampled_after_write: bool,
@@ -112,10 +113,10 @@ impl fmt::Display for DirectSurfaceBlocker {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PresentationPathPlan {
     pub target: PresentationTarget,
-    pub surface_extent: vk::Extent2D,
-    pub surface_format: vk::Format,
-    pub target_extent: vk::Extent2D,
-    pub target_format: vk::Format,
+    pub surface_extent: Extent2D,
+    pub surface_format: TextureFormat,
+    pub target_extent: Extent2D,
+    pub target_format: TextureFormat,
     pub frame_slots: u32,
     pub acquire: SurfaceAcquireStrategy,
     pub terminal: Option<TerminalCompositeDescriptor>,
@@ -172,20 +173,9 @@ impl PresentationPathPlan {
 }
 
 fn validate_requirements(requirements: PresentationRequirements) -> Result<()> {
-    if requirements.surface_extent.width == 0
-        || requirements.surface_extent.height == 0
-        || requirements.target_extent.width == 0
-        || requirements.target_extent.height == 0
-    {
+    if requirements.surface_extent.is_empty() || requirements.target_extent.is_empty() {
         return Err(Error::Validation(
             "presentation extents must be non-zero".into(),
-        ));
-    }
-    if requirements.surface_format == vk::Format::UNDEFINED
-        || requirements.target_format == vk::Format::UNDEFINED
-    {
-        return Err(Error::Validation(
-            "presentation formats must be defined".into(),
         ));
     }
     if requirements.frame_slots == 0 {
@@ -239,11 +229,11 @@ fn direct_surface_blockers(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OffscreenColorTargetsDescriptor {
     pub label: Option<String>,
-    pub extent: vk::Extent2D,
-    pub format: vk::Format,
+    pub extent: Extent2D,
+    pub format: TextureFormat,
     pub frame_slots: u32,
     /// Extra usage beyond the mandatory color-attachment and sampled roles.
-    pub additional_usage: vk::ImageUsageFlags,
+    pub additional_usage: TextureUsages,
 }
 
 impl OffscreenColorTargetsDescriptor {
@@ -258,20 +248,17 @@ impl OffscreenColorTargetsDescriptor {
             extent: plan.target_extent,
             format: plan.target_format,
             frame_slots: plan.frame_slots,
-            additional_usage: vk::ImageUsageFlags::empty(),
+            additional_usage: TextureUsages::empty(),
         })
     }
 
     fn validate(&self) -> Result<()> {
-        if self.extent.width == 0 || self.extent.height == 0 {
+        if self.extent.is_empty() {
             return Err(Error::Validation(
                 "offscreen color extent must be non-zero".into(),
             ));
         }
-        if self.format == vk::Format::UNDEFINED
-            || format_has_depth(self.format)
-            || format_has_stencil(self.format)
-        {
+        if format_has_depth(self.format.to_vk()) || format_has_stencil(self.format.to_vk()) {
             return Err(Error::Validation(
                 "offscreen presentation target requires a defined color format".into(),
             ));
@@ -316,19 +303,15 @@ impl MemoryAllocator {
                 .map(|label| format!("{label}-frame-{frame_slot}"));
             let image = self.create_image(&ImageDescriptor {
                 label: label.clone(),
-                image_type: vk::ImageType::_2D,
+                dimension: crate::ImageDimension::D2,
                 format: descriptor.format,
-                extent: vk::Extent3D {
-                    width: descriptor.extent.width,
-                    height: descriptor.extent.height,
-                    depth: 1,
-                },
+                extent: crate::Extent3D::new(descriptor.extent.width, descriptor.extent.height, 1),
                 mip_levels: 1,
                 array_layers: 1,
-                samples: vk::SampleCountFlags::_1,
-                tiling: vk::ImageTiling::OPTIMAL,
-                usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
-                    | vk::ImageUsageFlags::SAMPLED
+                samples: crate::SampleCount::One,
+                tiling: crate::ImageTiling::Optimal,
+                usage: crate::TextureUsages::COLOR_ATTACHMENT
+                    | crate::TextureUsages::SAMPLED
                     | descriptor.additional_usage,
                 memory: MemoryLocation::Device,
             })?;
@@ -378,19 +361,38 @@ impl OffscreenColorTargets {
         Ok(OffscreenColorTarget { image, view })
     }
 
+    /// Immutable views in stable frame-slot order. Consumers that need all
+    /// slots during cold graph setup can borrow these without taking ownership
+    /// of the renderer-allocated targets.
+    pub fn views(&self) -> &[ImageView] {
+        &self.views
+    }
+
     pub fn allocation_size(&self) -> u64 {
         self.images.iter().map(Image::allocation_size).sum()
     }
 }
 
-/// One immutable descriptor-heap set for all offscreen frame slots. Image
-/// descriptors vary per slot while every slot reuses the same sampler entry.
+/// Sampler descriptor ownership for immutable offscreen frame slots.
+///
+/// Sharing a sampler minimizes descriptor memory. Per-slot lanes preserve an
+/// existing command ABI when every frame slot has historically pushed its own
+/// sampler index. Neither topology changes the presentation-path choice.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OffscreenSamplerTopology {
+    #[default]
+    Shared,
+    PerFrameSlot,
+}
+
+/// One immutable descriptor-heap set for all offscreen frame slots.
 #[derive(Debug)]
 pub struct OffscreenSampledBindings {
+    topology: OffscreenSamplerTopology,
     resource_heap: DescriptorHeap,
     sampler_heap: DescriptorHeap,
     _image_bindings: Vec<SampledImageBinding>,
-    _sampler_binding: SamplerBinding,
+    _sampler_bindings: Vec<SamplerBinding>,
     indices: Vec<SampledTextureHeapIndices>,
 }
 
@@ -399,6 +401,19 @@ impl Backend {
         &self,
         targets: &OffscreenColorTargets,
         sampler: SamplerDescriptor,
+    ) -> Result<OffscreenSampledBindings> {
+        self.create_offscreen_sampled_bindings_with_topology(
+            targets,
+            sampler,
+            OffscreenSamplerTopology::Shared,
+        )
+    }
+
+    pub fn create_offscreen_sampled_bindings_with_topology(
+        &self,
+        targets: &OffscreenColorTargets,
+        sampler: SamplerDescriptor,
+        topology: OffscreenSamplerTopology,
     ) -> Result<OffscreenSampledBindings> {
         let limits = self.device_info().limits.descriptor_heap;
         let resource_stride = limits.unified_resource_descriptor_stride().ok_or_else(|| {
@@ -411,9 +426,13 @@ impl Backend {
                 "offscreen sampler descriptor limits do not satisfy the Slang heap ABI".into(),
             )
         })?;
+        let sampler_count = sampler_count(topology, targets.len())?;
         let resource_capacity = resource_stride
             .checked_mul(targets.len() as u64)
             .ok_or_else(|| Error::Validation("offscreen resource heap size overflows".into()))?;
+        let sampler_capacity = sampler_stride
+            .checked_mul(sampler_count as u64)
+            .ok_or_else(|| Error::Validation("offscreen sampler heap size overflows".into()))?;
         let resource_heap = self.create_descriptor_heap(&DescriptorHeapDescriptor {
             label: Some("offscreen-color-resource-heap".into()),
             kind: DescriptorHeapKind::Resource,
@@ -423,36 +442,48 @@ impl Backend {
         let sampler_heap = self.create_descriptor_heap(&DescriptorHeapDescriptor {
             label: Some("offscreen-color-sampler-heap".into()),
             kind: DescriptorHeapKind::Sampler,
-            descriptor_capacity: sampler_stride,
+            descriptor_capacity: sampler_capacity,
             embedded_samplers: false,
         })?;
-        let sampler_binding = SamplerBinding::new(&sampler_heap, sampler)?;
+        let mut sampler_bindings = Vec::with_capacity(sampler_count);
+        for _ in 0..sampler_count {
+            sampler_bindings.push(SamplerBinding::new(&sampler_heap, sampler)?);
+        }
         let mut image_bindings = Vec::with_capacity(targets.len());
         let mut indices = Vec::with_capacity(targets.len());
         for frame_slot in 0..targets.len() {
             let target = targets.target(frame_slot)?;
-            let image = SampledImageBinding::new(
+            let image = SampledImageBinding::new_typed(
                 &resource_heap,
                 target.view,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                crate::TextureLayout::ShaderReadOnly,
             )?;
+            let sampler_binding = match topology {
+                OffscreenSamplerTopology::Shared => &sampler_bindings[0],
+                OffscreenSamplerTopology::PerFrameSlot => &sampler_bindings[frame_slot],
+            };
             indices.push(SampledTextureHeapIndices::from_bindings(
                 &image,
-                &sampler_binding,
+                sampler_binding,
             )?);
             image_bindings.push(image);
         }
         Ok(OffscreenSampledBindings {
+            topology,
             resource_heap,
             sampler_heap,
             _image_bindings: image_bindings,
-            _sampler_binding: sampler_binding,
+            _sampler_bindings: sampler_bindings,
             indices,
         })
     }
 }
 
 impl OffscreenSampledBindings {
+    pub const fn topology(&self) -> OffscreenSamplerTopology {
+        self.topology
+    }
+
     pub const fn resource_heap(&self) -> &DescriptorHeap {
         &self.resource_heap
     }
@@ -470,6 +501,19 @@ impl OffscreenSampledBindings {
     }
 }
 
+fn sampler_count(topology: OffscreenSamplerTopology, target_count: usize) -> Result<usize> {
+    match topology {
+        OffscreenSamplerTopology::Shared => (target_count != 0).then_some(1).ok_or_else(|| {
+            Error::Validation("offscreen sampled bindings require at least one target".into())
+        }),
+        OffscreenSamplerTopology::PerFrameSlot => {
+            (target_count != 0).then_some(target_count).ok_or_else(|| {
+                Error::Validation("offscreen sampled bindings require at least one target".into())
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::DescriptorHeapLimits;
@@ -478,16 +522,10 @@ mod tests {
 
     fn requirements() -> PresentationRequirements {
         PresentationRequirements {
-            surface_extent: vk::Extent2D {
-                width: 3840,
-                height: 2160,
-            },
-            target_extent: vk::Extent2D {
-                width: 3840,
-                height: 2160,
-            },
-            surface_format: vk::Format::B8G8R8A8_UNORM,
-            target_format: vk::Format::B8G8R8A8_UNORM,
+            surface_extent: Extent2D::new(3840, 2160),
+            target_extent: Extent2D::new(3840, 2160),
+            surface_format: TextureFormat::Bgra8Unorm,
+            target_format: TextureFormat::Bgra8Unorm,
             frame_slots: 2,
             physical_pass_count: 1,
             sampled_after_write: false,
@@ -607,5 +645,18 @@ mod tests {
         };
         assert_eq!(limits.unified_resource_descriptor_stride(), Some(32));
         assert_eq!(limits.sampler_descriptor_stride(), Some(16));
+    }
+
+    #[test]
+    fn sampler_topology_keeps_shared_and_per_slot_descriptor_counts_explicit() {
+        assert_eq!(
+            sampler_count(OffscreenSamplerTopology::Shared, 3).unwrap(),
+            1
+        );
+        assert_eq!(
+            sampler_count(OffscreenSamplerTopology::PerFrameSlot, 3).unwrap(),
+            3
+        );
+        assert!(sampler_count(OffscreenSamplerTopology::Shared, 0).is_err());
     }
 }

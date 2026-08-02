@@ -11,6 +11,10 @@ readme = "README.md"
 keywords = ["vulkan", "graphics", "gpu", "renderer"]
 categories = ["graphics", "rendering::engine"]
 
+[features]
+default = []
+ffmpeg-vulkan-decode = []
+
 [dependencies]
 raw-window-handle = "0.6"
 vulkanalia = { version = "0.35", features = ["libloading"] }

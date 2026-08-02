@@ -8,195 +8,23 @@
 
 use std::sync::Arc;
 
-use vulkanalia::vk::{self, HasBuilder};
+use vulkanalia::vk;
 
 use super::{
     DescriptorAllocation, DescriptorHeap, DescriptorHeapError, DescriptorHeapKind,
-    HeapDescriptorType,
+    DescriptorHeapUploadRange, HeapDescriptorType,
 };
 use crate::{
     ConstantOffsetMapping, Error, ExportedDmaBufImage, FrameToken, ImageView, ImportedDmaBufImage,
     PushIndexMapping, Result, ShaderBindingMap, ShaderBindingMapping, ShaderBindingSource,
 };
 
-/// Filtering mode for a descriptor-heap sampler.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SamplerFilterMode {
-    Nearest,
-    Linear,
-}
+mod sampler;
 
-impl SamplerFilterMode {
-    const fn as_vk(self) -> vk::Filter {
-        match self {
-            Self::Nearest => vk::Filter::NEAREST,
-            Self::Linear => vk::Filter::LINEAR,
-        }
-    }
-
-    const fn as_mipmap_vk(self) -> vk::SamplerMipmapMode {
-        match self {
-            Self::Nearest => vk::SamplerMipmapMode::NEAREST,
-            Self::Linear => vk::SamplerMipmapMode::LINEAR,
-        }
-    }
-}
-
-/// Addressing mode for one descriptor-heap sampler axis.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SamplerAddressMode {
-    ClampToEdge,
-    Repeat,
-    MirrorRepeat,
-    ClampToBorder,
-}
-
-impl SamplerAddressMode {
-    const fn as_vk(self) -> vk::SamplerAddressMode {
-        match self {
-            Self::ClampToEdge => vk::SamplerAddressMode::CLAMP_TO_EDGE,
-            Self::Repeat => vk::SamplerAddressMode::REPEAT,
-            Self::MirrorRepeat => vk::SamplerAddressMode::MIRRORED_REPEAT,
-            Self::ClampToBorder => vk::SamplerAddressMode::CLAMP_TO_BORDER,
-        }
-    }
-}
-
-/// Border color used when a sampler axis is [`SamplerAddressMode::ClampToBorder`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SamplerBorderColor {
-    TransparentBlack,
-    OpaqueBlack,
-    OpaqueWhite,
-}
-
-impl SamplerBorderColor {
-    const fn as_vk(self) -> vk::BorderColor {
-        match self {
-            Self::TransparentBlack => vk::BorderColor::FLOAT_TRANSPARENT_BLACK,
-            Self::OpaqueBlack => vk::BorderColor::FLOAT_OPAQUE_BLACK,
-            Self::OpaqueWhite => vk::BorderColor::FLOAT_OPAQUE_WHITE,
-        }
-    }
-}
-
-/// Comparison operation for a depth-comparison sampler.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SamplerCompareFunction {
-    Never,
-    Less,
-    Equal,
-    LessEqual,
-    Greater,
-    NotEqual,
-    GreaterEqual,
-    Always,
-}
-
-impl SamplerCompareFunction {
-    const fn as_vk(self) -> vk::CompareOp {
-        match self {
-            Self::Never => vk::CompareOp::NEVER,
-            Self::Less => vk::CompareOp::LESS,
-            Self::Equal => vk::CompareOp::EQUAL,
-            Self::LessEqual => vk::CompareOp::LESS_OR_EQUAL,
-            Self::Greater => vk::CompareOp::GREATER,
-            Self::NotEqual => vk::CompareOp::NOT_EQUAL,
-            Self::GreaterEqual => vk::CompareOp::GREATER_OR_EQUAL,
-            Self::Always => vk::CompareOp::ALWAYS,
-        }
-    }
-}
-
-/// Safe standard sampler description for descriptor-heap textures.
-///
-/// The standard path uses normalized coordinates and does not implicitly
-/// enable anisotropic filtering. Advanced Vulkan sampler chains remain
-/// available through [`SampledTextureBinding::new_raw`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SamplerDescriptor {
-    pub mag_filter: SamplerFilterMode,
-    pub min_filter: SamplerFilterMode,
-    pub mipmap_filter: SamplerFilterMode,
-    pub address_mode_u: SamplerAddressMode,
-    pub address_mode_v: SamplerAddressMode,
-    pub address_mode_w: SamplerAddressMode,
-    pub mip_lod_bias: f32,
-    pub lod_min_clamp: f32,
-    pub lod_max_clamp: f32,
-    pub compare: Option<SamplerCompareFunction>,
-    pub border_color: SamplerBorderColor,
-}
-
-impl Default for SamplerDescriptor {
-    fn default() -> Self {
-        Self {
-            mag_filter: SamplerFilterMode::Linear,
-            min_filter: SamplerFilterMode::Linear,
-            mipmap_filter: SamplerFilterMode::Linear,
-            address_mode_u: SamplerAddressMode::ClampToEdge,
-            address_mode_v: SamplerAddressMode::ClampToEdge,
-            address_mode_w: SamplerAddressMode::ClampToEdge,
-            mip_lod_bias: 0.0,
-            lod_min_clamp: 0.0,
-            lod_max_clamp: f32::MAX,
-            compare: None,
-            border_color: SamplerBorderColor::TransparentBlack,
-        }
-    }
-}
-
-impl SamplerDescriptor {
-    pub const fn linear_clamp() -> Self {
-        Self {
-            mag_filter: SamplerFilterMode::Linear,
-            min_filter: SamplerFilterMode::Linear,
-            mipmap_filter: SamplerFilterMode::Linear,
-            address_mode_u: SamplerAddressMode::ClampToEdge,
-            address_mode_v: SamplerAddressMode::ClampToEdge,
-            address_mode_w: SamplerAddressMode::ClampToEdge,
-            mip_lod_bias: 0.0,
-            lod_min_clamp: 0.0,
-            lod_max_clamp: f32::MAX,
-            compare: None,
-            border_color: SamplerBorderColor::TransparentBlack,
-        }
-    }
-
-    fn to_vk(self) -> Result<vk::SamplerCreateInfo> {
-        if !self.mip_lod_bias.is_finite()
-            || !self.lod_min_clamp.is_finite()
-            || self.lod_min_clamp < 0.0
-            || !self.lod_max_clamp.is_finite()
-            || self.lod_max_clamp < self.lod_min_clamp
-        {
-            return Err(Error::Validation(
-                "sampler LOD bias and clamp range must be finite, ordered values".into(),
-            ));
-        }
-        let compare_enable = self.compare.is_some();
-        let compare_op = self
-            .compare
-            .map_or(vk::CompareOp::ALWAYS, SamplerCompareFunction::as_vk);
-        Ok(vk::SamplerCreateInfo::builder()
-            .mag_filter(self.mag_filter.as_vk())
-            .min_filter(self.min_filter.as_vk())
-            .mipmap_mode(self.mipmap_filter.as_mipmap_vk())
-            .address_mode_u(self.address_mode_u.as_vk())
-            .address_mode_v(self.address_mode_v.as_vk())
-            .address_mode_w(self.address_mode_w.as_vk())
-            .mip_lod_bias(self.mip_lod_bias)
-            .anisotropy_enable(false)
-            .max_anisotropy(1.0)
-            .compare_enable(compare_enable)
-            .compare_op(compare_op)
-            .min_lod(self.lod_min_clamp)
-            .max_lod(self.lod_max_clamp)
-            .border_color(self.border_color.as_vk())
-            .unnormalized_coordinates(false)
-            .build())
-    }
-}
+pub use sampler::{
+    SamplerAddressMode, SamplerBorderColor, SamplerCompareFunction, SamplerDescriptor,
+    SamplerFilterMode,
+};
 
 /// SPIR-V descriptor locations for one separately sampled texture.
 ///
@@ -340,6 +168,15 @@ pub struct SampledImageBinding {
 }
 
 impl SampledImageBinding {
+    /// Backend-neutral sampled-image descriptor entry point.
+    pub fn new_typed(
+        resource_heap: &DescriptorHeap,
+        view: &ImageView,
+        layout: crate::TextureLayout,
+    ) -> Result<Self> {
+        Self::new(resource_heap, view, layout.to_vk())
+    }
+
     /// Allocates and writes one `SAMPLED_IMAGE` descriptor.
     ///
     /// `layout` must match the image state at shader access time. The view and
@@ -410,6 +247,12 @@ impl SampledImageBinding {
         self.image.offset()
     }
 
+    /// Byte range that must be uploaded before a device-local resource heap
+    /// is used by shaders.
+    pub const fn upload_range(&self) -> DescriptorHeapUploadRange {
+        self.image.upload_range()
+    }
+
     /// Checked 32-bit descriptor byte offset for a push-index mapping.
     pub fn push_index_heap_offset(&self) -> Result<u32> {
         u32::try_from(self.offset())
@@ -465,6 +308,7 @@ pub struct SamplerBinding {
 impl SamplerBinding {
     /// Allocates and writes one validated sampler descriptor.
     pub fn new(sampler_heap: &DescriptorHeap, sampler: SamplerDescriptor) -> Result<Self> {
+        sampler.validate_device(&sampler_heap.owner)?;
         let sampler_info = sampler.to_vk()?;
         // SAFETY: `SamplerDescriptor` produces a validated, self-contained
         // VkSamplerCreateInfo with no borrowed pNext chain.
@@ -501,6 +345,12 @@ impl SamplerBinding {
     /// Byte offset of this descriptor in its sampler heap.
     pub const fn offset(&self) -> u64 {
         self.sampler.offset()
+    }
+
+    /// Byte range that must be uploaded before a device-local sampler heap
+    /// is used by shaders.
+    pub const fn upload_range(&self) -> DescriptorHeapUploadRange {
+        self.sampler.upload_range()
     }
 
     /// Checked 32-bit descriptor byte offset for a push-index mapping.
@@ -553,6 +403,17 @@ pub struct SampledTextureBinding {
 }
 
 impl SampledTextureBinding {
+    /// Typed layout variant for renderer-owned image views.
+    pub fn new_typed(
+        resource_heap: &DescriptorHeap,
+        sampler_heap: &DescriptorHeap,
+        view: &ImageView,
+        layout: crate::TextureLayout,
+        sampler: SamplerDescriptor,
+    ) -> Result<Self> {
+        Self::new(resource_heap, sampler_heap, view, layout.to_vk(), sampler)
+    }
+
     /// Allocates and writes descriptors for one renderer-owned image view and
     /// one sampler.
     ///
@@ -629,6 +490,18 @@ impl SampledTextureBinding {
     /// access; see [`SampledImageBinding::shader_heap_index`].
     pub fn shader_heap_indices(&self) -> Result<SampledTextureHeapIndices> {
         SampledTextureHeapIndices::from_bindings(&self.image, &self.sampler)
+    }
+
+    pub(crate) fn belongs_to_heaps(
+        &self,
+        resource_heap: &DescriptorHeap,
+        sampler_heap: &DescriptorHeap,
+    ) -> bool {
+        resource_heap.kind() == DescriptorHeapKind::Resource
+            && sampler_heap.kind() == DescriptorHeapKind::Sampler
+            && resource_heap.owns(&self.image.image)
+            && sampler_heap.owns(&self.sampler.sampler)
+            && Arc::ptr_eq(&resource_heap.owner, &sampler_heap.owner)
     }
 
     /// Produces the descriptor-heap SPIR-V mapping for this binding.

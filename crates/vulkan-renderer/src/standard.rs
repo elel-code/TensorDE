@@ -11,13 +11,14 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use vulkanalia::vk::{self, KhrSurfaceExtensionInstanceCommands};
 
 use crate::backend::{
-    Backend, BackendConfig, Candidate, DeviceInfo, DevicePreference, InstanceOwner, Queue,
-    append_feature_extensions, create_instance, extension_union, load_entry, probe_devices,
-    select_device,
+    Backend, BackendConfig, Candidate, DeviceInfo, DevicePreference, InstanceOwner, PciAddress,
+    Queue, append_feature_extensions, append_video_decode_extensions, create_instance,
+    extension_union, load_entry, probe_devices, select_device,
+    validate_no_untyped_video_extensions,
 };
 use crate::{
     BackendProfile, Error, Features, Limits, MemoryTypeSelector, Result, Surface,
-    SurfaceCapabilities, SurfacePresentCapabilities,
+    SurfaceCapabilities, SurfacePresentCapabilities, VideoDecodeRequirements,
 };
 
 /// Describes loader/instance creation and the capability profile shared by all
@@ -68,6 +69,15 @@ impl InstanceDescriptor {
 /// validation.
 pub type PowerPreference = DevicePreference;
 
+/// Exact adapter identity constraint applied before capability selection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AdapterSelector {
+    Ordinal(usize),
+    NameContains(String),
+    DeviceUuid([u8; 16]),
+    Pci(PciAddress),
+}
+
 /// Adapter-selection constraints, corresponding to WebGPU's
 /// `RequestAdapterOptions`.
 #[derive(Clone, Copy, Debug)]
@@ -79,6 +89,8 @@ pub struct RequestAdapterOptions<'a> {
     pub force_fallback_adapter: bool,
     /// Optional surface that the selected graphics queue MUST present to.
     pub compatible_surface: Option<&'a Surface>,
+    /// Optional exact product policy. Zero or multiple matches are errors.
+    pub selector: Option<&'a AdapterSelector>,
 }
 
 impl Default for RequestAdapterOptions<'_> {
@@ -87,6 +99,7 @@ impl Default for RequestAdapterOptions<'_> {
             power_preference: PowerPreference::Discrete,
             force_fallback_adapter: false,
             compatible_surface: None,
+            selector: None,
         }
     }
 }
@@ -102,6 +115,9 @@ pub struct DeviceDescriptor {
     pub required_limits: Limits,
     /// Additional Vulkan extensions owned by higher-level feature modules.
     pub required_extensions: Vec<String>,
+    /// Exact Vulkan Video decode profiles. Codec extension names are derived
+    /// internally and must not be supplied through `required_extensions`.
+    pub video_decode: Option<VideoDecodeRequirements>,
 }
 
 impl Default for DeviceDescriptor {
@@ -111,6 +127,7 @@ impl Default for DeviceDescriptor {
             required_features: Features::STANDARD_DEFAULTS,
             required_limits: Limits::downlevel_defaults(),
             required_extensions: Vec::new(),
+            video_decode: None,
         }
     }
 }
@@ -181,6 +198,9 @@ impl Instance {
         if candidates.is_empty() {
             return Err(Error::NoPhysicalDevice);
         }
+        if let Some(selector) = options.selector {
+            candidates = select_candidates(candidates, selector)?;
+        }
         if let Some(surface) = options.compatible_surface {
             if !surface.belongs_to(&self.owner) {
                 return Err(Error::Validation(
@@ -242,6 +262,7 @@ impl Instance {
             &extensions,
             required_features,
             Limits::downlevel_defaults(),
+            None,
         );
         Ok(Adapter {
             descriptor: self.descriptor.clone(),
@@ -249,6 +270,85 @@ impl Instance {
             candidate: candidate.ok_or(Error::NoCompatibleDevice(rejections))?,
         })
     }
+}
+
+fn select_candidates(
+    candidates: Vec<Candidate>,
+    selector: &AdapterSelector,
+) -> Result<Vec<Candidate>> {
+    let available = candidates
+        .iter()
+        .map(|candidate| {
+            format!(
+                "index:{} name={:?} uuid={} pci={}",
+                candidate.info.ordinal,
+                candidate.info.name,
+                hex_uuid(candidate.info.device_uuid),
+                candidate
+                    .info
+                    .pci_address
+                    .map(pci_label)
+                    .unwrap_or_else(|| "unavailable".into()),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let matches = candidates
+        .into_iter()
+        .filter(|candidate| selector_matches(selector, &candidate.info))
+        .collect::<Vec<_>>();
+    match matches.len() {
+        1 => Ok(matches),
+        0 => Err(Error::Validation(format!(
+            "adapter selector {selector:?} matches no physical device; available: {available}"
+        ))),
+        _ => Err(Error::Validation(format!(
+            "adapter selector {selector:?} is ambiguous; matches: {}",
+            matches
+                .iter()
+                .map(|candidate| candidate.info.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+fn selector_matches(selector: &AdapterSelector, info: &DeviceInfo) -> bool {
+    adapter_identity_matches(
+        selector,
+        info.ordinal,
+        &info.name,
+        info.device_uuid,
+        info.pci_address,
+    )
+}
+
+fn adapter_identity_matches(
+    selector: &AdapterSelector,
+    ordinal: usize,
+    name: &str,
+    device_uuid: [u8; 16],
+    pci_address: Option<PciAddress>,
+) -> bool {
+    match selector {
+        AdapterSelector::Ordinal(expected) => ordinal == *expected,
+        AdapterSelector::NameContains(expected) => name
+            .to_ascii_lowercase()
+            .contains(&expected.to_ascii_lowercase()),
+        AdapterSelector::DeviceUuid(expected) => device_uuid == *expected,
+        AdapterSelector::Pci(expected) => pci_address == Some(*expected),
+    }
+}
+
+fn hex_uuid(uuid: [u8; 16]) -> String {
+    uuid.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn pci_label(address: PciAddress) -> String {
+    format!(
+        "{:04x}:{:02x}:{:02x}.{:x}",
+        address.domain, address.bus, address.device, address.function
+    )
 }
 
 /// Physical-device capability snapshot. It owns no logical device state.
@@ -330,6 +430,7 @@ impl Adapter {
     /// Validates the full descriptor and returns independently owned device and
     /// queue handles. No feature is silently downgraded.
     pub fn request_device(&self, descriptor: DeviceDescriptor) -> Result<(Device, Queue)> {
+        validate_no_untyped_video_extensions(&descriptor.required_extensions)?;
         let mut required_features = descriptor.required_features;
         if self.descriptor.profile == BackendProfile::Roadmap2026 {
             required_features |= Features::FIFO_LATEST_READY;
@@ -337,6 +438,7 @@ impl Adapter {
         required_features = required_features.with_dependencies();
         let mut feature_extensions = descriptor.required_extensions.clone();
         append_feature_extensions(required_features, &mut feature_extensions);
+        append_video_decode_extensions(descriptor.video_decode, &mut feature_extensions);
         let extensions = extension_union(
             self.descriptor.profile.required_device_extensions(),
             &feature_extensions,
@@ -348,6 +450,7 @@ impl Adapter {
             &extensions,
             required_features,
             descriptor.required_limits,
+            descriptor.video_decode,
         );
         let candidate = candidate.ok_or(Error::NoCompatibleDevice(rejections))?;
         let config = BackendConfig {
@@ -358,6 +461,7 @@ impl Adapter {
             extra_device_extensions: descriptor.required_extensions,
             required_features,
             required_limits: descriptor.required_limits,
+            video_decode: descriptor.video_decode,
         };
         let device =
             Backend::from_selected(config, Arc::clone(&self.owner), candidate, &extensions)?;
@@ -440,5 +544,59 @@ mod tests {
                 .required_features
                 .contains(Features::BUFFER_DEVICE_ADDRESS)
         );
+    }
+
+    #[test]
+    fn video_extensions_cannot_bypass_typed_device_requirements() {
+        assert!(
+            validate_no_untyped_video_extensions(&["VK_KHR_video_decode_h265".into()]).is_err()
+        );
+        let requirements = VideoDecodeRequirements::new(
+            crate::VideoDecodeCodecs::H265_MAIN_10 | crate::VideoDecodeCodecs::AV1_MAIN_8,
+        )
+        .unwrap();
+        let mut extensions = Vec::new();
+        append_video_decode_extensions(Some(requirements), &mut extensions);
+        assert_eq!(
+            extensions,
+            vec![
+                "VK_KHR_video_queue",
+                "VK_KHR_video_decode_queue",
+                "VK_KHR_video_decode_h265",
+                "VK_KHR_video_decode_av1",
+            ]
+        );
+    }
+
+    #[test]
+    fn adapter_selectors_match_stable_identity_without_raw_handles() {
+        let uuid = [7; 16];
+        let pci = PciAddress {
+            domain: 0,
+            bus: 1,
+            device: 2,
+            function: 3,
+        };
+        for selector in [
+            AdapterSelector::Ordinal(4),
+            AdapterSelector::NameContains("RADV".into()),
+            AdapterSelector::DeviceUuid(uuid),
+            AdapterSelector::Pci(pci),
+        ] {
+            assert!(adapter_identity_matches(
+                &selector,
+                4,
+                "AMD RADV renderer",
+                uuid,
+                Some(pci),
+            ));
+        }
+        assert!(!adapter_identity_matches(
+            &AdapterSelector::NameContains("NVIDIA".into()),
+            4,
+            "AMD RADV renderer",
+            uuid,
+            Some(pci),
+        ));
     }
 }

@@ -6,7 +6,7 @@ use std::{
 };
 
 use thiserror::Error;
-use vulkan_renderer::vulkanalia::{Version, vk};
+use vulkan_renderer::{ROADMAP_2026_API_VERSION, Version, vulkanalia::vk};
 
 use super::NativeInteropCapabilities;
 
@@ -282,7 +282,7 @@ impl DeviceSelector {
             candidate.descriptor_heap_supported
                 && candidate.buffer_device_address_supported
                 && candidate.timeline_semaphore_supported
-                && candidate.api_version >= Version::V1_4_0
+                && candidate.api_version >= ROADMAP_2026_API_VERSION
         }) {
             return Err(DeviceSelectionError::VulkanTooOld);
         }
@@ -291,7 +291,7 @@ impl DeviceSelector {
                 && candidate.buffer_device_address_supported
                 && candidate.timeline_semaphore_supported
                 && candidate.descriptor_heap.is_usable()
-                && candidate.api_version >= Version::V1_4_0
+                && candidate.api_version >= ROADMAP_2026_API_VERSION
                 && candidate.dynamic_rendering_supported
         }) {
             return Err(DeviceSelectionError::MissingDynamicRendering);
@@ -423,7 +423,7 @@ fn descriptor_heap_core(candidate: &DeviceCandidate) -> bool {
         && candidate.dynamic_rendering_supported
         && candidate.maintenance5_supported
         && candidate.descriptor_heap.is_usable()
-        && candidate.api_version >= Version::V1_4_0
+        && candidate.api_version >= ROADMAP_2026_API_VERSION
 }
 
 fn native_base(candidate: &DeviceCandidate) -> bool {
@@ -445,7 +445,7 @@ pub enum DeviceSelectionError {
     MissingBufferDeviceAddress,
     #[error("no descriptor-heap Vulkan device exposes usable resource-heap limits")]
     InvalidDescriptorHeapProperties,
-    #[error("no descriptor-heap Vulkan device supports Vulkan 1.4")]
+    #[error("no descriptor-heap Vulkan device supports VP_KHR_roadmap_2026 revision 11")]
     VulkanTooOld,
     #[error("no Vulkan 1.4 descriptor-heap device supports maintenance5")]
     MissingMaintenance5,

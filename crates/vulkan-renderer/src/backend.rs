@@ -5,25 +5,32 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use vulkanalia::{
-    Device, Entry, Instance, Version,
+    Device, Entry, Version,
     loader::{LIBRARY, LibloadingLoader},
     prelude::v1_4::*,
     vk,
 };
 
 use crate::capabilities::{
-    BackendProfile, CoreFeatures, Features, Limits, PipelineBinaryProperties,
+    BackendProfile, CoreFeatures, DeviceProperties, Features, Limits, PipelineBinaryProperties,
 };
 use crate::command::{CommandEncoder, CommandEncoderDescriptor};
 use crate::frame::FrameToken;
 use crate::memory::MemoryTypeInfo;
 use crate::queue::{QueueFamilyInfo, QueuePlan};
+use crate::video::{VideoDecodeCodecs, VideoDecodeDevice, VideoDecodeRequirements};
 use crate::{Error, Result};
 
+mod device;
+mod owner;
 mod probe;
 mod retirement;
 mod submission;
 
+use device::create_device;
+#[cfg(feature = "ffmpeg-vulkan-decode")]
+use device::enabled_device_extensions;
+pub(crate) use owner::{DeviceOwner, InstanceOwner};
 pub(crate) use probe::probe_devices;
 use retirement::SubmissionRetirement;
 use submission::submit_to_graphics_queue;
@@ -34,6 +41,15 @@ pub enum DevicePreference {
     Discrete,
     Integrated,
     Any,
+}
+
+/// Stable PCI identity reported by `VK_EXT_pci_bus_info` when available.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PciAddress {
+    pub domain: u32,
+    pub bus: u32,
+    pub device: u32,
+    pub function: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,6 +63,8 @@ pub struct BackendConfig {
     pub extra_device_extensions: Vec<String>,
     pub required_features: Features,
     pub required_limits: Limits,
+    /// Optional exact Vulkan Video profiles owned by this logical device.
+    pub video_decode: Option<VideoDecodeRequirements>,
 }
 
 impl Default for BackendConfig {
@@ -59,6 +77,7 @@ impl Default for BackendConfig {
             extra_device_extensions: Vec::new(),
             required_features: Features::STANDARD_DEFAULTS,
             required_limits: Limits::downlevel_defaults(),
+            video_decode: None,
         }
     }
 }
@@ -74,14 +93,17 @@ pub struct DeviceInfo {
     pub driver_version: u32,
     pub device_uuid: [u8; vk::UUID_SIZE],
     pub driver_uuid: [u8; vk::UUID_SIZE],
+    pub pci_address: Option<PciAddress>,
     pub features: CoreFeatures,
     pub supported_features: Features,
+    pub properties: DeviceProperties,
     pub pipeline_binary_properties: PipelineBinaryProperties,
     pub limits: Limits,
     pub memory_types: Vec<MemoryTypeInfo>,
     pub non_coherent_atom_size: u64,
     pub queues: QueuePlan,
     pub queue_families: Vec<QueueFamilyInfo>,
+    pub supported_video_decode_profiles: VideoDecodeCodecs,
     pub extensions: BTreeSet<String>,
     pub roadmap_2026_ready: bool,
     pub roadmap_2026_failures: Vec<String>,
@@ -89,9 +111,61 @@ pub struct DeviceInfo {
 
 #[derive(Clone, Copy, Debug)]
 pub struct DeviceQueues {
+    pub graphics_family: u32,
     pub graphics: vk::Queue,
     pub compute: vk::Queue,
     pub transfer: vk::Queue,
+    _video_decode: Option<vk::Queue>,
+}
+
+/// Borrowed native command context for a product capability that has not yet
+/// grown a typed encoder in `vulkan-renderer`.
+///
+/// The renderer still owns the loader, instance, logical device, queues,
+/// command-pool lifetime, and capability gate. This context intentionally
+/// exposes no ownership or destruction APIs: callers may record a genuinely
+/// product-specific Vulkan command stream, but cannot create a second device
+/// owner or bypass the renderer's selected-adapter contract.
+#[derive(Clone, Copy)]
+pub struct NativeDevice<'a> {
+    owner: &'a DeviceOwner,
+}
+
+impl fmt::Debug for NativeDevice<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeDevice")
+            .field("physical_device", &self.owner.physical_device)
+            .field("queues", &self.owner.queues)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> NativeDevice<'a> {
+    /// Native logical-device dispatch table owned by this renderer instance.
+    pub fn device(self) -> &'a Device {
+        &self.owner.device
+    }
+
+    /// Native Vulkan instance associated with this logical device.
+    pub fn instance(self) -> &'a vulkanalia::Instance {
+        &self.owner.instance.instance
+    }
+
+    /// Physical device selected and validated by the shared renderer.
+    pub const fn physical_device(self) -> vk::PhysicalDevice {
+        self.owner.physical_device
+    }
+
+    /// Queue endpoints created by the shared renderer for this device.
+    pub const fn queues(self) -> DeviceQueues {
+        self.owner.queues
+    }
+
+    /// Graphics queue family selected by the shared renderer.
+    pub const fn graphics_queue_family(self) -> u32 {
+        self.owner.queues.graphics_family
+    }
 }
 
 /// Cloneable submission endpoint. Like `wgpu::Queue`, this keeps the logical
@@ -136,6 +210,7 @@ impl fmt::Debug for Backend {
 
 impl Backend {
     pub fn new(mut config: BackendConfig) -> Result<Self> {
+        validate_no_untyped_video_extensions(&config.extra_device_extensions)?;
         if config.profile == BackendProfile::Roadmap2026 {
             config.required_features |= Features::FIFO_LATEST_READY;
         }
@@ -163,6 +238,7 @@ impl Backend {
         }
         let mut feature_extensions = config.extra_device_extensions.clone();
         append_feature_extensions(config.required_features, &mut feature_extensions);
+        append_video_decode_extensions(config.video_decode, &mut feature_extensions);
         let required_device_extensions = extension_union(
             config.profile.required_device_extensions(),
             &feature_extensions,
@@ -174,6 +250,7 @@ impl Backend {
             &required_device_extensions,
             config.required_features,
             config.required_limits,
+            config.video_decode,
         );
         let candidate = candidate.ok_or(Error::NoCompatibleDevice(rejections))?;
         Self::from_selected(config, instance, candidate, &required_device_extensions)
@@ -191,10 +268,22 @@ impl Backend {
             required_device_extensions,
             config.required_features,
         )?;
+        #[cfg(feature = "ffmpeg-vulkan-decode")]
+        let enabled_device_extensions = enabled_device_extensions(
+            &candidate,
+            required_device_extensions,
+            config.required_features,
+        );
         let queues = DeviceQueues {
+            graphics_family: candidate.info.queues.graphics,
             graphics: unsafe { device.get_device_queue(candidate.info.queues.graphics, 0) },
             compute: unsafe { device.get_device_queue(candidate.info.queues.compute, 0) },
             transfer: unsafe { device.get_device_queue(candidate.info.queues.transfer, 0) },
+            _video_decode: candidate
+                .info
+                .queues
+                .video_decode
+                .map(|family| unsafe { device.get_device_queue(family, 0) }),
         };
         let command_pool_info = vk::CommandPoolCreateInfo::builder()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
@@ -227,6 +316,13 @@ impl Backend {
             instance,
             physical_device: candidate.handle,
             queues,
+            #[cfg(feature = "ffmpeg-vulkan-decode")]
+            graphics_queue_family: candidate.info.queues.graphics,
+            enabled_features: config.required_features,
+            properties: candidate.info.properties,
+            limits: candidate.info.limits,
+            #[cfg(feature = "ffmpeg-vulkan-decode")]
+            enabled_device_extensions,
             max_push_data_size,
             command_pool,
             timeline,
@@ -234,6 +330,7 @@ impl Backend {
             completed_timeline: AtomicU64::new(0),
             submit_lock: Mutex::new(()),
             command_pool_lock: Mutex::new(()),
+            retained_command_buffers: Mutex::new(Vec::new()),
             pending_command_buffers: Mutex::new(Vec::new()),
         });
         let submission_retirement = Arc::new(SubmissionRetirement::new(Arc::clone(&owner)));
@@ -265,12 +362,8 @@ impl Backend {
         self.config.required_limits
     }
 
-    pub fn device(&self) -> &Device {
+    pub(crate) fn device(&self) -> &Device {
         &self.owner.device
-    }
-
-    pub fn instance(&self) -> &Instance {
-        &self.owner.instance.instance
     }
 
     pub fn queues(&self) -> DeviceQueues {
@@ -282,6 +375,31 @@ impl Backend {
             owner: Arc::clone(&self.owner),
             submission_retirement: Arc::clone(&self.submission_retirement),
         }
+    }
+
+    /// Borrows the renderer-owned native command context for an advanced
+    /// product stream. Prefer typed renderer encoders whenever they cover the
+    /// operation; this boundary exists for real product-specific passes while
+    /// their reusable primitive is being upstreamed.
+    pub fn native_device(&self) -> NativeDevice<'_> {
+        NativeDevice { owner: &self.owner }
+    }
+
+    /// Returns the opaque Vulkan Video endpoint requested with this device.
+    pub fn video_decode_device(&self) -> Option<VideoDecodeDevice> {
+        let family_index = self.info.queues.video_decode?;
+        let family = self
+            .info
+            .queue_families
+            .iter()
+            .find(|family| family.index == family_index)?;
+        Some(VideoDecodeDevice::new(
+            Arc::clone(&self.owner),
+            self.config.video_decode?,
+            family_index,
+            family.flags,
+            family.video_decode_operations,
+        ))
     }
 
     pub(crate) fn shared_owner(&self) -> Arc<DeviceOwner> {
@@ -353,145 +471,6 @@ impl Backend {
     }
 }
 
-pub(crate) struct InstanceOwner {
-    entry: Entry,
-    pub(crate) instance: Instance,
-}
-
-impl Drop for InstanceOwner {
-    fn drop(&mut self) {
-        unsafe { self.instance.destroy_instance(None) };
-        let _ = &self.entry;
-    }
-}
-
-pub(crate) struct DeviceOwner {
-    pub(crate) device: Device,
-    instance: Arc<InstanceOwner>,
-    physical_device: vk::PhysicalDevice,
-    queues: DeviceQueues,
-    pub(crate) max_push_data_size: u64,
-    command_pool: vk::CommandPool,
-    timeline: vk::Semaphore,
-    next_timeline: AtomicU64,
-    completed_timeline: AtomicU64,
-    submit_lock: Mutex<()>,
-    command_pool_lock: Mutex<()>,
-    pending_command_buffers: Mutex<Vec<(u64, Vec<vk::CommandBuffer>)>>,
-}
-
-impl DeviceOwner {
-    pub(crate) fn instance_owner(&self) -> &Arc<InstanceOwner> {
-        &self.instance
-    }
-
-    pub(crate) fn physical_device(&self) -> vk::PhysicalDevice {
-        self.physical_device
-    }
-
-    pub(crate) fn timeline(&self) -> vk::Semaphore {
-        self.timeline
-    }
-
-    fn allocate_frame(&self) -> Result<FrameToken> {
-        self.next_timeline
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |next| {
-                next.checked_add(1)
-            })
-            .map(FrameToken::from_value)
-            .map_err(|_| Error::TimelineExhausted)
-    }
-
-    fn retire_timeline(&self, completed: u64) {
-        self.completed_timeline
-            .fetch_max(completed, Ordering::AcqRel);
-    }
-
-    pub(crate) fn allocate_primary_command_buffer(&self) -> Result<vk::CommandBuffer> {
-        let _pool_guard = self
-            .command_pool_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let info = vk::CommandBufferAllocateInfo::builder()
-            .command_pool(self.command_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
-        unsafe { self.device.allocate_command_buffers(&info) }
-            .map_err(|source| Error::vulkan("vkAllocateCommandBuffers", source))?
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::Validation("Vulkan returned no command buffer".into()))
-    }
-
-    pub(crate) fn free_command_buffers(&self, command_buffers: &[vk::CommandBuffer]) {
-        if command_buffers.is_empty() {
-            return;
-        }
-        let _pool_guard = self
-            .command_pool_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        unsafe {
-            self.device
-                .free_command_buffers(self.command_pool, command_buffers)
-        };
-    }
-
-    fn retire_command_buffers_after(
-        &self,
-        frame: FrameToken,
-        command_buffers: Vec<vk::CommandBuffer>,
-    ) {
-        if command_buffers.is_empty() {
-            return;
-        }
-        self.pending_command_buffers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((frame.value(), command_buffers));
-        // A waiter may observe completion between vkQueueSubmit2 returning and
-        // this retirement entry being installed. Recheck the cached value so
-        // that race cannot strand the command buffers until another poll.
-        let completed = self.completed_timeline.load(Ordering::Acquire);
-        if completed >= frame.value() {
-            self.retire_completed_command_buffers(completed);
-        }
-    }
-
-    fn retire_completed_command_buffers(&self, completed: u64) {
-        let retired = {
-            let mut pending = self
-                .pending_command_buffers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut retired = Vec::new();
-            let mut still_pending = Vec::with_capacity(pending.len());
-            for (timeline, command_buffers) in pending.drain(..) {
-                if timeline <= completed {
-                    retired.extend(command_buffers);
-                } else {
-                    still_pending.push((timeline, command_buffers));
-                }
-            }
-            *pending = still_pending;
-            retired
-        };
-        self.free_command_buffers(&retired);
-    }
-}
-
-impl Drop for DeviceOwner {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = self.device.device_wait_idle();
-            self.device.destroy_semaphore(self.timeline, None);
-            self.device.destroy_command_pool(self.command_pool, None);
-            self.device.destroy_device(None);
-        }
-        let _ = &self.instance;
-    }
-}
-
 #[derive(Clone)]
 pub(crate) struct Candidate {
     pub(crate) handle: vk::PhysicalDevice,
@@ -523,7 +502,15 @@ pub(crate) fn create_instance(
         .enabled_extension_names(&extension_pointers);
     let instance = unsafe { entry.create_instance(&info, None) }
         .map_err(|source| Error::vulkan("vkCreateInstance", source))?;
-    Ok(Arc::new(InstanceOwner { entry, instance }))
+    Ok(Arc::new(InstanceOwner {
+        entry,
+        instance,
+        #[cfg(feature = "ffmpeg-vulkan-decode")]
+        enabled_extensions: extension_names
+            .iter()
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect(),
+    }))
 }
 
 pub(crate) fn select_device(
@@ -533,10 +520,11 @@ pub(crate) fn select_device(
     required_extensions: &[String],
     required_features: Features,
     required_limits: Limits,
+    video_decode: Option<VideoDecodeRequirements>,
 ) -> (Option<Candidate>, Vec<String>) {
     let mut eligible = Vec::new();
     let mut rejected = Vec::new();
-    for candidate in candidates {
+    for mut candidate in candidates {
         let mut reasons = candidate.info.features.rejection_reasons(
             candidate.info.api_version,
             profile,
@@ -544,6 +532,28 @@ pub(crate) fn select_device(
         );
         if candidate.info.queues.graphics == u32::MAX {
             reasons.push("missing graphics queue".into());
+        }
+        if let Some(requirements) = video_decode {
+            let missing_profiles = requirements
+                .codecs()
+                .difference(candidate.info.supported_video_decode_profiles);
+            if !missing_profiles.is_empty() {
+                reasons.push(format!(
+                    "missing Vulkan Video decode profiles: {}",
+                    missing_profiles.labels().join(", ")
+                ));
+            }
+            if let Some(queues) = candidate
+                .info
+                .queues
+                .require_video_decode(&candidate.info.queue_families, requirements)
+            {
+                candidate.info.queues = queues;
+            } else {
+                reasons.push(
+                    "no queue family supports all requested video decode codec operations".into(),
+                );
+            }
         }
         if profile == BackendProfile::Roadmap2026
             && !candidate.info.features.present_mode_fifo_latest_ready
@@ -594,90 +604,6 @@ pub(crate) fn select_device(
     (eligible.into_iter().next(), rejected)
 }
 
-fn create_device(
-    instance: &Instance,
-    candidate: &Candidate,
-    extension_names: &[String],
-    required_features: Features,
-) -> Result<Device> {
-    let priorities = [1.0f32];
-    let queue_infos = candidate
-        .info
-        .queues
-        .unique_families()
-        .into_iter()
-        .map(|family| {
-            vk::DeviceQueueCreateInfo::builder()
-                .queue_family_index(family)
-                .queue_priorities(&priorities)
-                .build()
-        })
-        .collect::<Vec<_>>();
-    let mut enabled_extension_names = extension_names.to_vec();
-    if required_features.contains(Features::DESCRIPTOR_HEAP)
-        && candidate.info.extensions.contains("VK_KHR_maintenance5")
-    {
-        enabled_extension_names.push("VK_KHR_maintenance5".into());
-        enabled_extension_names.sort();
-        enabled_extension_names.dedup();
-    }
-    let extension_names = c_strings(&enabled_extension_names)?;
-    let extension_pointers = extension_names
-        .iter()
-        .map(|name| name.as_ptr())
-        .collect::<Vec<_>>();
-    let mut vulkan12 = vk::PhysicalDeviceVulkan12Features::builder()
-        .timeline_semaphore(true)
-        .buffer_device_address(required_features.contains(Features::BUFFER_DEVICE_ADDRESS))
-        .build();
-    let mut vulkan13 = vk::PhysicalDeviceVulkan13Features::builder()
-        .synchronization2(true)
-        .dynamic_rendering(true)
-        .build();
-    let mut vulkan14 = vk::PhysicalDeviceVulkan14Features::builder()
-        .maintenance5(true)
-        .maintenance6(required_features.contains(Features::MAINTENANCE6))
-        .dynamic_rendering_local_read(
-            required_features.contains(Features::DYNAMIC_RENDERING_LOCAL_READ),
-        )
-        .build();
-    let mut descriptor_heap = vk::PhysicalDeviceDescriptorHeapFeaturesEXT::builder()
-        .descriptor_heap(required_features.contains(Features::DESCRIPTOR_HEAP))
-        .build();
-    let mut fifo_latest_ready = vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR::builder()
-        .present_mode_fifo_latest_ready(required_features.contains(Features::FIFO_LATEST_READY))
-        .build();
-    let mut pipeline_binary = vk::PhysicalDevicePipelineBinaryFeaturesKHR::builder()
-        .pipeline_binaries(required_features.contains(Features::PIPELINE_BINARIES))
-        .build();
-    let mut info = vk::DeviceCreateInfo::builder()
-        .queue_create_infos(&queue_infos)
-        .enabled_extension_names(&extension_pointers)
-        .push_next(&mut vulkan12)
-        .push_next(&mut vulkan13)
-        .push_next(&mut vulkan14);
-    if extension_names
-        .iter()
-        .any(|name| name.as_bytes() == b"VK_EXT_descriptor_heap")
-    {
-        info = info.push_next(&mut descriptor_heap);
-    }
-    if extension_names
-        .iter()
-        .any(|name| name.as_bytes() == b"VK_KHR_present_mode_fifo_latest_ready")
-    {
-        info = info.push_next(&mut fifo_latest_ready);
-    }
-    if extension_names
-        .iter()
-        .any(|name| name.as_bytes() == b"VK_KHR_pipeline_binary")
-    {
-        info = info.push_next(&mut pipeline_binary);
-    }
-    unsafe { instance.create_device(candidate.handle, &info, None) }
-        .map_err(|source| Error::vulkan("vkCreateDevice", source))
-}
-
 pub(crate) fn append_feature_extensions(features: Features, extensions: &mut Vec<String>) {
     if features.contains(Features::DESCRIPTOR_HEAP) {
         extensions.push("VK_EXT_descriptor_heap".into());
@@ -689,6 +615,31 @@ pub(crate) fn append_feature_extensions(features: Features, extensions: &mut Vec
     if features.contains(Features::PIPELINE_BINARIES) {
         extensions.push("VK_KHR_pipeline_binary".into());
     }
+    for (required, extension) in [
+        (
+            Features::SHADER_UNTYPED_POINTERS,
+            "VK_KHR_shader_untyped_pointers",
+        ),
+        (Features::PRESENT_ID2, "VK_KHR_present_id2"),
+        (Features::PRESENT_WAIT2, "VK_KHR_present_wait2"),
+        (
+            Features::SWAPCHAIN_MAINTENANCE1,
+            "VK_KHR_swapchain_maintenance1",
+        ),
+        (Features::ADVANCED_BLEND, "VK_EXT_blend_operation_advanced"),
+        (
+            Features::MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED,
+            "VK_EXT_multisampled_render_to_single_sampled",
+        ),
+        (Features::MAINTENANCE7, "VK_KHR_maintenance7"),
+        (Features::MAINTENANCE8, "VK_KHR_maintenance8"),
+        (Features::MAINTENANCE9, "VK_KHR_maintenance9"),
+        (Features::MAINTENANCE10, "VK_KHR_maintenance10"),
+    ] {
+        if features.contains(required) {
+            extensions.push(extension.into());
+        }
+    }
     if features.contains(Features::EXTERNAL_MEMORY_DMA_BUF) {
         extensions.push("VK_KHR_external_memory_fd".into());
         extensions.push("VK_EXT_external_memory_dma_buf".into());
@@ -697,6 +648,36 @@ pub(crate) fn append_feature_extensions(features: Features, extensions: &mut Vec
     }
     if features.contains(Features::EXTERNAL_SEMAPHORE_SYNC_FD) {
         extensions.push("VK_KHR_external_semaphore_fd".into());
+    }
+}
+
+pub(crate) fn append_video_decode_extensions(
+    requirements: Option<VideoDecodeRequirements>,
+    extensions: &mut Vec<String>,
+) {
+    if let Some(requirements) = requirements {
+        extensions.extend(
+            requirements
+                .required_extensions()
+                .into_iter()
+                .map(str::to_owned),
+        );
+    }
+}
+
+pub(crate) fn validate_no_untyped_video_extensions(extensions: &[String]) -> Result<()> {
+    let untyped = extensions
+        .iter()
+        .filter(|extension| extension.starts_with("VK_KHR_video_"))
+        .cloned()
+        .collect::<Vec<_>>();
+    if untyped.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::Validation(format!(
+            "Vulkan Video extensions must be requested through typed video requirements: {}",
+            untyped.join(", ")
+        )))
     }
 }
 

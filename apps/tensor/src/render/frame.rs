@@ -4,6 +4,7 @@ use tensor_util::OutputScale;
 use tensor_util::Rect;
 use tensor_util::Size;
 use thiserror::Error;
+use vulkan_renderer::{DescriptorAllocation, DescriptorHeapAllocator, DescriptorHeapError};
 
 use crate::scene::{DamageSet, SceneSnapshot};
 
@@ -11,9 +12,7 @@ use super::{CursorOverlay, CursorOverlays, cursor::MAX_CURSOR_OVERLAYS, format::
 
 #[cfg(test)]
 mod cursor_tests;
-mod heap;
 mod plan;
-use heap::DescriptorHeap;
 use plan::FrameDrawPlan;
 pub(crate) use plan::SceneDrawCommand;
 
@@ -57,27 +56,19 @@ pub(crate) struct FrameSubmission {
     pub(crate) draw_plan: FrameDrawPlan,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct DescriptorHeapLayout {
-    pub(crate) capacity: u64,
-    /// Common power-of-two alignment satisfying both resource-heap binding
-    /// and sampled-image descriptor addressing.
-    pub(crate) alignment: u64,
-    pub(crate) reserved_range: u64,
-    pub(crate) descriptor_size: u64,
-}
-
 #[derive(Debug)]
 pub(crate) struct FrameScheduler {
-    descriptors: DescriptorHeap,
+    descriptors: DescriptorHeapAllocator,
     outputs: BTreeMap<RenderOutputId, OutputFrameState>,
+    #[cfg(test)]
     next_timeline_value: u64,
     device_lost: bool,
     descriptor_stride: u64,
-    descriptor_size: u64,
+    descriptor_alignment: u64,
 }
 
 impl FrameScheduler {
+    #[cfg(test)]
     pub(crate) fn new(
         descriptor_heap_size: u64,
         descriptor_alignment: u64,
@@ -94,25 +85,44 @@ impl FrameScheduler {
         }
         let descriptor_stride = align_up(descriptor_size, descriptor_alignment)
             .ok_or(FrameError::DescriptorSizeOverflow)?;
-        // Bindless shaders index the resource heap as a runtime array strided
-        // by the driver's descriptor size. Every allocation therefore aligns
-        // to the stride, and packing must be exactly size-strided.
-        if descriptor_stride != descriptor_size || !descriptor_stride.is_power_of_two() {
+        let descriptors = DescriptorHeapAllocator::new(
+            descriptor_heap_size,
+            reserved_range,
+            descriptor_alignment,
+        )
+        .map_err(frame_allocator_error)?;
+        Self::with_descriptor_allocator(descriptors, descriptor_stride, descriptor_alignment)
+    }
+
+    /// Connects Tensor's output/frame policy to the allocation state owned by
+    /// one shared `vulkan-renderer` resource heap. The scheduler never
+    /// recreates offsets or a second retirement namespace.
+    pub(crate) fn with_descriptor_allocator(
+        descriptors: DescriptorHeapAllocator,
+        descriptor_stride: u64,
+        descriptor_alignment: u64,
+    ) -> Result<Self, FrameError> {
+        if descriptor_stride == 0 {
+            return Err(FrameError::InvalidDescriptorSize);
+        }
+        if descriptor_alignment == 0 || !descriptor_alignment.is_power_of_two() {
+            return Err(FrameError::InvalidDescriptorAlignment {
+                alignment: descriptor_alignment,
+            });
+        }
+        if !descriptor_stride.is_multiple_of(descriptor_alignment) {
             return Err(FrameError::InvalidDescriptorAlignment {
                 alignment: descriptor_alignment,
             });
         }
         Ok(Self {
-            descriptors: DescriptorHeap::new(
-                descriptor_heap_size,
-                descriptor_stride,
-                reserved_range,
-            )?,
+            descriptors,
             outputs: BTreeMap::new(),
+            #[cfg(test)]
             next_timeline_value: 1,
             device_lost: false,
             descriptor_stride,
-            descriptor_size,
+            descriptor_alignment,
         })
     }
 
@@ -128,7 +138,7 @@ impl FrameScheduler {
         }
         if let Some(state) = self.outputs.get_mut(&target.output) {
             if state.target != target {
-                if let Some(prepared) = state.prepared {
+                if let Some(prepared) = state.prepared.as_ref() {
                     return Err(FrameError::OutputBusy {
                         output: target.output,
                         waiting_for: prepared.timeline_value,
@@ -150,7 +160,7 @@ impl FrameScheduler {
         if let Some(state) = self.outputs.remove(&output)
             && let Some(prepared) = state.prepared
         {
-            self.descriptors.cancel(prepared.descriptors);
+            let _ = self.descriptors.release(prepared.allocation);
         }
     }
 
@@ -183,13 +193,22 @@ impl FrameScheduler {
         Some(state.next_slot)
     }
 
-    pub(crate) const fn layout(&self) -> DescriptorHeapLayout {
-        DescriptorHeapLayout {
-            capacity: self.descriptors.capacity,
-            alignment: self.descriptors.alignment,
-            reserved_range: self.descriptors.first_usable_offset,
-            descriptor_size: self.descriptor_size,
-        }
+    /// Resolves the live shared allocation for a prepared frame. The Vulkan
+    /// executor borrows this exact allocation for descriptor encoding, while
+    /// this scheduler retains lifecycle ownership until commit or abort.
+    pub(crate) fn descriptor_allocation(
+        &self,
+        frame: &FrameSubmission,
+    ) -> Result<&DescriptorAllocation, FrameError> {
+        self.outputs
+            .get(&frame.target.output)
+            .and_then(|state| state.prepared.as_ref())
+            .filter(|prepared| prepared.matches(frame))
+            .map(|prepared| &prepared.allocation)
+            .ok_or(FrameError::StalePreparedFrame {
+                output: frame.target.output,
+                timeline_value: frame.timeline_value,
+            })
     }
 
     #[cfg(test)]
@@ -205,6 +224,7 @@ impl FrameScheduler {
     /// Prepare a frame with a compositor-owned output overlay. Client scene
     /// state remains in ECS; input-driven overlays enter only here after the
     /// protocol boundary has converted them to physical output coordinates.
+    #[cfg(test)]
     pub(crate) fn prepare_with_cursors(
         &mut self,
         output: RenderOutputId,
@@ -212,14 +232,44 @@ impl FrameScheduler {
         cursors: CursorOverlays,
         completed_timeline: u64,
     ) -> Result<FrameSubmission, FrameError> {
+        let timeline_value = self.next_timeline_value;
+        let next_timeline_value = timeline_value
+            .checked_add(1)
+            .ok_or(FrameError::TimelineExhausted)?;
+        let frame = self.prepare_with_cursors_for_timeline(
+            output,
+            scene,
+            cursors,
+            completed_timeline,
+            timeline_value,
+        )?;
+        self.next_timeline_value = next_timeline_value;
+        Ok(frame)
+    }
+
+    /// Prepares one frame for a timeline value reserved by the shared Vulkan
+    /// device. Tensor owns scene/output policy, while the renderer remains
+    /// the sole owner of the device timeline and queue submission order.
+    pub(crate) fn prepare_with_cursors_for_timeline(
+        &mut self,
+        output: RenderOutputId,
+        scene: SceneSnapshot,
+        cursors: CursorOverlays,
+        completed_timeline: u64,
+        timeline_value: u64,
+    ) -> Result<FrameSubmission, FrameError> {
+        if timeline_value == 0 {
+            return Err(FrameError::InvalidTimelineValue);
+        }
         if self.device_lost {
             return Err(FrameError::DeviceLost);
         }
+        let descriptor_capacity = self.descriptors.reserved_range_offset();
         let state = self
             .outputs
             .get_mut(&output)
             .ok_or(FrameError::UnknownOutput(output))?;
-        if let Some(prepared) = state.prepared {
+        if let Some(prepared) = state.prepared.as_ref() {
             return Err(FrameError::OutputBusy {
                 output,
                 waiting_for: prepared.timeline_value,
@@ -233,11 +283,6 @@ impl FrameScheduler {
         }
         self.descriptors.reclaim(completed_timeline);
 
-        let timeline_value = self.next_timeline_value;
-        let next_timeline_value = self
-            .next_timeline_value
-            .checked_add(1)
-            .ok_or(FrameError::TimelineExhausted)?;
         let serial = state.next_serial;
         serial.checked_add(1).ok_or(FrameError::SerialExhausted)?;
         let draw_plan = FrameDrawPlan::build_with_cursors(&scene, state.target, cursors)?;
@@ -250,9 +295,14 @@ impl FrameScheduler {
             .descriptor_stride
             .checked_mul(descriptor_count)
             .ok_or(FrameError::DescriptorSizeOverflow)?;
-        let descriptors = self
+        let allocation = self
             .descriptors
-            .allocate(descriptor_bytes, timeline_value)?;
+            .allocate(descriptor_bytes, self.descriptor_alignment)
+            .map_err(|error| frame_allocation_error(error, descriptor_capacity))?;
+        let descriptors = HeapAllocation {
+            offset: allocation.offset(),
+            size: allocation.size(),
+        };
         let mut damage = scene
             .damage_since(state.previous_scene.as_ref())
             .to_physical(scene.viewport, state.target.viewport, state.target.scale);
@@ -283,12 +333,12 @@ impl FrameScheduler {
             damage.add_region(overlay.clip, state.target.viewport);
         }
         let output_slot = state.next_slot;
-        self.next_timeline_value = next_timeline_value;
         state.prepared = Some(PreparedFrameState {
             timeline_value,
             serial,
             output_slot,
             descriptors,
+            allocation,
         });
 
         Ok(FrameSubmission {
@@ -322,18 +372,28 @@ impl FrameScheduler {
     }
 
     pub(crate) fn commit(&mut self, frame: &FrameSubmission) -> Result<(), FrameError> {
+        let descriptor_capacity = self.descriptors.reserved_range_offset();
         let state = self
             .outputs
             .get_mut(&frame.target.output)
             .ok_or(FrameError::UnknownOutput(frame.target.output))?;
-        let prepared = state
+        if !state
             .prepared
-            .filter(|prepared| prepared.matches(frame))
-            .ok_or(FrameError::StalePreparedFrame {
+            .as_ref()
+            .is_some_and(|prepared| prepared.matches(frame))
+        {
+            return Err(FrameError::StalePreparedFrame {
                 output: frame.target.output,
                 timeline_value: frame.timeline_value,
-            })?;
-        state.prepared = None;
+            });
+        }
+        let prepared = state
+            .prepared
+            .take()
+            .expect("prepared-frame match retains the allocation");
+        self.descriptors
+            .retire_at_timeline(prepared.allocation, prepared.timeline_value)
+            .map_err(|error| frame_allocation_error(error, descriptor_capacity))?;
         state.next_slot = (prepared.output_slot + 1) % OUTPUT_SLOT_COUNT;
         state.next_serial = prepared
             .serial
@@ -350,19 +410,28 @@ impl FrameScheduler {
     }
 
     pub(crate) fn abort(&mut self, frame: &FrameSubmission) -> Result<(), FrameError> {
+        let descriptor_capacity = self.descriptors.reserved_range_offset();
         let state = self
             .outputs
             .get_mut(&frame.target.output)
             .ok_or(FrameError::UnknownOutput(frame.target.output))?;
-        let prepared = state
+        if !state
             .prepared
-            .filter(|prepared| prepared.matches(frame))
-            .ok_or(FrameError::StalePreparedFrame {
+            .as_ref()
+            .is_some_and(|prepared| prepared.matches(frame))
+        {
+            return Err(FrameError::StalePreparedFrame {
                 output: frame.target.output,
                 timeline_value: frame.timeline_value,
-            })?;
-        state.prepared = None;
-        self.descriptors.cancel(prepared.descriptors);
+            });
+        }
+        let prepared = state
+            .prepared
+            .take()
+            .expect("prepared-frame match retains the allocation");
+        self.descriptors
+            .release(prepared.allocation)
+            .map_err(|error| frame_allocation_error(error, descriptor_capacity))?;
         Ok(())
     }
 
@@ -394,16 +463,17 @@ struct OutputFrameState {
 
 const OUTPUT_SLOT_COUNT: u8 = 3;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 struct PreparedFrameState {
     timeline_value: u64,
     serial: u64,
     output_slot: u8,
     descriptors: HeapAllocation,
+    allocation: DescriptorAllocation,
 }
 
 impl PreparedFrameState {
-    fn matches(self, frame: &FrameSubmission) -> bool {
+    fn matches(&self, frame: &FrameSubmission) -> bool {
         self.timeline_value == frame.timeline_value
             && self.serial == frame.serial
             && self.output_slot == frame.output_slot
@@ -426,9 +496,37 @@ impl OutputFrameState {
     }
 }
 
+#[cfg(test)]
 fn align_up(value: u64, alignment: u64) -> Option<u64> {
     let remainder = value % alignment;
     value.checked_add((alignment - remainder) % alignment)
+}
+
+fn frame_allocator_error(error: DescriptorHeapError) -> FrameError {
+    match error {
+        DescriptorHeapError::InvalidAlignment(alignment) => {
+            FrameError::InvalidDescriptorAlignment { alignment }
+        }
+        DescriptorHeapError::ReservedRangeConsumesHeap {
+            heap_size,
+            minimum_reserved_range,
+            ..
+        } => FrameError::DescriptorHeapTooSmall {
+            capacity: heap_size,
+            reserved: minimum_reserved_range,
+        },
+        other => FrameError::DescriptorAllocator(other.to_string()),
+    }
+}
+
+fn frame_allocation_error(error: DescriptorHeapError, capacity: u64) -> FrameError {
+    match error {
+        DescriptorHeapError::OutOfMemory { requested, .. } => FrameError::DescriptorHeapExhausted {
+            requested,
+            capacity,
+        },
+        other => frame_allocator_error(other),
+    }
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -441,10 +539,10 @@ pub(crate) enum FrameError {
     InvalidDescriptorSize,
     #[error("descriptor size overflowed the frame allocator")]
     DescriptorSizeOverflow,
-    #[error("descriptor request of {requested} bytes exceeds heap capacity {capacity}")]
-    DescriptorRequestTooLarge { requested: u64, capacity: u64 },
     #[error("descriptor heap exhausted: requested {requested} bytes, capacity {capacity}")]
     DescriptorHeapExhausted { requested: u64, capacity: u64 },
+    #[error("shared descriptor heap allocator failed: {0}")]
+    DescriptorAllocator(String),
     #[error("output {0:?} is not registered with the renderer")]
     UnknownOutput(RenderOutputId),
     #[error("output {output:?} is still using frame timeline {waiting_for}")]
@@ -464,7 +562,10 @@ pub(crate) enum FrameError {
     #[error("output {0:?} has no dma-buf planes")]
     InvalidOutputPlaneCount(RenderOutputId),
     #[error("renderer timeline value space is exhausted")]
+    #[cfg(test)]
     TimelineExhausted,
+    #[error("renderer frame timeline values must be non-zero")]
+    InvalidTimelineValue,
     #[error("renderer frame serial space is exhausted")]
     SerialExhausted,
     #[error("Vulkan device was lost; frame submission is stopped")]

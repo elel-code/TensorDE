@@ -1,9 +1,6 @@
-use vulkan_renderer::vulkanalia::vk::Handle;
-
 use tensor_host::{DrmFormat, Fourcc, Modifier};
 use tensor_util::{OutputScale, Size};
 
-use crate::render::vulkan::import::ClientImageUpload;
 use crate::{
     ecs::{SurfaceBufferId, SurfaceId, ViewId, WorkspaceId},
     layout::LayoutPlacement,
@@ -18,33 +15,6 @@ use crate::{
 };
 
 use super::*;
-
-fn client_image(first: bool) -> ClientImageInfo {
-    ClientImageInfo {
-        image: vk::Image::null(),
-        view_info: vk::ImageViewCreateInfo::default(),
-        foreign_owned: true,
-        needs_initial_acquire: first,
-        upload: None,
-    }
-}
-
-fn shm_client_image(first: bool, upload: bool) -> ClientImageInfo {
-    ClientImageInfo {
-        image: vk::Image::from_raw(7),
-        view_info: vk::ImageViewCreateInfo::default(),
-        foreign_owned: false,
-        needs_initial_acquire: first,
-        upload: upload.then_some(ClientImageUpload {
-            buffer: vk::Buffer::from_raw(9),
-            extent: vk::Extent3D {
-                width: 80,
-                height: 32,
-                depth: 1,
-            },
-        }),
-    }
-}
 
 fn prepared_client(descriptor_index: u32) -> PreparedDraw {
     PreparedDraw {
@@ -91,27 +61,24 @@ fn descriptor_push_index_is_an_absolute_heap_element_index() {
 
 #[test]
 fn shm_upload_transitions_without_foreign_queue_ownership() {
-    let subresource = color_subresource();
-    let image = shm_client_image(true, true);
-    let upload = client_upload_acquire(image, subresource);
-    assert_eq!(upload.old_layout, vk::ImageLayout::UNDEFINED);
-    assert_eq!(upload.new_layout, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
-    assert_eq!(upload.src_queue_family_index, vk::QUEUE_FAMILY_IGNORED);
-    assert_eq!(upload.dst_queue_family_index, vk::QUEUE_FAMILY_IGNORED);
-
-    let sample = client_acquire(image, subresource, 3);
-    assert_eq!(sample.old_layout, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
-    assert_eq!(sample.new_layout, vk::ImageLayout::GENERAL);
-    let release = client_release(image, subresource, 3);
-    assert_eq!(release.src_queue_family_index, vk::QUEUE_FAMILY_IGNORED);
-    assert_eq!(release.dst_queue_family_index, vk::QUEUE_FAMILY_IGNORED);
+    assert_eq!(
+        local_client_state(true, 3),
+        ResourceState::image(RenderGraphImageState::Undefined, 3)
+    );
+    assert_eq!(
+        transfer_destination_state(3),
+        ResourceState::image(RenderGraphImageState::TransferDestination, 3)
+    );
+    assert_eq!(
+        sampled_state(3),
+        ResourceState::image(RenderGraphImageState::FragmentSampledReadGeneral, 3)
+    );
+    assert_eq!(client_release_state(false, 3), sampled_state(3));
 }
 
 #[test]
 fn reused_shm_image_preserves_general_layout_without_an_upload() {
-    let acquire = client_acquire(shm_client_image(false, false), color_subresource(), 3);
-    assert_eq!(acquire.old_layout, vk::ImageLayout::GENERAL);
-    assert_eq!(acquire.new_layout, vk::ImageLayout::GENERAL);
+    assert_eq!(local_client_state(false, 3), sampled_state(3));
 }
 
 #[test]
@@ -236,18 +203,18 @@ fn descriptor_push_index_uses_size_strided_absolute_offsets() {
 
 #[test]
 fn first_foreign_client_acquire_preserves_imported_contents() {
-    let barrier = client_acquire(client_image(true), color_subresource(), 7);
-    assert_eq!(barrier.old_layout, vk::ImageLayout::UNDEFINED);
-    assert_eq!(barrier.src_queue_family_index, vk::QUEUE_FAMILY_FOREIGN_EXT);
-    assert_eq!(barrier.dst_queue_family_index, 7);
+    assert_eq!(
+        foreign_client_source_state(true),
+        ResourceState::foreign_image(ForeignImageState::Undefined)
+    );
 }
 
 #[test]
 fn reused_foreign_client_acquire_uses_released_layout() {
-    let barrier = client_acquire(client_image(false), color_subresource(), 7);
-    assert_eq!(barrier.old_layout, vk::ImageLayout::GENERAL);
-    assert_eq!(barrier.src_queue_family_index, vk::QUEUE_FAMILY_FOREIGN_EXT);
-    assert_eq!(barrier.dst_queue_family_index, 7);
+    assert_eq!(
+        foreign_client_source_state(false),
+        ResourceState::foreign_image(ForeignImageState::General)
+    );
 }
 
 #[test]

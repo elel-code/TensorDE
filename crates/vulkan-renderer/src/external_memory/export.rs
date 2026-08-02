@@ -148,10 +148,7 @@ impl ExportedDmaBufImage {
     }
 
     pub fn resource_binding(&self) -> ResourceBinding {
-        ResourceBinding::Image {
-            image: self.inner.image,
-            subresource_range: self.subresource_range(),
-        }
+        ResourceBinding::raw_image(self.inner.image, self.subresource_range())
     }
 
     pub(crate) fn owner(&self) -> &Arc<DeviceOwner> {

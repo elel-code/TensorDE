@@ -8,16 +8,19 @@ mod noop_compute_spirv;
 mod triangle_spirv;
 
 use vulkan_renderer::{
-    AccessKind, BinarySemaphoreDescriptor, BufferDescriptor, ColorAttachment, ColorTargetState,
+    AccessKind, BinarySemaphoreDescriptor, BufferDescriptor, BufferDescriptorBinding,
+    BufferDescriptorKind, BufferUsages, ColorAttachment, ColorTargetState,
     CommandEncoderDescriptor, ComputePassDescriptor, ComputePipelineDescriptor,
     DescriptorHeapDescriptor, DescriptorHeapKind, DeviceDescriptor, DmaBufExportDescriptor,
-    DmaBufImageDescriptor, DmaBufPlaneLayout, ExternalImageViewDescriptor,
+    DmaBufImageDescriptor, DmaBufPlaneLayout, Extent3D, ExternalImageViewDescriptor,
     ExternalTimelineSemaphoreDescriptor, Features, FragmentState, GraphicsPipelineDescriptor,
-    HeapDescriptorType, ImageDescriptor, ImageViewDescriptor, Instance, InstanceDescriptor, LoadOp,
-    MemoryAllocatorConfig, MemoryLocation, MultisampleState, PassId, PipelineCacheDescriptor,
-    PrimitiveState, ProgrammableStage, RenderGraph, RenderPass, RenderingDescriptor,
-    RequestAdapterOptions, ResourceBinding, ResourceId, ResourceKind, ResourceState, ResourceUse,
-    ShaderBindingMap, ShaderModuleDescriptor, StoreOp, UploadBeltDescriptor, VertexState, vk,
+    HeapDescriptorType, ImageDescriptor, ImageDimension, ImageTiling, ImageViewDescriptor,
+    Instance, InstanceDescriptor, LoadOp, MemoryAllocatorConfig, MemoryLocation, MultisampleState,
+    PassId, PipelineCacheDescriptor, PrimitiveState, ProgrammableStage, Rect2D, RenderGraph,
+    RenderGraphImageState, RenderPass, RenderingDescriptor, RequestAdapterOptions, ResolveMode,
+    ResourceBinding, ResourceId, ResourceKind, ResourceState, ResourceUse, SampleCount,
+    ShaderBindingMap, ShaderModuleDescriptor, StoreOp, TextureFormat, TextureLayout, TextureUsages,
+    UploadBeltDescriptor, VertexState, Viewport, vk,
 };
 
 struct SubmissionProbe(Arc<AtomicUsize>);
@@ -152,39 +155,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let uniform_buffer = allocator.create_buffer(&BufferDescriptor {
         label: Some("capability-uniform".into()),
         size: 256,
-        usage: vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+        usage: BufferUsages::UNIFORM | BufferUsages::SHADER_DEVICE_ADDRESS,
         memory: MemoryLocation::Upload,
     })?;
     unsafe {
         uniform_buffer.write(0, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])?;
     }
-    let uniform = resource_heap.allocate(HeapDescriptorType::UniformBuffer)?;
-    unsafe {
-        resource_heap.write_buffer(
-            &uniform,
-            HeapDescriptorType::UniformBuffer,
-            uniform_buffer
-                .device_address()
-                .expect("uniform buffer requested SHADER_DEVICE_ADDRESS"),
-            uniform_buffer.size(),
-        )?;
-    }
+    let uniform = BufferDescriptorBinding::new(
+        &resource_heap,
+        &uniform_buffer,
+        BufferDescriptorKind::Uniform,
+        0,
+        uniform_buffer.size(),
+    )?;
     let image = allocator.create_image(&ImageDescriptor {
         label: Some("capability-image".into()),
-        image_type: vk::ImageType::_2D,
-        format: vk::Format::R8G8B8A8_UNORM,
-        extent: vk::Extent3D {
-            width: 64,
-            height: 64,
-            depth: 1,
-        },
+        dimension: ImageDimension::D2,
+        format: TextureFormat::Rgba8Unorm,
+        extent: Extent3D::new(64, 64, 1),
         mip_levels: 1,
         array_layers: 1,
-        samples: vk::SampleCountFlags::_1,
-        tiling: vk::ImageTiling::OPTIMAL,
-        usage: vk::ImageUsageFlags::SAMPLED
-            | vk::ImageUsageFlags::STORAGE
-            | vk::ImageUsageFlags::TRANSFER_DST,
+        samples: SampleCount::One,
+        tiling: ImageTiling::Optimal,
+        usage: TextureUsages::SAMPLED | TextureUsages::STORAGE | TextureUsages::COPY_DESTINATION,
         memory: MemoryLocation::Device,
     })?;
     let subresources = image.full_subresource_range(vk::ImageAspectFlags::COLOR);
@@ -207,6 +200,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 array_layers: image.array_layers(),
                 samples: image.sample_count(),
                 usage: image.usage(),
+                view_usage: None,
                 components: vk::ComponentMapping::default(),
                 subresource_range: subresources,
             },
@@ -217,18 +211,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(retained_external_view.format(), image.format());
     let render_target = allocator.create_image(&ImageDescriptor {
         label: Some("capability-render-target".into()),
-        image_type: vk::ImageType::_2D,
-        format: vk::Format::R8G8B8A8_UNORM,
-        extent: vk::Extent3D {
-            width: 64,
-            height: 64,
-            depth: 1,
-        },
+        dimension: ImageDimension::D2,
+        format: TextureFormat::Rgba8Unorm,
+        extent: Extent3D::new(64, 64, 1),
         mip_levels: 1,
         array_layers: 1,
-        samples: vk::SampleCountFlags::_1,
-        tiling: vk::ImageTiling::OPTIMAL,
-        usage: vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
+        samples: SampleCount::One,
+        tiling: ImageTiling::Optimal,
+        usage: TextureUsages::COLOR_ATTACHMENT | TextureUsages::COPY_SOURCE,
         memory: MemoryLocation::Device,
     })?;
     let render_subresources = render_target.full_subresource_range(vk::ImageAspectFlags::COLOR);
@@ -288,10 +278,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let color_targets = [Some(ColorTargetState {
         format: render_target.format(),
         blend: None,
-        write_mask: vk::ColorComponentFlags::R
-            | vk::ColorComponentFlags::G
-            | vk::ColorComponentFlags::B
-            | vk::ColorComponentFlags::A,
+        write_mask: vulkan_renderer::ColorWrites::ALL,
     })];
     let pipeline_cache = device.create_pipeline_cache(&PipelineCacheDescriptor::default())?;
     let pipeline = device.create_graphics_pipeline(&GraphicsPipelineDescriptor {
@@ -315,6 +302,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             targets: &color_targets,
         },
+        advanced_blend: None,
+        local_read_mapping: None,
         cache: Some(&pipeline_cache),
     })?;
     let compute_shader = device.create_shader_module(ShaderModuleDescriptor {
@@ -333,7 +322,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let upload_target = allocator.create_buffer(&BufferDescriptor {
         label: Some("capability-upload-target".into()),
         size: 16,
-        usage: vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
+        usage: BufferUsages::COPY_DESTINATION | BufferUsages::VERTEX,
         memory: MemoryLocation::Device,
     })?;
     let mut upload_belt = device.create_upload_belt(&allocator, UploadBeltDescriptor::default())?;
@@ -375,12 +364,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     graph.set_initial_state(
         image_resource,
         ResourceKind::Image,
-        ResourceState::image(
-            vk::PipelineStageFlags2::NONE,
-            vk::AccessFlags2::NONE,
-            vk::ImageLayout::UNDEFINED,
-            queue_family,
-        ),
+        ResourceState::image(RenderGraphImageState::Undefined, queue_family),
     );
     graph.add_pass(RenderPass {
         id: image_pass,
@@ -390,23 +374,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             resource: image_resource,
             kind: ResourceKind::Image,
             access: AccessKind::Read,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                vk::AccessFlags2::SHADER_SAMPLED_READ,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                queue_family,
-            ),
+            state: ResourceState::image(RenderGraphImageState::FragmentSampledRead, queue_family),
         }],
     });
     graph.set_initial_state(
         render_resource,
         ResourceKind::Image,
-        ResourceState::image(
-            vk::PipelineStageFlags2::NONE,
-            vk::AccessFlags2::NONE,
-            vk::ImageLayout::UNDEFINED,
-            queue_family,
-        ),
+        ResourceState::image(RenderGraphImageState::Undefined, queue_family),
     );
     graph.add_pass(RenderPass {
         id: render_pass,
@@ -416,29 +390,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             resource: render_resource,
             kind: ResourceKind::Image,
             access: AccessKind::Write,
-            state: ResourceState::image(
-                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                vk::ImageLayout::ATTACHMENT_OPTIMAL,
-                queue_family,
-            ),
+            state: ResourceState::image(RenderGraphImageState::ColorAttachmentWrite, queue_family),
         }],
     });
     let graph = graph.compile()?;
     let bindings = BTreeMap::from([
-        (
-            image_resource,
-            ResourceBinding::Image {
-                image: image.raw(),
-                subresource_range: subresources,
-            },
-        ),
+        (image_resource, ResourceBinding::whole_color_image(&image)),
         (
             render_resource,
-            ResourceBinding::Image {
-                image: render_target.raw(),
-                subresource_range: render_subresources,
-            },
+            ResourceBinding::whole_color_image(&render_target),
         ),
     ]);
     let barriers = graph.barrier_batch_before(image_pass, &bindings)?;
@@ -451,31 +411,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let color_attachment = [Some(ColorAttachment {
         view: render_target_view.as_attachment(),
-        layout: vk::ImageLayout::ATTACHMENT_OPTIMAL,
+        layout: TextureLayout::ColorAttachment,
         resolve_target: None,
-        resolve_layout: vk::ImageLayout::UNDEFINED,
-        resolve_mode: vk::ResolveModeFlags::NONE,
+        resolve_layout: TextureLayout::Undefined,
+        resolve_mode: ResolveMode::None,
         load_op: LoadOp::Clear([0.0, 0.0, 0.0, 1.0]),
         store_op: StoreOp::Store,
     })];
     let rendering = RenderingDescriptor {
         label: Some("capability-triangle-rendering"),
-        render_area: vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
-            extent: vk::Extent2D {
-                width: 64,
-                height: 64,
-            },
-        },
+        render_area: Rect2D::new(0, 0, 64, 64),
         layer_count: 1,
         view_mask: 0,
         color_attachments: &color_attachment,
         depth_attachment: None,
         stencil_attachment: None,
+        multisampled_render_to_single_sampled: None,
     };
     unsafe {
         let mut rendering = encoder.begin_rendering(&rendering)?;
-        rendering.set_viewport(vk::Viewport {
+        rendering.set_viewport(Viewport {
             x: 0.0,
             y: 0.0,
             width: 64.0,
@@ -483,13 +438,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             min_depth: 0.0,
             max_depth: 1.0,
         })?;
-        rendering.set_scissor(vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
-            extent: vk::Extent2D {
-                width: 64,
-                height: 64,
-            },
-        })?;
+        rendering.set_scissor(Rect2D::new(0, 0, 64, 64))?;
         rendering.bind_pipeline(&pipeline)?;
         rendering.draw(0..3, 0..1)?;
         rendering.end();
@@ -508,7 +457,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         queue.pending_submission_leases(),
         retained_resource_leases + 3
     );
-    resource_heap.retire(uniform, submission)?;
+    uniform.retire(&resource_heap, submission)?;
     resource_heap.retire(sampled_image, submission)?;
     resource_heap.retire(storage_image, submission)?;
     resource_heap.retire(retained_external_image, submission)?;

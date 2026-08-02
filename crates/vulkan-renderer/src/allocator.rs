@@ -100,7 +100,7 @@ impl MemoryAllocator {
             .map_err(|error| Error::Validation(error.to_string()))?;
         let create = vk::BufferCreateInfo::builder()
             .size(descriptor.size)
-            .usage(descriptor.usage)
+            .usage(descriptor.usage.to_vk())
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
         let buffer = unsafe { self.owner.device.create_buffer(&create, None) }
             .map_err(|source| Error::vulkan("vkCreateBuffer", source))?;
@@ -207,7 +207,7 @@ impl MemoryAllocator {
         }
         let device_address = if descriptor
             .usage
-            .contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS)
+            .contains(crate::BufferUsages::SHADER_DEVICE_ADDRESS)
         {
             let info = vk::BufferDeviceAddressInfo::builder().buffer(buffer);
             let address = unsafe { self.owner.device.get_buffer_device_address(&info) };
@@ -475,7 +475,7 @@ struct BufferInner {
     range: Option<Range<u64>>,
     handle: vk::Buffer,
     size: u64,
-    usage: vk::BufferUsageFlags,
+    usage: crate::BufferUsages,
     memory: MemoryLocation,
     device_address: Option<vk::DeviceAddress>,
     label: Option<String>,
@@ -504,7 +504,7 @@ impl Buffer {
         self.inner.size
     }
 
-    pub fn usage(&self) -> vk::BufferUsageFlags {
+    pub fn usage(&self) -> crate::BufferUsages {
         self.inner.usage
     }
 
@@ -512,7 +512,17 @@ impl Buffer {
         self.inner.memory
     }
 
-    pub fn device_address(&self) -> Option<vk::DeviceAddress> {
+    /// Bytes reserved from the allocator for this buffer.
+    ///
+    /// This is bound GPU allocation size, not host RSS/PSS.
+    pub fn allocation_size(&self) -> u64 {
+        self.inner
+            .range
+            .as_ref()
+            .map_or(0, |range| range.end - range.start)
+    }
+
+    pub(crate) fn device_address(&self) -> Option<vk::DeviceAddress> {
         self.inner.device_address
     }
 
@@ -526,27 +536,51 @@ impl Buffer {
     ///
     /// The target range must not be read or written by the GPU concurrently.
     pub unsafe fn write(&self, offset: u64, data: &[u8]) -> Result<()> {
+        unsafe {
+            self.write_with(offset, data.len(), |destination| {
+                destination.copy_from_slice(data);
+            })
+        }
+    }
+
+    /// Borrows an upload-visible byte range in place and flushes it when the
+    /// callback returns. This keeps host producers such as SHM compositors
+    /// zero-copy without exposing Vulkan memory handles or mappings.
+    ///
+    /// # Safety
+    ///
+    /// The target range must not be read or written by the GPU concurrently.
+    /// The callback must initialize every byte that a following GPU read will
+    /// consume.
+    pub unsafe fn write_with<R>(
+        &self,
+        offset: u64,
+        size: usize,
+        callback: impl FnOnce(&mut [u8]) -> R,
+    ) -> Result<R> {
         if self.inner.memory != MemoryLocation::Upload {
             return Err(Error::Validation(
                 "CPU writes require MemoryLocation::Upload".into(),
             ));
         }
-        let size = u64::try_from(data.len())
-            .map_err(|_| Error::Validation("write size exceeds u64".into()))?;
+        let size_u64 =
+            u64::try_from(size).map_err(|_| Error::Validation("write size exceeds u64".into()))?;
         let end = offset
-            .checked_add(size)
+            .checked_add(size_u64)
             .ok_or_else(|| Error::Validation("buffer write range overflows".into()))?;
         if end > self.inner.size {
             return Err(Error::Validation("buffer write exceeds buffer size".into()));
         }
+        if size == 0 {
+            return Ok(callback(&mut []));
+        }
         let allocation_offset =
             self.inner.range.as_ref().expect("live buffer range").start + offset;
-        let destination = self
-            .inner
-            .block
-            .mapped_range(allocation_offset, data.len())?;
-        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), destination, data.len()) };
-        self.inner.block.flush(allocation_offset, size)
+        let destination = self.inner.block.mapped_range(allocation_offset, size)?;
+        let mapped = unsafe { std::slice::from_raw_parts_mut(destination, size) };
+        let result = callback(mapped);
+        self.inner.block.flush(allocation_offset, size_u64)?;
+        Ok(result)
     }
 
     /// Invalidates and copies bytes from readback-visible memory.

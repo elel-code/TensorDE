@@ -105,16 +105,27 @@ impl Backend {
     where
         T: Any + Send + Sync,
     {
-        descriptor.validate()?;
-        Ok(RetainedExternalTimelineSemaphore {
-            inner: Arc::new(RetainedExternalTimelineSemaphoreInner {
-                _owner: self.shared_owner(),
-                semaphore: descriptor.semaphore,
-                label: descriptor.label.clone(),
-                _host_lease: host_lease,
-            }),
-        })
+        retain_external_timeline_semaphore_for_owner(self.shared_owner(), descriptor, host_lease)
     }
+}
+
+pub(crate) fn retain_external_timeline_semaphore_for_owner<T>(
+    owner: Arc<crate::backend::DeviceOwner>,
+    descriptor: &ExternalTimelineSemaphoreDescriptor,
+    host_lease: Arc<T>,
+) -> Result<RetainedExternalTimelineSemaphore>
+where
+    T: Any + Send + Sync,
+{
+    descriptor.validate()?;
+    Ok(RetainedExternalTimelineSemaphore {
+        inner: Arc::new(RetainedExternalTimelineSemaphoreInner {
+            _owner: owner,
+            semaphore: descriptor.semaphore,
+            label: descriptor.label.clone(),
+            _host_lease: host_lease,
+        }),
+    })
 }
 
 #[cfg(test)]

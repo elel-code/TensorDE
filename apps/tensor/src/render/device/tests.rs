@@ -29,7 +29,7 @@ fn candidate(ordinal: usize, device_type: vk::PhysicalDeviceType, heap: bool) ->
         ordinal,
         name: format!("device-{ordinal}"),
         device_type,
-        api_version: Version::V1_4_0,
+        api_version: ROADMAP_2026_API_VERSION,
         descriptor_heap_supported: heap,
         descriptor_heap: DescriptorHeapProperties {
             sampler_heap_alignment: 32,

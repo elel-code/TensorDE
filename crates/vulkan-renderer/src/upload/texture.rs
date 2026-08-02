@@ -1,6 +1,6 @@
 use vulkanalia::vk;
 
-use crate::{BufferImageCopy, Error, Image, Result};
+use crate::{BufferImageCopy, Error, Extent3D, Image, ImageDimension, Result, TextureFormat};
 
 /// Texel-block geometry and byte size for an image format.
 ///
@@ -16,6 +16,7 @@ pub struct TexelBlockLayout {
 
 impl TexelBlockLayout {
     pub const R8: Self = Self::new(1, 1, 1);
+    pub const RG8: Self = Self::new(1, 1, 2);
     pub const RGBA8: Self = Self::new(1, 1, 4);
     pub const BC1: Self = Self::new(4, 4, 8);
     pub const BC2_TO_BC7: Self = Self::new(4, 4, 16);
@@ -30,72 +31,21 @@ impl TexelBlockLayout {
 
     /// Returns standard block metadata for common color formats used by UI,
     /// scene, and texture-compression pipelines.
-    pub fn for_format(format: vk::Format) -> Option<Self> {
-        if matches!(
-            format,
-            vk::Format::R8_UNORM
-                | vk::Format::R8_SNORM
-                | vk::Format::R8_USCALED
-                | vk::Format::R8_SSCALED
-                | vk::Format::R8_UINT
-                | vk::Format::R8_SINT
-                | vk::Format::R8_SRGB
-        ) {
-            return Some(Self::R8);
+    pub const fn for_format(format: TextureFormat) -> Option<Self> {
+        match format {
+            TextureFormat::R8Unorm => Some(Self::R8),
+            TextureFormat::Rg8Unorm => Some(Self::RG8),
+            TextureFormat::Rgba8Unorm
+            | TextureFormat::Rgba8Srgb
+            | TextureFormat::Bgra8Unorm
+            | TextureFormat::Bgra8Srgb => Some(Self::RGBA8),
+            TextureFormat::Bc1RgbaUnorm | TextureFormat::Bc4RUnorm => Some(Self::BC1),
+            TextureFormat::Bc2RgbaUnorm
+            | TextureFormat::Bc3RgbaUnorm
+            | TextureFormat::Bc5RgUnorm
+            | TextureFormat::Bc7RgbaUnorm => Some(Self::BC2_TO_BC7),
+            _ => None,
         }
-        if matches!(
-            format,
-            vk::Format::R8G8B8A8_UNORM
-                | vk::Format::R8G8B8A8_SNORM
-                | vk::Format::R8G8B8A8_USCALED
-                | vk::Format::R8G8B8A8_SSCALED
-                | vk::Format::R8G8B8A8_UINT
-                | vk::Format::R8G8B8A8_SINT
-                | vk::Format::R8G8B8A8_SRGB
-                | vk::Format::B8G8R8A8_UNORM
-                | vk::Format::B8G8R8A8_SNORM
-                | vk::Format::B8G8R8A8_USCALED
-                | vk::Format::B8G8R8A8_SSCALED
-                | vk::Format::B8G8R8A8_UINT
-                | vk::Format::B8G8R8A8_SINT
-                | vk::Format::B8G8R8A8_SRGB
-                | vk::Format::A8B8G8R8_UNORM_PACK32
-                | vk::Format::A8B8G8R8_SNORM_PACK32
-                | vk::Format::A8B8G8R8_USCALED_PACK32
-                | vk::Format::A8B8G8R8_SSCALED_PACK32
-                | vk::Format::A8B8G8R8_UINT_PACK32
-                | vk::Format::A8B8G8R8_SINT_PACK32
-                | vk::Format::A8B8G8R8_SRGB_PACK32
-        ) {
-            return Some(Self::RGBA8);
-        }
-        if matches!(
-            format,
-            vk::Format::BC1_RGB_UNORM_BLOCK
-                | vk::Format::BC1_RGB_SRGB_BLOCK
-                | vk::Format::BC1_RGBA_UNORM_BLOCK
-                | vk::Format::BC1_RGBA_SRGB_BLOCK
-                | vk::Format::BC4_UNORM_BLOCK
-                | vk::Format::BC4_SNORM_BLOCK
-        ) {
-            return Some(Self::BC1);
-        }
-        if matches!(
-            format,
-            vk::Format::BC2_UNORM_BLOCK
-                | vk::Format::BC2_SRGB_BLOCK
-                | vk::Format::BC3_UNORM_BLOCK
-                | vk::Format::BC3_SRGB_BLOCK
-                | vk::Format::BC5_UNORM_BLOCK
-                | vk::Format::BC5_SNORM_BLOCK
-                | vk::Format::BC6H_UFLOAT_BLOCK
-                | vk::Format::BC6H_SFLOAT_BLOCK
-                | vk::Format::BC7_UNORM_BLOCK
-                | vk::Format::BC7_SRGB_BLOCK
-        ) {
-            return Some(Self::BC2_TO_BC7);
-        }
-        None
     }
 
     fn validate(self) -> Result<()> {
@@ -119,7 +69,7 @@ pub struct ImageDataLayout {
 
 impl ImageDataLayout {
     /// Builds a tightly packed layout for `extent` and `block`.
-    pub fn tightly_packed(extent: vk::Extent3D, block: TexelBlockLayout) -> Result<Self> {
+    pub fn tightly_packed(extent: Extent3D, block: TexelBlockLayout) -> Result<Self> {
         block.validate()?;
         let blocks_wide = div_ceil(u64::from(extent.width), u64::from(block.width));
         let block_rows = div_ceil(u64::from(extent.height), u64::from(block.height));
@@ -144,7 +94,7 @@ pub struct ImageUpload {
     pub texel_block: TexelBlockLayout,
     pub image_subresource: vk::ImageSubresourceLayers,
     pub image_offset: vk::Offset3D,
-    pub image_extent: vk::Extent3D,
+    pub image_extent: Extent3D,
 }
 
 pub(crate) struct ValidatedImageUpload {
@@ -153,6 +103,30 @@ pub(crate) struct ValidatedImageUpload {
 }
 
 impl ImageUpload {
+    /// Builds a tightly packed upload for one complete color mip of a 2D
+    /// image without exposing Vulkan subresource structures to the caller.
+    pub fn color_mip_2d_tightly_packed(
+        format: TextureFormat,
+        extent: Extent3D,
+        mip_level: u32,
+    ) -> Result<Self> {
+        let texel_block = TexelBlockLayout::for_format(format).ok_or_else(|| {
+            Error::Validation(format!("{format:?} has no standard upload block layout"))
+        })?;
+        Ok(Self {
+            data_layout: ImageDataLayout::tightly_packed(extent, texel_block)?,
+            texel_block,
+            image_subresource: vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            image_offset: vk::Offset3D::default(),
+            image_extent: extent,
+        })
+    }
+
     pub(crate) fn validate(self, image: &Image, data_len: usize) -> Result<ValidatedImageUpload> {
         self.texel_block.validate()?;
         if TexelBlockLayout::for_format(image.format())
@@ -209,7 +183,7 @@ impl ImageUpload {
                 buffer_image_height: self.data_layout.rows_per_image,
                 image_subresource: self.image_subresource,
                 image_offset: self.image_offset,
-                image_extent: self.image_extent,
+                image_extent: self.image_extent.to_vk(),
             },
             required_bytes,
         })
@@ -232,7 +206,7 @@ fn validate_subresource_and_extent(image: &Image, upload: ImageUpload) -> Result
     }
     if upload.image_extent.width == 0
         || upload.image_extent.height == 0
-        || upload.image_extent.depth == 0
+        || upload.image_extent.depth_or_layers == 0
     {
         return Err(Error::Validation(
             "image upload extent must be non-empty".into(),
@@ -260,7 +234,7 @@ fn validate_subresource_and_extent(image: &Image, upload: ImageUpload) -> Result
     let mip_extent = vk::Extent3D {
         width: (extent.width >> mip).max(1),
         height: (extent.height >> mip).max(1),
-        depth: (extent.depth >> mip).max(1),
+        depth: (extent.depth_or_layers >> mip).max(1),
     };
     let end_x = (upload.image_offset.x as u32)
         .checked_add(upload.image_extent.width)
@@ -269,7 +243,7 @@ fn validate_subresource_and_extent(image: &Image, upload: ImageUpload) -> Result
         .checked_add(upload.image_extent.height)
         .ok_or_else(|| Error::Validation("image upload Y range overflows".into()))?;
     let end_z = (upload.image_offset.z as u32)
-        .checked_add(upload.image_extent.depth)
+        .checked_add(upload.image_extent.depth_or_layers)
         .ok_or_else(|| Error::Validation("image upload Z range overflows".into()))?;
     if end_x > mip_extent.width || end_y > mip_extent.height || end_z > mip_extent.depth {
         return Err(Error::Validation(
@@ -286,8 +260,8 @@ fn validate_subresource_and_extent(image: &Image, upload: ImageUpload) -> Result
             "compressed upload height must be block aligned except at the mip edge".into(),
         ));
     }
-    match image.image_type() {
-        vk::ImageType::_3D
+    match image.dimension() {
+        ImageDimension::D3
             if upload.image_subresource.base_array_layer != 0
                 || upload.image_subresource.layer_count != 1 =>
         {
@@ -295,12 +269,12 @@ fn validate_subresource_and_extent(image: &Image, upload: ImageUpload) -> Result
                 "3D image uploads require base array layer zero and one layer".into(),
             ));
         }
-        vk::ImageType::_1D if upload.image_extent.height != 1 => {
+        ImageDimension::D1 if upload.image_extent.height != 1 => {
             return Err(Error::Validation(
                 "1D image uploads require a height of one".into(),
             ));
         }
-        vk::ImageType::_1D | vk::ImageType::_2D if upload.image_extent.depth != 1 => {
+        ImageDimension::D1 | ImageDimension::D2 if upload.image_extent.depth_or_layers != 1 => {
             return Err(Error::Validation(
                 "1D and 2D image uploads require a depth of one".into(),
             ));
@@ -329,7 +303,7 @@ fn required_footprint(upload: ImageUpload) -> Result<u64> {
     let images = u64::from(
         upload
             .image_extent
-            .depth
+            .depth_or_layers
             .max(upload.image_subresource.layer_count),
     );
     let preceding_images = images
@@ -356,11 +330,7 @@ mod tests {
 
     #[test]
     fn r8_atlas_layout_is_tightly_packed() {
-        let extent = vk::Extent3D {
-            width: 37,
-            height: 19,
-            depth: 1,
-        };
+        let extent = Extent3D::new(37, 19, 1);
         assert_eq!(
             ImageDataLayout::tightly_packed(extent, TexelBlockLayout::R8).unwrap(),
             ImageDataLayout {
@@ -380,11 +350,7 @@ mod tests {
             texel_block: TexelBlockLayout::RGBA8,
             image_subresource: layers(1),
             image_offset: vk::Offset3D::default(),
-            image_extent: vk::Extent3D {
-                width: 3,
-                height: 2,
-                depth: 1,
-            },
+            image_extent: Extent3D::new(3, 2, 1),
         };
         assert_eq!(required_footprint(rgba).unwrap(), 268);
 
@@ -396,11 +362,7 @@ mod tests {
             texel_block: TexelBlockLayout::BC1,
             image_subresource: layers(1),
             image_offset: vk::Offset3D::default(),
-            image_extent: vk::Extent3D {
-                width: 7,
-                height: 7,
-                depth: 1,
-            },
+            image_extent: Extent3D::new(7, 7, 1),
         };
         assert_eq!(required_footprint(bc).unwrap(), 32);
     }
@@ -408,17 +370,34 @@ mod tests {
     #[test]
     fn common_ui_formats_have_standard_metadata() {
         assert_eq!(
-            TexelBlockLayout::for_format(vk::Format::R8_UNORM),
+            TexelBlockLayout::for_format(TextureFormat::R8Unorm),
             Some(TexelBlockLayout::R8)
         );
         assert_eq!(
-            TexelBlockLayout::for_format(vk::Format::R8G8B8A8_UNORM),
+            TexelBlockLayout::for_format(TextureFormat::Rgba8Unorm),
             Some(TexelBlockLayout::RGBA8)
         );
         assert_eq!(
-            TexelBlockLayout::for_format(vk::Format::B8G8R8A8_UNORM),
+            TexelBlockLayout::for_format(TextureFormat::Bgra8Unorm),
             Some(TexelBlockLayout::RGBA8)
         );
+        assert_eq!(
+            TexelBlockLayout::for_format(TextureFormat::Rg8Unorm),
+            Some(TexelBlockLayout::RG8)
+        );
+    }
+
+    #[test]
+    fn typed_color_mip_upload_keeps_exact_level_and_extent() {
+        let upload = ImageUpload::color_mip_2d_tightly_packed(
+            TextureFormat::Bc1RgbaUnorm,
+            Extent3D::new(7, 5, 1),
+            3,
+        )
+        .unwrap();
+        assert_eq!(upload.image_subresource.mip_level, 3);
+        assert_eq!(upload.image_extent, Extent3D::new(7, 5, 1));
+        assert_eq!(upload.data_layout.bytes_per_row, 16);
     }
 
     fn layers(count: u32) -> vk::ImageSubresourceLayers {

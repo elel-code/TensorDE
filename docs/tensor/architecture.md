@@ -8,8 +8,10 @@ Tensor is a Rust Wayland compositor built around five ownership domains:
    `tensor-protocol` plus `src/protocol` and `src/backend`) own values, wire state, input/session,
    XWayland, and DRM/KMS directly. Smithay and calloop are absent from the dependency graph.
 3. **Bevy ECS** owns compositor intent: stable IDs, lifecycle, workspace membership, focus, geometry.
-4. **Vulkanalia** owns GPU handles, descriptor heaps, frame extraction, rendering, and
-   synchronization. It returns dma-bufs and fences for present instead of owning KMS state.
+4. **`vulkan-renderer`** owns the Vulkanalia loader/device boundary, GPU handles, shared command
+   pool/timeline, native dma-buf resources, and synchronization. Tensor owns frame extraction and
+   product-specific recording, then receives dma-bufs and fences for present without giving the
+   renderer KMS state.
 5. **IPC / portal** adapters translate external requests into validated commands / event IDs.
 
 ## Async execution and the event layer
@@ -107,27 +109,34 @@ for linear snapshot comparison and carry an independent stacking-order index for
 styles resolve conservative visual bounds (including shadows and clipped output edges); damage
 merges adjacent regions, caps pathological fragmentation, and expands regions that feed a
 backdrop-blur dependency. Vulkan descriptor allocation consumes this compact scene data after ECS
-queries finish. `render/frame.rs` now owns per-output scene history, damage, descriptor-heap range
-allocation, three native output slots, and timeline retirement, and is connected to `RuntimeState`
-output lifecycle. The Vulkan executor binds resource and sampler heap ranges, samples imported
+queries finish. `render/frame.rs` owns per-output scene history, damage, descriptor-range frame
+policy, and three native output-slot policy, and is connected to `RuntimeState` output lifecycle.
+The shared renderer owns the command pool, timeline, and device-local descriptor heaps; Tensor's
+frame scheduler holds the resource heap's allocator handle and therefore allocates the same ranges
+that the shared descriptor encoder/uploads use. Tensor reserves a shared timeline value before
+preparing a frame. Its renderer path records only shared typed encoders, descriptor sources,
+uploads, and semantic barrier batches; it has no product-owned command buffer, raw synchronization,
+or SHM allocation lifecycle. The Vulkan executor binds resource and sampler heap ranges, samples imported
 client images through a push-index dynamic-rendering pipeline, releases foreign ownership, exports
 a Tensor-owned dma-buf description plus binary `SYNC_FD`, and hands both to the tty adapter for the
 Tensor-owned atomic KMS path. Renderer production code depends only on Tensor value contracts. The
 current slice is intentionally limited to one-plane RGB; implicit dma-buf synchronization,
 multi-plane formats, and damage-driven partial rendering remain later gates. Explicit clients use
 Tensor's `wp_linux_drm_syncobj_v1` owner: DRM timeline points stay in the protocol layer, while only exported
-sync-file fds and stable `SurfaceId` values reach Vulkanalia.
+sync-file fds and stable `SurfaceId` values reach `vulkan-renderer`.
 
 Compositor-owned appearance crosses the configuration boundary as a small value-only `SceneAppearance`
 object. ECS extraction resolves an active view's configured `FocusRingStyle` into a `FocusOutline`;
 the frame planner maps its inner and outer edges independently onto the physical output grid, then
-the descriptor-free focus-ring pipeline cuts the rounded inner rectangle out of the rounded outer
-rectangle in one SDF draw. The inner radius is the view corner radius; the outer radius adds the
-ring width. It is clipped at the output edge and the frame plan emits it before that view's client
-tree, including popups; later scene nodes cover earlier nodes, and the software cursor remains last.
-This follows Niri's front-to-back element contract, Hyprland's active-window border semantics, and
-Nourish's single focused-surface ownership without copying their renderer ownership models. It is not
-a descriptor-set fallback: sampled client images continue to use `VK_EXT_descriptor_heap` exclusively.
+the shared renderer's descriptor-heap focus-ring pipeline cuts the rounded inner rectangle out of
+the rounded outer rectangle in one SDF draw. Its shader has no resource descriptors, but its
+64-byte record uses the same `PushDataEXT` ABI as the client-image and analytic-cursor pipelines.
+The inner radius is the view corner radius; the outer radius adds the ring width. It is clipped at
+the output edge and the frame plan emits it before that view's client tree, including popups; later
+scene nodes cover earlier nodes, and the software cursor remains last. This follows Niri's
+front-to-back element contract, Hyprland's active-window border semantics, and Nourish's single
+focused-surface ownership without copying their renderer ownership models. It is not a descriptor-set
+fallback: every graphics pipeline uses the required `VK_EXT_descriptor_heap` contract.
 
 Output scale is a shared value primitive, represented exactly in the `N/120` units of
 `wp_fractional_scale_v1`. DRM mode dimensions and Vulkan native targets remain physical pixels;
@@ -161,13 +170,13 @@ buffers are not alternative backends. A device that lacks usable resource and em
 limits fails startup before any long-lived renderer state is created.
 
 Physical-device ranking lives in `render/device.rs`. The policy is configurable but the default
-prefers a discrete GPU, then integrated/virtual hardware, with CPU devices last. Vulkanalia probing
-in `render/vulkan.rs` creates a Vulkan 1.4 instance, verifies both the descriptor-heap extension and
-feature bit, and requires a graphics queue, timeline semaphores, usable descriptor-heap limits, a
+prefers a discrete GPU, then integrated/virtual hardware, with CPU devices last. The shared
+`vulkan-renderer` instance/adapter probe verifies Vulkan 1.4, both the descriptor-heap extension and
+feature bit, a graphics queue, timeline semaphores, usable descriptor-heap limits, and a
 complete primary/render node pair reported through `VK_EXT_physical_device_drm`, external dma-buf
 memory, explicit DRM modifiers, foreign
 queue-family ownership transfer, and bidirectional binary `SYNC_FD` semaphore support. The logical
-device enables only the extensions for this native path and descriptor heap; there is no
+device it creates enables only the extensions for this native path and descriptor heap; there is no
 descriptor-set or descriptor-buffer fallback.
 Before ranking, each otherwise eligible device must also expose at least one explicit DRM modifier
 that supports the real native image usage and exportable dma-buf memory. Import and export support

@@ -14,6 +14,8 @@ use crate::{
     Backend, BinarySemaphore, BinarySemaphoreDescriptor, CommandBuffer, CommandEncoder,
     CommandEncoderDescriptor, Error, FrameToken, Result,
 };
+#[cfg(feature = "ffmpeg-vulkan-decode")]
+use crate::{DecodedVideoFrame, SubmissionLease, video::decoded_video_submission_parts};
 
 /// Cold-compiled command ordering for one presentation policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,6 +78,40 @@ pub struct PresentationTransactionDescriptor<'a> {
     pub plan: &'a PresentationPathPlan,
     pub swapchain: &'a Swapchain,
     pub acquire_timeout_ns: u64,
+}
+
+/// The command range which consumes an external frame dependency.
+#[cfg(feature = "ffmpeg-vulkan-decode")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PresentationDependencyScope {
+    IndependentCommands,
+    SurfaceCommands,
+}
+
+/// Typed external dependencies consumed by exactly one presentation submit.
+#[cfg(feature = "ffmpeg-vulkan-decode")]
+#[derive(Clone, Copy, Debug)]
+pub struct PresentationFrameDependencies<'a> {
+    decoded_video_frames: &'a [DecodedVideoFrame],
+    scope: PresentationDependencyScope,
+}
+
+#[cfg(feature = "ffmpeg-vulkan-decode")]
+impl<'a> PresentationFrameDependencies<'a> {
+    pub const NONE: Self = Self {
+        decoded_video_frames: &[],
+        scope: PresentationDependencyScope::IndependentCommands,
+    };
+
+    pub const fn decoded_video(
+        frames: &'a [DecodedVideoFrame],
+        scope: PresentationDependencyScope,
+    ) -> Self {
+        Self {
+            decoded_video_frames: frames,
+            scope,
+        }
+    }
 }
 
 /// Last reached state of the managed transaction.
@@ -211,32 +247,49 @@ impl PresentationTransaction {
     /// Executes a complete frame transaction and consumes every command
     /// buffer exactly once.
     ///
-    /// For an offscreen plan, `independent_commands` are the authored/effect
-    /// graph ending at SceneColor. For a direct plan they must be empty because
-    /// `record_surface` records the sole physical pass. The callback records
-    /// only commands between the transaction-owned transition to
+    /// `record_independent` runs only after the selected frame slot's previous
+    /// timeline submission retires. For an offscreen plan it records the
+    /// authored/effect graph ending at SceneColor. For a direct plan it must
+    /// return no commands because `record_surface` records the sole physical
+    /// pass. The surface callback records only commands between the managed transition to
     /// `ATTACHMENT_OPTIMAL` and the transition to `PRESENT_SRC_KHR`.
     ///
     /// If recording, submission, or presentation fails after acquisition, the
     /// transaction becomes poisoned. Recreate it together with the swapchain;
     /// silently continuing could reuse an acquired image or binary semaphore.
-    pub fn execute_frame<I, F>(
+    pub fn execute_frame<I, R, F>(
         &mut self,
         swapchain: &Swapchain,
         frame_slot: usize,
-        independent_commands: I,
+        record_independent: R,
+        #[cfg(feature = "ffmpeg-vulkan-decode")] dependencies: PresentationFrameDependencies<'_>,
         record_surface: F,
     ) -> Result<PresentTransactionOutcome>
     where
         I: IntoIterator<Item = CommandBuffer>,
+        R: FnOnce() -> Result<I>,
         F: FnOnce(&mut CommandEncoder, &AcquiredSurfaceTexture<'_>) -> Result<()>,
     {
         self.validate_frame_start(swapchain, frame_slot)?;
-        let mut independent_commands = independent_commands.into_iter().collect::<Vec<_>>();
+        let mut independent_commands = record_independent()?.into_iter().collect::<Vec<_>>();
         self.validate_independent_commands(&independent_commands)?;
+        #[cfg(feature = "ffmpeg-vulkan-decode")]
+        self.validate_dependencies(dependencies)?;
 
         let late_acquire = self.plan.acquire == SurfaceAcquireStrategy::AfterOffscreenSubmit;
         let offscreen_submission = if late_acquire {
+            #[cfg(feature = "ffmpeg-vulkan-decode")]
+            let (waits, leases) = self.decoded_submission_parts(
+                dependencies,
+                PresentationDependencyScope::IndependentCommands,
+            )?;
+            #[cfg(feature = "ffmpeg-vulkan-decode")]
+            let frame = self.queue.submit_retained(
+                std::mem::take(&mut independent_commands),
+                &waits,
+                leases,
+            )?;
+            #[cfg(not(feature = "ffmpeg-vulkan-decode"))]
             let frame = self
                 .queue
                 .submit(std::mem::take(&mut independent_commands))?;
@@ -305,8 +358,34 @@ impl PresentationTransaction {
             .acquire
             .wait(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)?;
         let present_signal = &self.present_signals[image_index as usize];
+        #[cfg(feature = "ffmpeg-vulkan-decode")]
+        let submission_scope = if late_acquire {
+            PresentationDependencyScope::SurfaceCommands
+        } else {
+            dependencies.scope
+        };
+        #[cfg(feature = "ffmpeg-vulkan-decode")]
+        let (decoded_waits, decoded_leases) =
+            self.decoded_submission_parts(dependencies, submission_scope)?;
+        #[cfg(feature = "ffmpeg-vulkan-decode")]
+        let mut submission_waits = Vec::with_capacity(decoded_waits.len().saturating_add(1));
+        #[cfg(feature = "ffmpeg-vulkan-decode")]
+        {
+            submission_waits.push(acquire_wait);
+            submission_waits.extend(decoded_waits);
+        }
         let surface_submission = if late_acquire {
             unsafe {
+                #[cfg(feature = "ffmpeg-vulkan-decode")]
+                {
+                    self.queue.submit_retained_with_binary_signals(
+                        [surface_commands],
+                        &submission_waits,
+                        &[present_signal],
+                        decoded_leases,
+                    )
+                }
+                #[cfg(not(feature = "ffmpeg-vulkan-decode"))]
                 self.queue.submit_with_binary_signals(
                     [surface_commands],
                     &[acquire_wait],
@@ -316,6 +395,16 @@ impl PresentationTransaction {
         } else {
             independent_commands.push(surface_commands);
             unsafe {
+                #[cfg(feature = "ffmpeg-vulkan-decode")]
+                {
+                    self.queue.submit_retained_with_binary_signals(
+                        independent_commands,
+                        &submission_waits,
+                        &[present_signal],
+                        decoded_leases,
+                    )
+                }
+                #[cfg(not(feature = "ffmpeg-vulkan-decode"))]
                 self.queue.submit_with_binary_signals(
                     independent_commands,
                     &[acquire_wait],
@@ -362,10 +451,7 @@ impl PresentationTransaction {
         if let Some(last) = slot.last_submission {
             let completed = self.queue.completed_timeline()?;
             if completed < last.value() {
-                return Err(Error::Validation(format!(
-                    "presentation frame slot {frame_slot} is still in flight at timeline {}",
-                    last.value()
-                )));
+                self.queue.wait_for(last, u64::MAX)?;
             }
         }
         self.phase = PresentationTransactionPhase::Ready;
@@ -390,6 +476,32 @@ impl PresentationTransaction {
             )),
             _ => Ok(()),
         }
+    }
+
+    #[cfg(feature = "ffmpeg-vulkan-decode")]
+    fn validate_dependencies(&self, dependencies: PresentationFrameDependencies<'_>) -> Result<()> {
+        if !dependencies.decoded_video_frames.is_empty()
+            && self.plan.target == PresentationTarget::DirectSurface
+            && dependencies.scope == PresentationDependencyScope::IndependentCommands
+        {
+            return Err(Error::Validation(
+                "direct-surface presentation cannot consume decoded video in independent commands"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "ffmpeg-vulkan-decode")]
+    fn decoded_submission_parts(
+        &self,
+        dependencies: PresentationFrameDependencies<'_>,
+        scope: PresentationDependencyScope,
+    ) -> Result<(Vec<crate::SemaphoreWait>, Vec<SubmissionLease>)> {
+        if dependencies.scope != scope {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        decoded_video_submission_parts(&self.owner, dependencies.decoded_video_frames)
     }
 
     fn poison<T>(&mut self, error: Error) -> Result<T> {
@@ -426,7 +538,7 @@ fn validate_descriptor(
     }
     if !configuration
         .usage
-        .contains(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+        .contains(crate::TextureUsages::COLOR_ATTACHMENT)
     {
         return Err(Error::Validation(
             "terminal presentation requires COLOR_ATTACHMENT swapchain usage".into(),
@@ -449,16 +561,10 @@ mod tests {
 
     fn requirements() -> PresentationRequirements {
         PresentationRequirements {
-            surface_extent: vk::Extent2D {
-                width: 3840,
-                height: 2160,
-            },
-            target_extent: vk::Extent2D {
-                width: 3840,
-                height: 2160,
-            },
-            surface_format: vk::Format::B8G8R8A8_UNORM,
-            target_format: vk::Format::R16G16B16A16_SFLOAT,
+            surface_extent: crate::Extent2D::new(3840, 2160),
+            target_extent: crate::Extent2D::new(3840, 2160),
+            surface_format: crate::TextureFormat::Bgra8Unorm,
+            target_format: crate::TextureFormat::Rgba16Float,
             frame_slots: 2,
             physical_pass_count: 4,
             sampled_after_write: true,

@@ -7,7 +7,9 @@ use std::sync::Arc;
 use vulkanalia::{prelude::v1_4::*, vk};
 
 use crate::backend::DeviceOwner;
-use crate::{Backend, Error, ResourceBinding, Result};
+use crate::{
+    Backend, Error, Extent3D, ResourceBinding, Result, SampleCount, TextureFormat, TextureUsages,
+};
 
 /// Complete metadata required to validate and create a view over an externally
 /// owned `VkImage` from the same logical device.
@@ -16,12 +18,15 @@ pub struct ExternalImageViewDescriptor {
     pub label: Option<String>,
     pub image: vk::Image,
     pub view_type: vk::ImageViewType,
-    pub format: vk::Format,
-    pub extent: vk::Extent3D,
+    pub format: TextureFormat,
+    pub extent: Extent3D,
     pub mip_levels: u32,
     pub array_layers: u32,
-    pub samples: vk::SampleCountFlags,
-    pub usage: vk::ImageUsageFlags,
+    pub samples: SampleCount,
+    pub usage: TextureUsages,
+    /// Optional usage restriction for mutable-format plane views. This maps
+    /// to `VkImageViewUsageCreateInfo` and must be a subset of `usage`.
+    pub view_usage: Option<TextureUsages>,
     pub components: vk::ComponentMapping,
     pub subresource_range: vk::ImageSubresourceRange,
 }
@@ -33,12 +38,7 @@ impl ExternalImageViewDescriptor {
                 "external image handle must not be null".into(),
             ));
         }
-        if self.format == vk::Format::UNDEFINED {
-            return Err(Error::Validation(
-                "external image view format must be defined".into(),
-            ));
-        }
-        if self.extent.width == 0 || self.extent.height == 0 || self.extent.depth == 0 {
+        if self.extent.is_empty() {
             return Err(Error::Validation(
                 "external image extent must be non-zero".into(),
             ));
@@ -48,14 +48,17 @@ impl ExternalImageViewDescriptor {
                 "external image mip and array-layer counts must be non-zero".into(),
             ));
         }
-        if self.samples.is_empty() || self.samples.bits().count_ones() != 1 {
-            return Err(Error::Validation(
-                "external image sample count must contain exactly one bit".into(),
-            ));
-        }
         if self.usage.is_empty() {
             return Err(Error::Validation(
                 "external image usage must be non-empty".into(),
+            ));
+        }
+        if self
+            .view_usage
+            .is_some_and(|view_usage| view_usage.is_empty() || !self.usage.contains(view_usage))
+        {
+            return Err(Error::Validation(
+                "external image view usage must be non-empty and contained by image usage".into(),
             ));
         }
         validate_subresources(self.subresource_range, self.mip_levels, self.array_layers)
@@ -96,15 +99,15 @@ impl RetainedExternalImage {
         self.inner.descriptor.image
     }
 
-    pub fn format(&self) -> vk::Format {
+    pub fn format(&self) -> TextureFormat {
         self.inner.descriptor.format
     }
 
-    pub fn extent(&self) -> vk::Extent3D {
+    pub fn extent(&self) -> Extent3D {
         self.inner.descriptor.extent
     }
 
-    pub fn usage(&self) -> vk::ImageUsageFlags {
+    pub fn usage(&self) -> TextureUsages {
         self.inner.descriptor.usage
     }
 
@@ -122,19 +125,31 @@ impl RetainedExternalImage {
         image_view_create_info(&self.inner.descriptor)
     }
 
+    pub(crate) fn with_view_create_info<R>(
+        &self,
+        callback: impl FnOnce(&vk::ImageViewCreateInfo) -> R,
+    ) -> R {
+        with_image_view_create_info(&self.inner.descriptor, callback)
+    }
+
     pub fn resource_binding(&self) -> ResourceBinding {
-        ResourceBinding::Image {
-            image: self.inner.descriptor.image,
-            subresource_range: self.inner.descriptor.subresource_range,
-        }
+        ResourceBinding::raw_image(
+            self.inner.descriptor.image,
+            self.inner.descriptor.subresource_range,
+        )
+    }
+
+    pub(crate) fn owner(&self) -> &Arc<DeviceOwner> {
+        &self.inner.owner
     }
 
     /// Materializes a real Vulkan image view only for APIs such as dynamic
     /// rendering that consume a `VkImageView` handle.
     pub fn create_view(&self) -> Result<RetainedExternalImageView> {
-        let create = image_view_create_info(&self.inner.descriptor);
-        let view = unsafe { self.inner.owner.device.create_image_view(&create, None) }
-            .map_err(|source| Error::vulkan("vkCreateImageView(external image)", source))?;
+        let view = with_image_view_create_info(&self.inner.descriptor, |create| unsafe {
+            self.inner.owner.device.create_image_view(create, None)
+        })
+        .map_err(|source| Error::vulkan("vkCreateImageView(external image)", source))?;
         Ok(RetainedExternalImageView {
             inner: Arc::new(RetainedExternalImageViewInner {
                 owner: Arc::clone(&self.inner.owner),
@@ -183,19 +198,19 @@ impl RetainedExternalImageView {
         self.inner.view
     }
 
-    pub fn format(&self) -> vk::Format {
+    pub fn format(&self) -> TextureFormat {
         self.inner.descriptor.format
     }
 
-    pub fn extent(&self) -> vk::Extent3D {
+    pub fn extent(&self) -> Extent3D {
         self.inner.descriptor.extent
     }
 
-    pub fn sample_count(&self) -> vk::SampleCountFlags {
+    pub fn sample_count(&self) -> SampleCount {
         self.inner.descriptor.samples
     }
 
-    pub fn usage(&self) -> vk::ImageUsageFlags {
+    pub fn usage(&self) -> TextureUsages {
         self.inner.descriptor.usage
     }
 
@@ -214,10 +229,10 @@ impl RetainedExternalImageView {
     }
 
     pub fn resource_binding(&self) -> ResourceBinding {
-        ResourceBinding::Image {
-            image: self.inner.descriptor.image,
-            subresource_range: self.inner.descriptor.subresource_range,
-        }
+        ResourceBinding::raw_image(
+            self.inner.descriptor.image,
+            self.inner.descriptor.subresource_range,
+        )
     }
 
     pub(crate) fn owner(&self) -> &Arc<DeviceOwner> {
@@ -262,14 +277,7 @@ impl Backend {
     where
         T: Any + Send + Sync,
     {
-        descriptor.validate()?;
-        Ok(RetainedExternalImage {
-            inner: Arc::new(RetainedExternalImageInner {
-                owner: self.shared_owner(),
-                descriptor: descriptor.clone(),
-                _host_lease: host_lease,
-            }),
-        })
+        retain_external_image_for_owner(self.shared_owner(), descriptor, host_lease)
     }
 
     /// Creates a renderer-owned view over a decoder/host-owned image and keeps
@@ -294,14 +302,57 @@ impl Backend {
     }
 }
 
+pub(crate) fn retain_external_image_for_owner<T>(
+    owner: Arc<DeviceOwner>,
+    descriptor: &ExternalImageViewDescriptor,
+    host_lease: Arc<T>,
+) -> Result<RetainedExternalImage>
+where
+    T: Any + Send + Sync,
+{
+    descriptor.validate()?;
+    Ok(RetainedExternalImage {
+        inner: Arc::new(RetainedExternalImageInner {
+            owner,
+            descriptor: descriptor.clone(),
+            _host_lease: host_lease,
+        }),
+    })
+}
+
 fn image_view_create_info(descriptor: &ExternalImageViewDescriptor) -> vk::ImageViewCreateInfo {
     vk::ImageViewCreateInfo::builder()
         .image(descriptor.image)
         .view_type(descriptor.view_type)
-        .format(descriptor.format)
+        .format(descriptor.format.to_vk())
         .components(descriptor.components)
         .subresource_range(descriptor.subresource_range)
         .build()
+}
+
+fn with_image_view_create_info<R>(
+    descriptor: &ExternalImageViewDescriptor,
+    callback: impl FnOnce(&vk::ImageViewCreateInfo) -> R,
+) -> R {
+    let mut view_usage = descriptor.view_usage.map(|usage| {
+        vk::ImageViewUsageCreateInfo::builder()
+            .usage(usage.to_vk())
+            .build()
+    });
+    if let Some(view_usage) = view_usage.as_mut() {
+        let create = vk::ImageViewCreateInfo::builder()
+            .image(descriptor.image)
+            .view_type(descriptor.view_type)
+            .format(descriptor.format.to_vk())
+            .components(descriptor.components)
+            .subresource_range(descriptor.subresource_range)
+            .push_next(view_usage)
+            .build();
+        callback(&create)
+    } else {
+        let create = image_view_create_info(descriptor);
+        callback(&create)
+    }
 }
 
 fn validate_subresources(
@@ -341,16 +392,13 @@ mod tests {
             label: Some("decoder-y-plane".into()),
             image: vk::Image::from_raw(7),
             view_type: vk::ImageViewType::_2D,
-            format: vk::Format::R8_UNORM,
-            extent: vk::Extent3D {
-                width: 1920,
-                height: 1080,
-                depth: 1,
-            },
+            format: TextureFormat::R8Unorm,
+            extent: Extent3D::new(1920, 1080, 1),
             mip_levels: 1,
             array_layers: 2,
-            samples: vk::SampleCountFlags::_1,
-            usage: vk::ImageUsageFlags::SAMPLED,
+            samples: SampleCount::One,
+            usage: TextureUsages::SAMPLED,
+            view_usage: None,
             components: vk::ComponentMapping::default(),
             subresource_range: vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::PLANE_0,
@@ -367,6 +415,18 @@ mod tests {
         let mut descriptor = descriptor();
         assert!(descriptor.validate().is_ok());
         descriptor.subresource_range.base_array_layer = 2;
+        assert!(descriptor.validate().is_err());
+    }
+
+    #[test]
+    fn plane_view_usage_must_be_a_non_empty_image_usage_subset() {
+        let mut descriptor = descriptor();
+        descriptor.usage = TextureUsages::SAMPLED | TextureUsages::VIDEO_DECODE_DESTINATION;
+        descriptor.view_usage = Some(TextureUsages::SAMPLED);
+        assert!(descriptor.validate().is_ok());
+        descriptor.view_usage = Some(TextureUsages::COLOR_ATTACHMENT);
+        assert!(descriptor.validate().is_err());
+        descriptor.view_usage = Some(TextureUsages::empty());
         assert!(descriptor.validate().is_err());
     }
 }

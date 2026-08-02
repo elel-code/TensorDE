@@ -32,8 +32,7 @@ pub(crate) use format::{
 };
 #[cfg(feature = "tty")]
 pub(crate) use frame::{
-    DescriptorHeapLayout, FrameScheduler, FrameSubmission, NativeCursorTarget, NativeOutputTarget,
-    RenderOutputId,
+    FrameScheduler, FrameSubmission, NativeCursorTarget, NativeOutputTarget, RenderOutputId,
 };
 pub use interop::NativeInteropCapabilities;
 pub use target::RendererTarget;

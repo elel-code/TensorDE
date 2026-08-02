@@ -17,14 +17,14 @@ impl MemoryAllocator {
             .validate()
             .map_err(|error| Error::Validation(error.to_string()))?;
         let create = vk::ImageCreateInfo::builder()
-            .image_type(descriptor.image_type)
-            .format(descriptor.format)
-            .extent(descriptor.extent)
+            .image_type(descriptor.dimension.to_vk())
+            .format(descriptor.format.to_vk())
+            .extent(descriptor.extent.to_vk())
             .mip_levels(descriptor.mip_levels)
             .array_layers(descriptor.array_layers)
-            .samples(descriptor.samples)
-            .tiling(descriptor.tiling)
-            .usage(descriptor.usage)
+            .samples(descriptor.samples.to_vk())
+            .tiling(descriptor.tiling.to_vk())
+            .usage(descriptor.usage.to_vk())
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
         let image = unsafe { self.owner.device.create_image(&create, None) }
@@ -52,13 +52,8 @@ impl MemoryAllocator {
             )
             .map_err(|error| Error::Validation(error.to_string()))?;
         let class = match descriptor.tiling {
-            vk::ImageTiling::LINEAR => MemoryClass::LinearImage,
-            vk::ImageTiling::OPTIMAL => MemoryClass::OptimalImage,
-            _ => {
-                return Err(Error::Validation(
-                    "DRM modifier image tiling requires an explicit import allocator".into(),
-                ));
-            }
+            crate::ImageTiling::Linear => MemoryClass::LinearImage,
+            crate::ImageTiling::Optimal => MemoryClass::OptimalImage,
         };
         let dedicated = requirements.size >= self.config.dedicated_threshold
             || dedicated_requirements.prefers_dedicated_allocation != 0
@@ -144,7 +139,7 @@ impl MemoryAllocator {
                 block,
                 range: Some(range),
                 handle: image,
-                image_type: descriptor.image_type,
+                dimension: descriptor.dimension,
                 format: descriptor.format,
                 extent: descriptor.extent,
                 mip_levels: descriptor.mip_levels,
@@ -184,15 +179,15 @@ impl Image {
         self.inner.handle
     }
 
-    pub fn format(&self) -> vk::Format {
+    pub fn format(&self) -> crate::TextureFormat {
         self.inner.format
     }
 
-    pub fn image_type(&self) -> vk::ImageType {
-        self.inner.image_type
+    pub fn dimension(&self) -> crate::ImageDimension {
+        self.inner.dimension
     }
 
-    pub fn extent(&self) -> vk::Extent3D {
+    pub fn extent(&self) -> crate::Extent3D {
         self.inner.extent
     }
 
@@ -204,7 +199,7 @@ impl Image {
         self.inner.array_layers
     }
 
-    pub fn usage(&self) -> vk::ImageUsageFlags {
+    pub fn usage(&self) -> crate::TextureUsages {
         self.inner.usage
     }
 
@@ -220,7 +215,7 @@ impl Image {
             .map_or(0, |range| range.end - range.start)
     }
 
-    pub fn sample_count(&self) -> vk::SampleCountFlags {
+    pub fn sample_count(&self) -> crate::SampleCount {
         self.inner.samples
     }
 
@@ -255,7 +250,7 @@ impl Image {
         let create = vk::ImageViewCreateInfo::builder()
             .image(self.inner.handle)
             .view_type(descriptor.view_type)
-            .format(descriptor.format)
+            .format(descriptor.format.to_vk())
             .components(descriptor.components)
             .subresource_range(descriptor.subresource_range);
         let handle = unsafe { self.inner.owner.device.create_image_view(&create, None) }
@@ -266,6 +261,17 @@ impl Image {
                 handle,
                 descriptor: descriptor.clone(),
             }),
+        })
+    }
+
+    /// Creates an identity-swizzled view covering every color mip and layer.
+    pub fn create_color_view(&self, label: impl Into<Option<String>>) -> Result<ImageView> {
+        self.create_view(&ImageViewDescriptor {
+            label: label.into(),
+            view_type: vk::ImageViewType::_2D,
+            format: self.format(),
+            components: vk::ComponentMapping::default(),
+            subresource_range: self.full_subresource_range(vk::ImageAspectFlags::COLOR),
         })
     }
 }
@@ -281,13 +287,13 @@ struct ImageInner {
     block: Arc<MemoryBlock>,
     range: Option<Range<u64>>,
     handle: vk::Image,
-    image_type: vk::ImageType,
-    format: vk::Format,
-    extent: vk::Extent3D,
+    dimension: crate::ImageDimension,
+    format: crate::TextureFormat,
+    extent: crate::Extent3D,
     mip_levels: u32,
     array_layers: u32,
-    samples: vk::SampleCountFlags,
-    usage: vk::ImageUsageFlags,
+    samples: crate::SampleCount,
+    usage: crate::TextureUsages,
     label: Option<String>,
 }
 
@@ -304,7 +310,7 @@ impl Drop for ImageInner {
 pub struct ImageViewDescriptor {
     pub label: Option<String>,
     pub view_type: vk::ImageViewType,
-    pub format: vk::Format,
+    pub format: crate::TextureFormat,
     pub components: vk::ComponentMapping,
     pub subresource_range: vk::ImageSubresourceRange,
 }
@@ -344,12 +350,16 @@ impl ImageView {
         self.inner.handle
     }
 
-    pub fn format(&self) -> vk::Format {
+    pub fn format(&self) -> crate::TextureFormat {
         self.inner.descriptor.format
     }
 
-    pub fn sample_count(&self) -> vk::SampleCountFlags {
+    pub fn sample_count(&self) -> crate::SampleCount {
         self.inner.image.samples
+    }
+
+    pub fn usage(&self) -> crate::TextureUsages {
+        self.inner.image.usage
     }
 
     pub(crate) fn owner(&self) -> &Arc<crate::backend::DeviceOwner> {
@@ -360,7 +370,7 @@ impl ImageView {
         vk::ImageViewCreateInfo::builder()
             .image(self.inner.image.handle)
             .view_type(self.inner.descriptor.view_type)
-            .format(self.inner.descriptor.format)
+            .format(self.inner.descriptor.format.to_vk())
             .components(self.inner.descriptor.components)
             .subresource_range(self.inner.descriptor.subresource_range)
             .build()

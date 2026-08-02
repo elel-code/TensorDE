@@ -15,6 +15,7 @@ use crate::{
 };
 
 static TEMPORARY_ID: AtomicU64 = AtomicU64::new(0);
+const SLANG_OPTIMIZATION_LEVEL: &str = "-O2";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShaderCompileRequest {
@@ -54,6 +55,24 @@ impl SlangCompiler {
 
     pub fn compile(&self, request: &ShaderCompileRequest) -> Result<CompileReport> {
         self.compile_with_legalization(request, false)
+    }
+
+    /// Reflects a directly-authored native Slang stage before descriptor-heap
+    /// lowering. The temporary SPIR-V is validated and discarded; it exists
+    /// only to preserve typed uniform layout metadata for a later native-heap
+    /// production compile.
+    pub fn reflect_native_source(
+        &self,
+        source: &Path,
+        entry_point: &str,
+        stage: ShaderStage,
+        output: &Path,
+    ) -> Result<Value> {
+        self.check_tools()?;
+        let temporary = TemporaryOutputs::new(output);
+        self.run_native_slang(source, entry_point, stage, &temporary, false, true)?;
+        self.validate_spirv(&temporary.spirv)?;
+        read_reflection(&temporary.reflection)
     }
 
     /// Compiles a native resource-heap storage-image proxy and legalizes it to
@@ -177,12 +196,31 @@ impl SlangCompiler {
         request: &ShaderCompileRequest,
         temporary: &TemporaryOutputs,
     ) -> Result<()> {
+        self.run_native_slang(
+            &request.source,
+            &request.entry_point,
+            request.stage,
+            temporary,
+            request.contract.emits_native_descriptor_heap(),
+            false,
+        )
+    }
+
+    fn run_native_slang(
+        &self,
+        source: &Path,
+        entry_point: &str,
+        stage: ShaderStage,
+        temporary: &TemporaryOutputs,
+        descriptor_heap: bool,
+        direct_reflection_bindings: bool,
+    ) -> Result<()> {
         let mut arguments = vec![
-            request.source.as_os_str().to_owned(),
+            source.as_os_str().to_owned(),
             "-entry".into(),
-            request.entry_point.clone().into(),
+            entry_point.into(),
             "-stage".into(),
-            request.stage.slang_name().into(),
+            stage.slang_name().into(),
             "-target".into(),
             "spirv".into(),
             "-profile".into(),
@@ -190,7 +228,7 @@ impl SlangCompiler {
             "-std".into(),
             "2026".into(),
             "-matrix-layout-row-major".into(),
-            "-O2".into(),
+            SLANG_OPTIMIZATION_LEVEL.into(),
             "-warnings-as-errors".into(),
             "all".into(),
             "-restrictive-capability-check".into(),
@@ -200,11 +238,17 @@ impl SlangCompiler {
             "-o".into(),
             temporary.spirv.as_os_str().to_owned(),
         ];
-        if request.contract.emits_native_descriptor_heap() {
+        if descriptor_heap {
             let output_position = arguments.len() - 2;
             arguments.splice(
                 output_position..output_position,
                 native_descriptor_heap_arguments(),
+            );
+        } else if direct_reflection_bindings {
+            let output_position = arguments.len() - 2;
+            arguments.splice(
+                output_position..output_position,
+                native_direct_reflection_binding_arguments(),
             );
         }
         run(&self.slangc, arguments).map(|_| ())
@@ -221,6 +265,35 @@ impl SlangCompiler {
         )
         .map(|_| ())
     }
+}
+
+fn native_descriptor_heap_arguments() -> [OsString; 3] {
+    [
+        OsString::from("-capability"),
+        OsString::from("spvDescriptorHeapEXT"),
+        OsString::from("-spirv-unified-descriptor-heap-stride"),
+    ]
+}
+
+/// Direct native reflection retains authored registers solely to recover typed
+/// uniform layout on the cold path. Vulkan requires those registers to map to
+/// distinct bindings even though the production source immediately replaces
+/// them with descriptor-heap handles.
+fn native_direct_reflection_binding_arguments() -> [OsString; 12] {
+    [
+        OsString::from("-fvk-b-shift"),
+        OsString::from("0"),
+        OsString::from("0"),
+        OsString::from("-fvk-t-shift"),
+        OsString::from("1024"),
+        OsString::from("0"),
+        OsString::from("-fvk-s-shift"),
+        OsString::from("2048"),
+        OsString::from("0"),
+        OsString::from("-fvk-u-shift"),
+        OsString::from("3072"),
+        OsString::from("0"),
+    ]
 }
 
 fn environment_tool(variable: &str, fallback: &str) -> PathBuf {
@@ -263,14 +336,6 @@ fn validate_word_length(bytes: &[u8]) -> Result<()> {
             bytes.len()
         )))
     }
-}
-
-fn native_descriptor_heap_arguments() -> [OsString; 3] {
-    [
-        OsString::from("-capability"),
-        OsString::from("spvDescriptorHeapEXT"),
-        OsString::from("-spirv-unified-descriptor-heap-stride"),
-    ]
 }
 
 fn validate_descriptor_contract(bytes: &[u8], contract: ShaderContract) -> Result<()> {
@@ -381,18 +446,19 @@ fn temporary_path(output: &Path, suffix: &str) -> PathBuf {
 mod tests {
     use super::*;
 
+    const STORAGE_CLASS_UNIFORM: u32 = 2;
+    const STORAGE_CLASS_STORAGE_BUFFER: u32 = 12;
+    const OP_TYPE_POINTER: u32 = 32;
+    const OP_TYPE_UNTYPED_POINTER_KHR: u32 = 4_417;
+    const OP_BUFFER_POINTER_EXT: u32 = 5_119;
+
     #[test]
-    fn descriptor_heap_contract_requires_extension_and_capability() {
-        let bytes = module(&[
-            instruction(17, &[5_128]),
-            string_instruction(10, "SPV_EXT_descriptor_heap"),
-        ]);
-        validate_descriptor_contract(&bytes, ShaderContract::descriptor_heap(16)).unwrap();
-        assert!(validate_descriptor_contract(&bytes, ShaderContract::descriptor_free(16)).is_err());
+    fn production_slang_uses_high_optimization() {
+        assert_eq!(SLANG_OPTIMIZATION_LEVEL, "-O2");
     }
 
     #[test]
-    fn descriptor_heap_contract_uses_one_resource_array_stride() {
+    fn native_descriptor_heap_uses_one_resource_array_stride() {
         assert_eq!(
             native_descriptor_heap_arguments(),
             [
@@ -401,6 +467,165 @@ mod tests {
                 OsString::from("-spirv-unified-descriptor-heap-stride"),
             ]
         );
+    }
+
+    #[test]
+    fn direct_native_reflection_partitions_legacy_register_classes() {
+        assert_eq!(
+            native_direct_reflection_binding_arguments(),
+            [
+                OsString::from("-fvk-b-shift"),
+                OsString::from("0"),
+                OsString::from("0"),
+                OsString::from("-fvk-t-shift"),
+                OsString::from("1024"),
+                OsString::from("0"),
+                OsString::from("-fvk-s-shift"),
+                OsString::from("2048"),
+                OsString::from("0"),
+                OsString::from("-fvk-u-shift"),
+                OsString::from("3072"),
+                OsString::from("0"),
+            ]
+        );
+    }
+
+    #[test]
+    fn direct_native_reflection_compiles_authored_registers_without_a_frontend() {
+        let base = std::env::temp_dir().join(format!(
+            "vulkan-renderer-build-direct-reflection-{}",
+            std::process::id()
+        ));
+        let source_path = base.with_extension("slang");
+        let heap_source_path = base.with_extension("heap.slang");
+        let output_path = base.with_extension("spv");
+        let direct = crate::lower_generated_stage_to_native_slang(
+            r#"layout(location = 0) in vec2 v_TexCoord;
+layout(location = 0) out vec4 o_Color;
+uniform mat4 g_ModelViewProjectionMatrix;
+uniform float g_Time;
+uniform sampler2D g_Texture0;
+void main()
+{
+    vec4 transformed = mul(vec4(v_TexCoord, 0.0, 1.0), g_ModelViewProjectionMatrix);
+    o_Color = texture2D(g_Texture0, v_TexCoord) + vec4(transformed.x + g_Time);
+}"#,
+            ShaderStage::Fragment,
+        )
+        .unwrap();
+        fs::write(&source_path, &direct).unwrap();
+
+        let compiler = SlangCompiler::from_environment();
+        let reflection = compiler
+            .reflect_native_source(&source_path, "main", ShaderStage::Fragment, &output_path)
+            .unwrap();
+
+        assert!(
+            reflection["parameters"]
+                .as_array()
+                .is_some_and(|parameters| {
+                    parameters.iter().any(|parameter| {
+                        parameter["name"] == "GilderUniforms0"
+                            && parameter["binding"]["kind"] == "constantBuffer"
+                            && parameter["binding"]["index"] == 0
+                    })
+                })
+        );
+        let heap = crate::lower_slang_bindings_to_descriptor_heap(&direct, "main").unwrap();
+        fs::write(&heap_source_path, &heap.source).unwrap();
+        compiler
+            .compile(&ShaderCompileRequest {
+                source: heap_source_path.clone(),
+                entry_point: "main".to_owned(),
+                stage: ShaderStage::Fragment,
+                output: output_path.clone(),
+                contract: ShaderContract::descriptor_heap(u64::from(heap.push_constant_bytes)),
+            })
+            .unwrap();
+        let _ = fs::remove_file(source_path);
+        let _ = fs::remove_file(heap_source_path);
+        let _ = fs::remove_file(output_path);
+    }
+
+    #[test]
+    fn slang_keeps_direct_heap_constant_and_structured_buffers_distinct() {
+        for (case, constant_expression) in [
+            (
+                "descriptor-handle",
+                "DescriptorHandle<ConstantBuffer<UniformData>>(pushData.uniformIndex)",
+            ),
+            (
+                "resource-heap",
+                "ResourceDescriptorHeap[pushData.uniformIndex]",
+            ),
+        ] {
+            let source = format!(
+                r#"
+struct UniformData {{ float4 tint; }};
+struct StorageData {{ float4 value; }};
+struct PushData {{ uint uniformIndex; uint inputIndex; uint outputIndex; }};
+[[vk::push_constant]] ConstantBuffer<PushData> pushData;
+[[shader("compute")]]
+[numthreads(1, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{{
+    ConstantBuffer<UniformData> uniformData = {constant_expression};
+    StructuredBuffer<StorageData> inputData =
+        DescriptorHandle<StructuredBuffer<StorageData>>(pushData.inputIndex);
+    RWStructuredBuffer<StorageData> outputData =
+        DescriptorHandle<RWStructuredBuffer<StorageData>>(pushData.outputIndex);
+    outputData[id.x].value = inputData[id.x].value * uniformData.tint;
+}}
+"#
+            );
+            let base = std::env::temp_dir().join(format!(
+                "vulkan-renderer-build-mixed-buffer-{}-{case}",
+                std::process::id()
+            ));
+            let source_path = base.with_extension("slang");
+            let output_path = base.with_extension("spv");
+            fs::write(&source_path, source).unwrap();
+            SlangCompiler::from_environment()
+                .compile(&ShaderCompileRequest {
+                    source: source_path.clone(),
+                    entry_point: "main".to_owned(),
+                    stage: ShaderStage::Compute,
+                    output: output_path.clone(),
+                    contract: ShaderContract::descriptor_heap(12),
+                })
+                .unwrap();
+
+            let bytes = fs::read(&output_path).unwrap();
+            let classes = buffer_pointer_storage_classes(&bytes);
+            assert_eq!(
+                classes
+                    .iter()
+                    .filter(|class| **class == STORAGE_CLASS_UNIFORM)
+                    .count(),
+                1,
+                "{case} constant buffer did not use exactly one Uniform heap pointer"
+            );
+            assert_eq!(
+                classes
+                    .iter()
+                    .filter(|class| **class == STORAGE_CLASS_STORAGE_BUFFER)
+                    .count(),
+                2,
+                "{case} structured buffers did not retain two StorageBuffer heap pointers"
+            );
+            let _ = fs::remove_file(source_path);
+            let _ = fs::remove_file(output_path);
+        }
+    }
+
+    #[test]
+    fn descriptor_heap_contract_requires_extension_and_capability() {
+        let bytes = module(&[
+            instruction(17, &[5_128]),
+            string_instruction(10, "SPV_EXT_descriptor_heap"),
+        ]);
+        validate_descriptor_contract(&bytes, ShaderContract::descriptor_heap(16)).unwrap();
+        assert!(validate_descriptor_contract(&bytes, ShaderContract::descriptor_free(16)).is_err());
     }
 
     #[test]
@@ -448,5 +673,32 @@ mod tests {
             .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
             .collect::<Vec<_>>();
         instruction(opcode, &operands)
+    }
+
+    fn buffer_pointer_storage_classes(bytes: &[u8]) -> Vec<u32> {
+        let words = bytes
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        let mut pointer_classes = std::collections::BTreeMap::new();
+        let mut buffer_pointer_types = Vec::new();
+        let mut offset = 5;
+        while offset < words.len() {
+            let word_count = (words[offset] >> 16) as usize;
+            let opcode = words[offset] & 0xffff;
+            let operands = &words[offset + 1..offset + word_count];
+            match opcode {
+                OP_TYPE_POINTER | OP_TYPE_UNTYPED_POINTER_KHR => {
+                    pointer_classes.insert(operands[0], operands[1]);
+                }
+                OP_BUFFER_POINTER_EXT => buffer_pointer_types.push(operands[0]),
+                _ => {}
+            }
+            offset += word_count;
+        }
+        buffer_pointer_types
+            .into_iter()
+            .map(|id| pointer_classes[&id])
+            .collect()
     }
 }

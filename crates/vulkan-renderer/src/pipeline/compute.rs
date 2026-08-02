@@ -7,6 +7,10 @@ use super::{PipelineCache, ProgrammableStage};
 use crate::backend::DeviceOwner;
 use crate::{Backend, Error, Result};
 
+mod machine_code;
+
+pub use machine_code::MachineCodeComputePipelineDescriptor;
+
 /// Descriptor-heap compute pipeline contract.
 #[derive(Clone, Copy, Debug)]
 pub struct ComputePipelineDescriptor<'a> {
@@ -69,40 +73,14 @@ impl Backend {
         &self,
         descriptor: &ComputePipelineDescriptor<'_>,
     ) -> Result<ComputePipeline> {
-        if !self.features().contains(crate::Features::DESCRIPTOR_HEAP) {
-            return Err(Error::Validation(
-                "compute pipelines require enabled Features::DESCRIPTOR_HEAP".into(),
-            ));
-        }
-        descriptor
-            .stage
-            .bindings
-            .validate_for_device(self.device_info().limits.descriptor_heap)
-            .map_err(|error| Error::Validation(format!("compute shader binding map: {error}")))?;
+        validate_compute_pipeline_descriptor(self, descriptor)?;
         let owner = self.shared_owner();
-        if !descriptor.stage.module.belongs_to(&owner) {
-            return Err(Error::Validation(
-                "compute shader module was created by a different Device".into(),
-            ));
-        }
-        if descriptor
-            .cache
-            .is_some_and(|cache| !cache.belongs_to(&owner))
-        {
-            return Err(Error::Validation(
-                "compute pipeline cache was created by a different Device".into(),
-            ));
-        }
-        let raw = descriptor
-            .stage
-            .bindings
-            .with_stage_create_info(
-                vk::ShaderStageFlags::COMPUTE,
-                descriptor.stage.module,
-                descriptor.stage.entry_point,
-                |stage| create_compute_pipeline(&owner, descriptor.cache, *stage),
-            )
-            .map_err(|error| Error::Validation(error.to_string()))??;
+        let raw = with_compute_pipeline_create_info(
+            descriptor,
+            vk::PipelineCreateFlags2::empty(),
+            None,
+            |info| create_compute_pipeline_with_cache(&owner, descriptor.cache, info),
+        )?;
         Ok(ComputePipeline {
             inner: Arc::new(ComputePipelineInner {
                 owner,
@@ -113,30 +91,102 @@ impl Backend {
     }
 }
 
-fn create_compute_pipeline(
+pub(super) fn validate_compute_pipeline_descriptor(
+    backend: &Backend,
+    descriptor: &ComputePipelineDescriptor<'_>,
+) -> Result<()> {
+    if !backend
+        .features()
+        .contains(crate::Features::DESCRIPTOR_HEAP)
+    {
+        return Err(Error::Validation(
+            "compute pipelines require enabled Features::DESCRIPTOR_HEAP".into(),
+        ));
+    }
+    descriptor
+        .stage
+        .bindings
+        .validate_for_device(backend.device_info().limits.descriptor_heap)
+        .map_err(|error| Error::Validation(format!("compute shader binding map: {error}")))?;
+    let owner = backend.shared_owner();
+    if !descriptor.stage.module.belongs_to(&owner) {
+        return Err(Error::Validation(
+            "compute shader module was created by a different Device".into(),
+        ));
+    }
+    if descriptor
+        .cache
+        .is_some_and(|cache| !cache.belongs_to(&owner))
+    {
+        return Err(Error::Validation(
+            "compute pipeline cache was created by a different Device".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn with_compute_pipeline_create_info<T>(
+    descriptor: &ComputePipelineDescriptor<'_>,
+    additional_flags: vk::PipelineCreateFlags2,
+    ready_binaries: Option<&[vk::PipelineBinaryKHR]>,
+    use_info: impl FnOnce(vk::ComputePipelineCreateInfo) -> Result<T>,
+) -> Result<T> {
+    descriptor
+        .stage
+        .bindings
+        .with_stage_create_info(
+            vk::ShaderStageFlags::COMPUTE,
+            descriptor.stage.module,
+            descriptor.stage.entry_point,
+            |stage| {
+                let mut flags = vk::PipelineCreateFlags2CreateInfo::builder()
+                    .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT | additional_flags)
+                    .build();
+                let mut binary_info = ready_binaries.map(|binaries| {
+                    vk::PipelineBinaryInfoKHR::builder()
+                        .pipeline_binaries(binaries)
+                        .build()
+                });
+                let mut info = vk::ComputePipelineCreateInfo::builder()
+                    .stage(*stage)
+                    .layout(vk::PipelineLayout::null())
+                    .push_next(&mut flags);
+                if let Some(binary_info) = binary_info.as_mut() {
+                    info = info.push_next(binary_info);
+                }
+                use_info(info.build())
+            },
+        )
+        .map_err(|error| Error::Validation(error.to_string()))?
+}
+
+fn create_compute_pipeline_with_cache(
     owner: &Arc<DeviceOwner>,
     cache: Option<&PipelineCache>,
-    stage: vk::PipelineShaderStageCreateInfo,
+    info: vk::ComputePipelineCreateInfo,
 ) -> Result<vk::Pipeline> {
-    let mut flags = vk::PipelineCreateFlags2CreateInfo::builder()
-        .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT)
-        .build();
-    let create = vk::ComputePipelineCreateInfo::builder()
-        .stage(stage)
-        .layout(vk::PipelineLayout::null())
-        .push_next(&mut flags)
-        .build();
-    let operation = |cache| unsafe {
-        owner
-            .device
-            .create_compute_pipelines(cache, &[create], None)
-    };
-    let (mut pipelines, _) = match cache {
-        Some(cache) => cache.with_raw(operation),
-        None => operation(vk::PipelineCache::null()),
+    match cache {
+        Some(cache) => {
+            cache.with_raw(|cache| create_compute_pipeline_with_device(&owner.device, cache, info))
+        }
+        None => create_compute_pipeline_with_device(&owner.device, vk::PipelineCache::null(), info),
     }
-    .map_err(|source| Error::vulkan("vkCreateComputePipelines", source))?;
-    pipelines
-        .pop()
-        .ok_or_else(|| Error::Validation("Vulkan returned no compute pipeline".into()))
+}
+
+pub(super) fn create_compute_pipeline_with_device(
+    device: &vulkanalia::Device,
+    cache: vk::PipelineCache,
+    info: vk::ComputePipelineCreateInfo,
+) -> Result<vk::Pipeline> {
+    let (mut pipelines, status) = unsafe { device.create_compute_pipelines(cache, &[info], None) }
+        .map_err(|source| Error::vulkan("vkCreateComputePipelines", source))?;
+    if status != vk::SuccessCode::SUCCESS || pipelines.len() != 1 {
+        for pipeline in pipelines {
+            unsafe { device.destroy_pipeline(pipeline, None) };
+        }
+        return Err(Error::Validation(format!(
+            "vkCreateComputePipelines did not return exactly one ready pipeline: status={status:?}"
+        )));
+    }
+    Ok(pipelines.remove(0))
 }

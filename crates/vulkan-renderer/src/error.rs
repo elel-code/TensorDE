@@ -19,6 +19,7 @@ pub enum Error {
     NoPhysicalDevice,
     NoCompatibleDevice(Vec<String>),
     Validation(String),
+    VideoDecode(String),
     TimelineExhausted,
 }
 
@@ -54,6 +55,7 @@ impl fmt::Display for Error {
                 rejections.join("; ")
             ),
             Self::Validation(message) => formatter.write_str(message),
+            Self::VideoDecode(message) => write!(formatter, "video decode: {message}"),
             Self::TimelineExhausted => formatter.write_str("timeline value space exhausted"),
         }
     }

@@ -97,13 +97,21 @@ pub fn reflect_shader_interface(
             &right.name,
         ))
     });
-    let mut io_identities = BTreeSet::new();
+    let mut io_locations = BTreeSet::new();
     for item in &stage_io {
-        if !io_identities.insert((item.direction, item.location)) {
-            return Err(Error::Reflection(format!(
-                "entry point {entry_point:?} repeats {:?} location {}",
-                item.direction, item.location
-            )));
+        for offset in 0..item.location_count {
+            let location = item.location.checked_add(offset).ok_or_else(|| {
+                Error::Reflection(format!(
+                    "entry point {entry_point:?} {:?} location range overflows",
+                    item.direction
+                ))
+            })?;
+            if !io_locations.insert((item.direction, location)) {
+                return Err(Error::Reflection(format!(
+                    "entry point {entry_point:?} repeats {:?} location {location}",
+                    item.direction
+                )));
+            }
         }
     }
 
@@ -165,13 +173,13 @@ fn collect_stage_io(
         value
             .get("type")
             .ok_or_else(|| Error::Reflection(format!("stage-I/O {name:?} has no type")))?,
+        ArrayLayout::StageIo,
     )?;
-    if shape.array_count != 1 || shape.array_stride != 0 {
-        return Err(Error::Reflection(format!(
-            "stage-I/O {name:?} uses an unsupported array interface"
-        )));
-    }
-    let location_count = shape.columns.max(1);
+    let location_count = shape
+        .columns
+        .max(1)
+        .checked_mul(shape.array_count)
+        .ok_or_else(|| Error::Reflection(format!("stage-I/O {name:?} location span overflows")))?;
     output.push(ShaderStageIo {
         name,
         direction,
@@ -289,7 +297,7 @@ fn collect_uniform_members(
             format!("{prefix}.{field_name}")
         };
         let byte_size = binding_u32(field, "size", "uniform member size")?;
-        let shape = parse_value_shape(field_type)?;
+        let shape = parse_value_shape(field_type, ArrayLayout::Uniform)?;
         let matrix_stride = if shape.columns > 1 {
             if shape.array_count != 1 {
                 return Err(Error::Reflection(format!(
@@ -329,7 +337,13 @@ struct ValueShape {
     array_stride: u32,
 }
 
-fn parse_value_shape(ty: &Value) -> Result<ValueShape> {
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ArrayLayout {
+    StageIo,
+    Uniform,
+}
+
+fn parse_value_shape(ty: &Value, array_layout: ArrayLayout) -> Result<ValueShape> {
     match ty.get("kind").and_then(Value::as_str) {
         Some("scalar") => Ok(ValueShape {
             scalar_type: parse_scalar(ty)?,
@@ -353,15 +367,21 @@ fn parse_value_shape(ty: &Value) -> Result<ValueShape> {
             array_stride: 0,
         }),
         Some("array") => {
-            let mut element =
-                parse_value_shape(required_object(ty, "elementType", "array element type")?)?;
+            let mut element = parse_value_shape(
+                required_object(ty, "elementType", "array element type")?,
+                array_layout,
+            )?;
             if element.array_count != 1 {
                 return Err(Error::Reflection(
-                    "nested uniform arrays are not supported".to_owned(),
+                    "nested shader value arrays are not supported".to_owned(),
                 ));
             }
             element.array_count = required_u32(ty, "elementCount", "array element count")?;
-            element.array_stride = required_u32(ty, "uniformStride", "array uniform stride")?;
+            element.array_stride = if array_layout == ArrayLayout::Uniform {
+                required_u32(ty, "uniformStride", "array uniform stride")?
+            } else {
+                0
+            };
             Ok(element)
         }
         kind => Err(Error::Reflection(format!(
@@ -504,5 +524,41 @@ mod tests {
         });
 
         assert!(reflect_shader_interface(&reflection, "main", ShaderStage::Fragment).is_err());
+    }
+
+    #[test]
+    fn extracts_array_stage_io_location_span_without_uniform_stride() {
+        let reflection = json!({
+            "parameters": [],
+            "entryPoints": [{
+                "name": "main", "stage": "fragment",
+                "parameters": [
+                    {
+                        "name": "audioValue",
+                        "binding": {"kind": "varyingInput", "index": 0},
+                        "type": {
+                            "kind": "array", "elementCount": 16,
+                            "elementType": {
+                                "kind": "vector", "elementCount": 4,
+                                "elementType": {"kind": "scalar", "scalarType": "float32"}
+                            }
+                        }
+                    },
+                    {
+                        "name": "uv", "binding": {"kind": "varyingInput", "index": 16},
+                        "type": {
+                            "kind": "vector", "elementCount": 2,
+                            "elementType": {"kind": "scalar", "scalarType": "float32"}
+                        }
+                    }
+                ]
+            }]
+        });
+
+        let interface = reflect_shader_interface(&reflection, "main", ShaderStage::Fragment)
+            .expect("array stage interface");
+        assert_eq!(interface.stage_io[0].name, "audioValue");
+        assert_eq!(interface.stage_io[0].location_count, 16);
+        assert_eq!(interface.stage_io[1].location, 16);
     }
 }

@@ -27,32 +27,41 @@ mod roadmap_2026;
 mod shader;
 mod standard;
 mod sync;
+mod types;
 mod upload;
+mod video;
 
 pub use allocator::{
     Buffer, Image, ImageView, ImageViewDescriptor, MemoryAllocator, MemoryAllocatorConfig,
 };
 pub use backend::{
-    Backend, BackendConfig, DeviceInfo, DevicePreference, DeviceQueues, Queue, SemaphoreWait,
+    Backend, BackendConfig, DeviceInfo, DevicePreference, DeviceQueues, NativeDevice, PciAddress,
+    Queue, SemaphoreWait,
 };
 pub use capabilities::{
-    BackendProfile, CoreFeatures, DescriptorHeapLimits, Features, Limits, PipelineBinaryProperties,
-    ROADMAP_2026_API_VERSION, ROADMAP_2026_PROFILE_NAME, ROADMAP_2026_PROFILE_REVISION,
-    ROADMAP_2026_REQUIRED_DEVICE_EXTENSIONS, ROADMAP_2026_REQUIRED_INSTANCE_EXTENSIONS,
-    STANDARD_REQUIRED_INSTANCE_EXTENSIONS,
+    BackendProfile, CoreFeatures, DescriptorHeapLimits, DeviceProperties, Features, Limits,
+    PipelineBinaryProperties, ROADMAP_2026_API_VERSION, ROADMAP_2026_PROFILE_NAME,
+    ROADMAP_2026_PROFILE_REVISION, ROADMAP_2026_REQUIRED_DEVICE_EXTENSIONS,
+    ROADMAP_2026_REQUIRED_INSTANCE_EXTENSIONS, STANDARD_REQUIRED_INSTANCE_EXTENSIONS,
 };
 pub use command::{
-    AttachmentView, BufferCopy, BufferImageCopy, ColorAttachment, CommandBuffer, CommandEncoder,
-    CommandEncoderDescriptor, ComputeEncoder, ComputePassDescriptor, DepthAttachment, ImageBlit,
-    ImageBlitFilter, ImageCopy, IndexFormat, LoadOp, RenderingDescriptor, RenderingEncoder,
-    StencilAttachment, StoreOp,
+    AttachmentView, BufferCopy, BufferImageCopy, BufferState, ColorAttachment,
+    ColorBufferImageCopy, ColorImageCopy, CommandBuffer, CommandEncoder, CommandEncoderDescriptor,
+    ComputeEncoder, ComputePassDescriptor, DepthAttachment, ImageBlit, ImageBlitFilter, ImageCopy,
+    IndexFormat, LoadOp, RenderingDescriptor, RenderingEncoder, RenderingLocalReadMapping,
+    RenderingLocalReadMappingDescriptor, RenderingLocalReadMappingKind, ResolveMode,
+    StencilAttachment, StoreOp, TextureState,
 };
 pub use descriptor_heap::{
-    DescriptorAllocation, DescriptorHeap, DescriptorHeapAllocator, DescriptorHeapDescriptor,
-    DescriptorHeapError, DescriptorHeapKind, HeapDescriptorType, SampledImageBinding,
-    SampledTextureBinding, SampledTextureHeapIndices, SampledTextureHeapOffsets,
-    SampledTextureShaderBindings, SamplerAddressMode, SamplerBinding, SamplerBorderColor,
-    SamplerCompareFunction, SamplerDescriptor, SamplerFilterMode, descriptor_heap_element_index,
+    BufferDescriptorBinding, BufferDescriptorKind, DescriptorAllocation, DescriptorHeap,
+    DescriptorHeapAllocator, DescriptorHeapDescriptor, DescriptorHeapError, DescriptorHeapKind,
+    DescriptorHeapMemory, DescriptorHeapUploadBatch, DescriptorHeapUploadRange, DescriptorSlotKind,
+    DynamicExternalImageDescriptorBinding, HeapDescriptorType, ImageDescriptorBinding,
+    ImageDescriptorKind, ReservedDescriptorBinding, SampledImageBinding, SampledImageDescriptor,
+    SampledImageDescriptorWriteBatch, SampledTextureBinding, SampledTextureHeapIndices,
+    SampledTextureHeapOffsets, SampledTextureShaderBindings, SamplerAddressMode, SamplerBinding,
+    SamplerBorderColor, SamplerCompareFunction, SamplerDescriptor, SamplerFilterMode,
+    descriptor_heap_element_index,
 };
 pub use dynamic_buffer::{DynamicBuffer, DynamicBufferDescriptor, DynamicBufferUpload};
 pub use error::{Error, Result};
@@ -61,7 +70,8 @@ pub use external_image::{
 };
 pub use external_memory::{
     DmaBufExportDescriptor, DmaBufExportPlane, DmaBufImageDescriptor, DmaBufPlaneLayout,
-    DrmFormatModifierCapability, ExportedDmaBufImage, ImportedDmaBufImage,
+    DrmDeviceIdentity, DrmFormatModifierCapability, DrmNodeIdentity, ExportedDmaBufImage,
+    ImportedDmaBufImage, LinuxDmaBufCapabilities,
 };
 pub use frame::{FrameClock, FrameToken, RetirementQueue, SubmissionLease, SubmissionResource};
 pub use memory::{
@@ -69,47 +79,70 @@ pub use memory::{
     MemoryPlanError, MemoryTypeInfo, MemoryTypeSelector, ResourceDescriptorError,
 };
 pub use pipeline::{
-    BlendComponent, BlendState, ColorTargetState, ComputePipeline, ComputePipelineDescriptor,
-    ConstantOffsetMapping, DepthBiasState, DepthState, DepthStencilState, FragmentState,
-    GraphicsPipeline, GraphicsPipelineDescriptor, IndirectIndexMapping, MachineCodeComputePipeline,
-    MachineCodeGraphicsPipeline, MachineCodePipeline, MultisampleState, PipelineBinaryArchive,
-    PipelineBinaryArchiveCache, PipelineBinaryBlob, PipelineBinaryCacheIdentity,
-    PipelineBinaryCreation, PipelineCache, PipelineCacheDescriptor, PrimitiveState,
-    ProgrammableStage, PushIndexMapping, ShaderBindingMap, ShaderBindingMapError,
-    ShaderBindingMapping, ShaderBindingSource, StencilState, VertexAttribute, VertexBufferLayout,
-    VertexState, VertexStepMode, compute_pipeline_binary_key, create_compute_pipeline_machine_code,
+    AdvancedBlendState, BlendComponent, BlendFactor, BlendOperation, BlendOverlap, BlendState,
+    ColorTargetState, ColorWrites, ComputePipeline, ComputePipelineDescriptor,
+    ConstantOffsetMapping, CullMode, DepthBiasState, DepthState, DepthStencilState, FragmentState,
+    FrontFace, GraphicsPipeline, GraphicsPipelineDescriptor, IndirectIndexMapping,
+    MachineCodeComputePipeline, MachineCodeComputePipelineDescriptor, MachineCodeGraphicsPipeline,
+    MachineCodeGraphicsPipelineDescriptor, MachineCodePipeline, MultisampleState,
+    PipelineBinaryArchive, PipelineBinaryArchiveCache, PipelineBinaryBlob,
+    PipelineBinaryCacheIdentity, PipelineBinaryCreation, PipelineCache, PipelineCacheDescriptor,
+    PolygonMode, PrimitiveState, PrimitiveTopology, ProgrammableStage, PushIndexMapping,
+    ShaderBindingMap, ShaderBindingMapError, ShaderBindingMapping, ShaderBindingSource,
+    StencilState, VertexAttribute, VertexBufferLayout, VertexFormat, VertexState, VertexStepMode,
+    compute_pipeline_binary_key, create_compute_pipeline_machine_code,
     create_graphics_pipeline_machine_code, graphics_pipeline_binary_key,
 };
 pub use present::{
-    AcquiredSurfaceTexture, DirectSurfaceBlocker, FrameTargetPreference, OffscreenColorTarget,
-    OffscreenColorTargets, OffscreenColorTargetsDescriptor, OffscreenSampledBindings, PresentMode,
-    PresentStatus, PresentTransactionOutcome, PresentationPathDescriptor, PresentationPathPlan,
-    PresentationRequirements, PresentationTarget, PresentationTransaction,
+    AcquiredSurfaceTexture, DirectSurfaceBlocker, FrameTargetPreference,
+    FullscreenSampledSurfaceTerminal, FullscreenSampledSurfaceTerminalDescriptor,
+    FullscreenSampledSurfaceTerminalProgram, OffscreenColorTarget, OffscreenColorTargets,
+    OffscreenColorTargetsDescriptor, OffscreenSampledBindings, OffscreenSamplerTopology,
+    PresentMode, PresentStatus, PresentTransactionOutcome, PresentationAdapterRequest,
+    PresentationBootstrap, PresentationBootstrapDescriptor, PresentationImageCount,
+    PresentationPathDescriptor, PresentationPathPlan, PresentationRequirements,
+    PresentationSurfaceConfigurationDescriptor, PresentationTarget, PresentationTransaction,
     PresentationTransactionDescriptor, PresentationTransactionPhase,
     PresentationTransactionSchedule, PresentationTransactionStep, Surface, SurfaceAcquireStrategy,
     SurfaceCapabilities, SurfaceConfiguration, SurfaceConfigurationRequest,
     SurfacePresentCapabilities, Swapchain, SwapchainDescriptor, TerminalAlphaMode,
     TerminalCompositeDescriptor, TerminalSampling,
 };
+#[cfg(feature = "ffmpeg-vulkan-decode")]
+pub use present::{PresentationDependencyScope, PresentationFrameDependencies};
 pub use queue::{QueueFamilyInfo, QueuePlan};
 pub use render_graph::{
-    AccessKind, Barrier, CompiledGraph, PassId, RenderGraph, RenderGraphError, RenderPass,
-    ResourceId, ResourceKind, ResourceState, ResourceUse,
+    AccessKind, Barrier, CompiledGraph, ForeignImageState, PassId, RenderGraph, RenderGraphError,
+    RenderGraphImageState, RenderPass, ResourceId, ResourceKind, ResourceState, ResourceUse,
 };
 pub use shader::{
     ShaderModule, ShaderModuleDescriptor, ShaderModuleError, SpirvValidationError, validate_spirv,
 };
 pub use standard::{
-    Adapter, Device, DeviceDescriptor, Instance, InstanceDescriptor, PowerPreference,
-    RequestAdapterOptions,
+    Adapter, AdapterSelector, Device, DeviceDescriptor, Instance, InstanceDescriptor,
+    PowerPreference, RequestAdapterOptions,
 };
 pub use sync::{
     BarrierBatch, BinarySemaphore, BinarySemaphoreDescriptor, ExternalTimelineSemaphoreDescriptor,
     RenderGraphSyncError, ResourceBinding, RetainedExternalTimelineSemaphore,
 };
+pub use types::{
+    BufferUsages, ColorSpace, CompositeAlphaMode, CompositeAlphaModes, Extent2D, Extent3D,
+    ImageDimension, ImageTiling, Origin2D, Rect2D, SampleCount, SampleCounts, SurfaceFormat,
+    SurfaceTransform, SurfaceTransforms, TextureFormat, TextureLayout, TextureUsages, Viewport,
+};
 pub use upload::{
     ImageDataLayout, ImageUpload, TexelBlockLayout, UploadBatch, UploadBelt, UploadBeltDescriptor,
     UploadBeltStats, UploadSlice,
+};
+#[cfg(feature = "ffmpeg-vulkan-decode")]
+pub use video::{
+    DecodedVideoFormat, DecodedVideoFrame, DecodedVideoPlanes, DecodedVideoSurfaceTerminal,
+    DecodedVideoSurfaceTerminalDescriptor, DecodedVideoSurfaceTerminalProgram, FfmpegTimeBase,
+    FfmpegVideoCodec, FfmpegVulkanDecoder,
+};
+pub use video::{
+    VideoDecodeCodecs, VideoDecodeDevice, VideoDecodeOperations, VideoDecodeRequirements,
 };
 /// Full raw Vulkanalia re-export for embedders migrating onto this crate.
 ///

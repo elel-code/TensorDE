@@ -1,7 +1,16 @@
 # Rendering Contract
 
-Tensor has one native renderer: Vulkanalia with `VK_EXT_descriptor_heap`. Descriptor sets,
-descriptor buffers, GLES, and software composition are not compatibility backends.
+Tensor has one native renderer: the shared `vulkan-renderer`, backed by Vulkanalia, with
+`VK_EXT_descriptor_heap`. Descriptor sets, descriptor buffers, GLES, and software composition are
+not compatibility backends.
+
+`vulkan-renderer` owns the loader, instance, selected adapter, logical device, graphics queue,
+command pool, timeline semaphore, native dma-buf images, device-local descriptor heaps with their
+retained staging buffers, shader modules, retained graphics pipelines, and binary sync-file
+semaphores. It also owns Tensor's typed command encoder, dynamic rendering, color upload, and
+semantic synchronization primitives. Tensor owns compositor/KMS policy, value-only scene
+extraction, output-slot policy, and draw ordering; it has no borrowed native-device command path,
+raw resource lifecycle, or parallel command-buffer pool.
 
 ## Native Device Gate
 
@@ -35,9 +44,9 @@ format for every active output path.
 
 ## Native Format Gate
 
-`render::format` is the value-only capability boundary between Vulkanalia and the tty adapter. Vulkan
-probing enumerates `VkDrmFormatModifierPropertiesList2EXT`, rejects modifiers without color-target
-support, and calls `vkGetPhysicalDeviceImageFormatProperties2` with the real sampled,
+`render::format` is the value-only capability boundary between the shared renderer and the tty
+adapter. Shared Vulkan probing enumerates `VkDrmFormatModifierPropertiesList2EXT`, rejects
+modifiers without color-target support, and calls `vkGetPhysicalDeviceImageFormatProperties2` with the real sampled,
 color-attachment, and transfer usage. `VkExternalImageFormatProperties` records dma-buf import and
 export separately: client imports and compositor-owned output exports are different capability
 roles and are never inferred from each other.
@@ -65,13 +74,13 @@ modifier, and plane count before retaining the GBM objects. Vulkan image resourc
 mode or format change remain in a retired queue until their last renderer timeline value completes.
 
 GBM remains owned by the tty adapter and does not become a renderer. Its check validates the
-allocation and KMS-facing boundary; Vulkanalia remains the only component that creates and renders
-native output images.
+allocation and KMS-facing boundary; `vulkan-renderer` remains the only component that creates and
+renders native output images.
 
 ## Buffer Ownership
 
-Vulkanalia owns render images and their memory. A native render target is allocated with an
-explicit DRM modifier and exportable dma-buf memory. The renderer returns Tensor-owned
+`vulkan-renderer` owns Vulkan render images and their memory. A native render target is allocated
+with an explicit DRM modifier and exportable dma-buf memory. The renderer returns Tensor-owned
 `ExportedDmabuf` plane descriptions directly to the tty adapter. The tty adapter owns GBM import,
 DRM framebuffer lifetime,
 primary-plane selection, atomic commits, and page flips. Vulkan handles and DRM/KMS handles never
@@ -89,6 +98,14 @@ identity and retains the validated format, modifier, dimensions, plane offsets, 
 that value description; an fd number is never an identity. Buffer reuse waits for the renderer
 timeline and Wayland release path before the Vulkan image is destroyed.
 
+SHM client snapshots use the same shared allocator rather than a Tensor-local Vulkan image,
+memory, view, staging-buffer, or mapping lifecycle. Their optimal sampled image and persistently
+mapped upload buffer are retained through the submission timeline; the shared mapped-write API
+flushes non-coherent ranges. Tensor uses small 2 MiB retained pools for this UI-specific cache and
+a 2 MiB exact-allocation cutoff, so idle client-surface churn cannot reserve the scene renderer's
+large default blocks or retain an oversized empty pool. Empty pools are trimmed after timeline
+retirement.
+
 ## Client linux-dmabuf
 
 The `zwp_linux_dmabuf_v1` global is created only after the selected Vulkan device provides a
@@ -97,9 +114,10 @@ render-node identity; it is not copied from a KMS-only list. The initial import 
 deliberately narrow and honest: explicit-modifier, single-plane RGB buffers whose fd memory type
 is accepted by the selected Vulkan device.
 
-For each `params` request Tensor validates the protocol shape, then Vulkan creates an explicit
-modifier image, intersects image and dma-buf fd memory-type masks, binds imported memory, and
-creates a view. Only a completed image/view import calls `ImportNotifier::successful`; malformed
+For each `params` request Tensor validates the protocol shape, then `vulkan-renderer` creates an
+`ImportedDmaBufImage` with the explicit modifier, intersects image and dma-buf fd memory-type
+masks, binds imported memory, and creates a view. Only a completed image/view import calls
+`ImportNotifier::successful`; malformed
 planes, implicit modifiers, unsupported formats, and Vulkan failures call `failed` instead. The
 image cache is keyed by `SurfaceBufferId` and retires resources after the renderer timeline, so a
 duplicated fd or recycled Wayland object ID cannot alias a live scene image accidentally.
@@ -110,9 +128,10 @@ index, sampled with a shared linear-clamp sampler from the sampler heap, and com
 dynamic-rendering pipeline with
 premultiplied-alpha blending. The first acquire uses `UNDEFINED + FOREIGN` to preserve the
 producer's explicit-modifier contents; only a successful queue submission advances the cache to the
-subsequent `GENERAL + FOREIGN` path. Resource and sampler heap ranges share one device allocation but
-are disjoint, including the implementation-reserved sampler range required by embedded samplers.
-The path is intentionally limited to one-plane RGB today. Explicit producer/consumer
+subsequent `GENERAL + FOREIGN` path. Resource and sampler descriptors occupy separate shared,
+device-local heap buffers, each with its own aligned implementation-reserved suffix; the sampler
+heap retains one linear-clamp descriptor. The path is intentionally limited to one-plane RGB today.
+Explicit producer/consumer
 synchronization for these buffers is provided through `wp_linux_drm_syncobj_v1`; implicit dma-buf
 reservation-fence interop remains a separate gate.
 
@@ -163,24 +182,25 @@ never reduce sampling quality.
 
 ## Frame Boundary Status
 
-`render/frame.rs` is the renderer-to-scene boundary. It owns a bounded resource descriptor heap
-allocator, retains the previous `SceneSnapshot` per output, computes damage, assigns one of three
-native output image slots, and keeps descriptor ranges live until the Vulkan timeline value retires.
-`render/vulkan/heap.rs` creates the actual device-addressable resource and sampler heap ranges with
-`VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT`, a host-visible staging buffer, and the descriptor write
-path. `render/vulkan/frame.rs` writes the native output and deduplicated client-image descriptors
-into staging, copies them into the device-local resource range, binds both heaps, and submits through
-three resettable command buffers plus one timeline semaphore. The sampled-image pipeline pushes a
-64-byte draw record whose first and fourth words are absolute resource- and sampler-heap element
-indices. Slang emits `SPV_EXT_descriptor_heap` direct accesses, so pipeline creation needs no
-descriptor binding mapping. A lost device
-stops future frame scheduling instead of recycling GPU-visible ranges.
+`render/frame.rs` is the renderer-to-scene boundary. It retains the previous `SceneSnapshot` per
+output, computes damage, assigns one of three native output image slots, and holds a clone of the
+resource heap's shared allocator. Thus Tensor's frame policy allocates and retires exactly the
+same direct-heap ranges that `vulkan-renderer::DescriptorHeap` validates and encodes; it does not
+maintain a parallel offset allocator. `vulkan-renderer` creates the device-local resource and
+sampler heaps with retained persistently mapped staging buffers. `render/vulkan/frame.rs` retains
+image-resolution and batch scratch storage, then encodes the native output and deduplicated client
+images in one descriptor write/flush, copies just the allocated resource range, binds both heaps,
+and submits through the shared bounded command-buffer recycler plus the shared timeline. The sampler
+descriptor is copied only on its first submitted frame. The sampled-image pipeline pushes a 64-byte
+draw record whose first and fourth words are absolute resource- and sampler-heap element indices. Slang emits
+`SPV_EXT_descriptor_heap` direct accesses, so pipeline creation needs no descriptor binding mapping.
+A lost device stops future frame scheduling instead of recycling GPU-visible ranges.
 
-The allocator starts after `minResourceHeapReservedRange`, rounds resource descriptors to the
-reported image descriptor alignment, and adds the implementation's reserved range before capping
-the configured usable budget at `maxResourceHeapSize`. The Vulkan heap uses the same capacity and
-offset contract, so allocator ranges are now copied into the real heap rather than remaining a
-simulation.
+The shared allocator reserves the aligned implementation range as a suffix, so Tensor application
+descriptors start at byte zero and remain densely compiler-strided. Tensor caps the requested
+resource payload below `maxResourceHeapSize` after that suffix, then uses the shared image/buffer
+stride and allocation alignment. This makes device-local, host-visible, single-pass, and future
+multi-pass users share one explicit heap contract without imposing Tensor's frame policy on them.
 
 Pointer visibility is a compositor overlay, not client-scene state. Tensor cursor state and any
 client cursor surface stay in the protocol owner; at frame submission
@@ -232,12 +252,14 @@ performance acceptance, and completion criteria.
 
 The current command stream is deliberately limited to:
 
-1. upload native/client image descriptors and bind the resource and sampler heaps;
-2. acquire the selected output and imported client images from `VK_QUEUE_FAMILY_FOREIGN_EXT`;
+1. upload typed native/client image descriptors and bind the resource and sampler heaps;
+2. use shared semantic barrier batches to acquire the selected output and imported client images
+   from `VK_QUEUE_FAMILY_FOREIGN_EXT` (or upload a changed SHM snapshot);
 3. run dynamic rendering and draw sampled client rectangles with transform, opacity, clip, and
    corner-radius data;
 4. draw sampled named/client cursors, or the descriptor-free fallback arrow, over client content;
-5. release client images and the output to `VK_QUEUE_FAMILY_FOREIGN_EXT` for Tensor KMS.
+5. use the same semantic barrier batch to release client images and the output to
+   `VK_QUEUE_FAMILY_FOREIGN_EXT` for Tensor KMS.
 
 This is a real client-image sampling slice, not a descriptor-only diagnostic clear. It is not yet a
 complete Wayland renderer: implicit-sync dma-bufs, multi-plane YUV, and damage-driven partial
@@ -256,10 +278,12 @@ to the compositor's monotonic clock without claiming hardware clock accuracy.
 
 ## Synchronization
 
-Internal frame scheduling uses Vulkan timeline semaphores. Timeline semaphores are not exported as
-`SYNC_FD`: Linux sync-file interop uses binary semaphores. Each submitted output frame also signals
-an exportable binary semaphore; the renderer exports its `SYNC_FD`, and the tty backend consumes it
-as atomic KMS `IN_FENCE_FD`. Tensor's tty adapter owns commit/page-flip submission; steady-state
+Internal frame scheduling uses the shared renderer's Vulkan timeline semaphore. Tensor reserves a
+timeline value from that device before frame allocation; it never creates a second timeline or
+command pool. Timeline semaphores are not exported as `SYNC_FD`: Linux sync-file interop uses
+binary semaphores. Each submitted output frame also signals an exportable shared
+`BinarySemaphore`; the renderer exports its `SYNC_FD`, and the tty backend consumes it as atomic
+KMS `IN_FENCE_FD`. Tensor's tty adapter owns commit/page-flip submission; steady-state
 flips update only `FB_ID` and `IN_FENCE_FD` through a fixed stack request. One per-device operation
 on the compositor-thread Compio runtime completes for vblank, then drm-rs decodes one fixed stack
 batch before explicit rearm. The bounded repaint queue
@@ -291,8 +315,9 @@ an implicit fallback.
 
 On commit, the protocol owner removes the acquire/release points from Tensor's cached surface state
 before applying the buffer attachment. This prevents buffer-drop release from signalling a point
-while Vulkan still samples that dma-buf. The acquire point is exported to a sync file, imported into a temporary binary
-Vulkan semaphore payload, and waited at the fragment-shader stage. A failed `queue_submit2` leaves
+while Vulkan still samples that dma-buf. The acquire point is exported to a sync file, imported into
+a temporary shared `BinarySemaphore` payload, and waited at the fragment-shader stage. A failed
+`queue_submit2` leaves
 that imported semaphore pending for retry and does not advance imported-image state or the client
 release point.
 

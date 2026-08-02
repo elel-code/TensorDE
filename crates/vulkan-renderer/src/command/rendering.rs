@@ -5,48 +5,21 @@ use vulkanalia::{prelude::v1_4::*, vk};
 
 use super::CommandEncoder;
 use crate::{
-    AcquiredSurfaceTexture, Buffer, DescriptorHeap, Error, ExportedDmaBufImage, GraphicsPipeline,
-    ImageView, ImportedDmaBufImage, Result, RetainedExternalImageView,
+    AcquiredSurfaceTexture, Buffer, BufferUsages, DescriptorHeap, Error, ExportedDmaBufImage,
+    GraphicsPipeline, ImageView, ImportedDmaBufImage, Result, RetainedExternalImageView,
+    SampledTextureBinding, TextureFormat, Viewport,
 };
 
+mod local_read;
+mod machine_code;
+mod state;
 mod validation;
 
+pub use local_read::{
+    RenderingLocalReadMapping, RenderingLocalReadMappingDescriptor, RenderingLocalReadMappingKind,
+};
+pub use state::{IndexFormat, LoadOp, ResolveMode, StoreOp};
 use validation::validate_descriptor;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum IndexFormat {
-    Uint16,
-    Uint32,
-}
-
-impl IndexFormat {
-    const fn as_vk(self) -> vk::IndexType {
-        match self {
-            Self::Uint16 => vk::IndexType::UINT16,
-            Self::Uint32 => vk::IndexType::UINT32,
-        }
-    }
-
-    const fn alignment(self) -> u64 {
-        match self {
-            Self::Uint16 => 2,
-            Self::Uint32 => 4,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum LoadOp<T> {
-    Load,
-    Clear(T),
-    Discard,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StoreOp {
-    Store,
-    Discard,
-}
 
 #[derive(Clone, Copy)]
 pub struct AttachmentView<'a> {
@@ -91,8 +64,8 @@ impl ImageView {
         AttachmentView {
             owner: self.owner(),
             raw: self.raw(),
-            format: self.format(),
-            sample_count: self.sample_count(),
+            format: self.format().to_vk(),
+            sample_count: self.sample_count().to_vk(),
         }
     }
 }
@@ -129,8 +102,8 @@ impl RetainedExternalImageView {
         AttachmentView {
             owner: self.owner(),
             raw: self.raw_view(),
-            format: self.format(),
-            sample_count: self.sample_count(),
+            format: self.format().to_vk(),
+            sample_count: self.sample_count().to_vk(),
         }
     }
 }
@@ -141,7 +114,7 @@ impl AcquiredSurfaceTexture<'_> {
         AttachmentView {
             owner: self.owner(),
             raw: self.view(),
-            format: self.format(),
+            format: self.format().to_vk(),
             sample_count: vk::SampleCountFlags::_1,
         }
     }
@@ -150,10 +123,10 @@ impl AcquiredSurfaceTexture<'_> {
 #[derive(Clone, Copy, Debug)]
 pub struct ColorAttachment<'a> {
     pub view: AttachmentView<'a>,
-    pub layout: vk::ImageLayout,
+    pub layout: crate::TextureLayout,
     pub resolve_target: Option<AttachmentView<'a>>,
-    pub resolve_layout: vk::ImageLayout,
-    pub resolve_mode: vk::ResolveModeFlags,
+    pub resolve_layout: crate::TextureLayout,
+    pub resolve_mode: ResolveMode,
     pub load_op: LoadOp<[f32; 4]>,
     pub store_op: StoreOp,
 }
@@ -161,10 +134,10 @@ pub struct ColorAttachment<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct DepthAttachment<'a> {
     pub view: AttachmentView<'a>,
-    pub layout: vk::ImageLayout,
+    pub layout: crate::TextureLayout,
     pub resolve_target: Option<AttachmentView<'a>>,
-    pub resolve_layout: vk::ImageLayout,
-    pub resolve_mode: vk::ResolveModeFlags,
+    pub resolve_layout: crate::TextureLayout,
+    pub resolve_mode: ResolveMode,
     pub load_op: LoadOp<f32>,
     pub store_op: StoreOp,
 }
@@ -172,10 +145,10 @@ pub struct DepthAttachment<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct StencilAttachment<'a> {
     pub view: AttachmentView<'a>,
-    pub layout: vk::ImageLayout,
+    pub layout: crate::TextureLayout,
     pub resolve_target: Option<AttachmentView<'a>>,
-    pub resolve_layout: vk::ImageLayout,
-    pub resolve_mode: vk::ResolveModeFlags,
+    pub resolve_layout: crate::TextureLayout,
+    pub resolve_mode: ResolveMode,
     pub load_op: LoadOp<u32>,
     pub store_op: StoreOp,
 }
@@ -183,12 +156,13 @@ pub struct StencilAttachment<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct RenderingDescriptor<'a> {
     pub label: Option<&'a str>,
-    pub render_area: vk::Rect2D,
+    pub render_area: crate::Rect2D,
     pub layer_count: u32,
     pub view_mask: u32,
     pub color_attachments: &'a [Option<ColorAttachment<'a>>],
     pub depth_attachment: Option<DepthAttachment<'a>>,
     pub stencil_attachment: Option<StencilAttachment<'a>>,
+    pub multisampled_render_to_single_sampled: Option<crate::SampleCount>,
 }
 
 /// Borrowed dynamic-rendering scope.
@@ -198,14 +172,14 @@ pub struct RenderingDescriptor<'a> {
 pub struct RenderingEncoder<'encoder> {
     encoder: &'encoder mut CommandEncoder,
     label: Option<String>,
-    color_formats: Vec<vk::Format>,
+    color_formats: Vec<Option<TextureFormat>>,
     depth_format: vk::Format,
     stencil_format: vk::Format,
     sample_count: vk::SampleCountFlags,
     pipeline_bound: bool,
     viewport_set: bool,
     scissor_set: bool,
-    required_vertex_buffers: u32,
+    required_vertex_buffers: Vec<u32>,
     bound_vertex_buffers: BTreeSet<u32>,
     index_buffer_bound: bool,
     ended: bool,
@@ -251,15 +225,26 @@ impl CommandEncoder {
         let depth_attachment = descriptor.depth_attachment.map(depth_attachment_info);
         let stencil_attachment = descriptor.stencil_attachment.map(stencil_attachment_info);
         let mut rendering = vk::RenderingInfo::builder()
-            .render_area(descriptor.render_area)
+            .render_area(descriptor.render_area.to_vk())
             .layer_count(descriptor.layer_count)
             .view_mask(descriptor.view_mask)
             .color_attachments(&color_attachments);
+        let mut render_to_single = descriptor
+            .multisampled_render_to_single_sampled
+            .map(|count| {
+                vk::MultisampledRenderToSingleSampledInfoEXT::builder()
+                    .multisampled_render_to_single_sampled_enable(true)
+                    .rasterization_samples(count.to_vk())
+                    .build()
+            });
         if let Some(depth_attachment) = depth_attachment.as_ref() {
             rendering = rendering.depth_attachment(depth_attachment);
         }
         if let Some(stencil_attachment) = stencil_attachment.as_ref() {
             rendering = rendering.stencil_attachment(stencil_attachment);
+        }
+        if let Some(render_to_single) = render_to_single.as_mut() {
+            rendering = rendering.push_next(render_to_single);
         }
         unsafe {
             self.owner
@@ -276,7 +261,7 @@ impl CommandEncoder {
             pipeline_bound: false,
             viewport_set: false,
             scissor_set: false,
-            required_vertex_buffers: 0,
+            required_vertex_buffers: Vec::new(),
             bound_vertex_buffers: BTreeSet::new(),
             index_buffer_bound: false,
             ended: false,
@@ -285,6 +270,29 @@ impl CommandEncoder {
 }
 
 impl RenderingEncoder<'_> {
+    /// Binds both heaps that own a sampled texture and retains its image view.
+    pub fn bind_sampled_texture(
+        &mut self,
+        binding: &SampledTextureBinding,
+        resource_heap: &DescriptorHeap,
+        sampler_heap: &DescriptorHeap,
+        view: &ImageView,
+    ) -> Result<()> {
+        if !binding.belongs_to_heaps(resource_heap, sampler_heap)
+            || !resource_heap.belongs_to(view.owner())
+        {
+            return Err(Error::Validation(
+                "sampled texture binding does not belong to the supplied heaps".into(),
+            ));
+        }
+        unsafe {
+            self.encoder.bind_descriptor_heap(resource_heap)?;
+            self.encoder.bind_descriptor_heap(sampler_heap)?;
+        }
+        self.encoder.retain_resource(view);
+        Ok(())
+    }
+
     /// Retains an arbitrary renderer resource through the enclosing command
     /// buffer's eventual submission.
     ///
@@ -303,7 +311,7 @@ impl RenderingEncoder<'_> {
         self.encoder.push_data(offset, data)
     }
 
-    pub fn set_viewport(&mut self, viewport: vk::Viewport) -> Result<()> {
+    pub fn set_viewport(&mut self, viewport: Viewport) -> Result<()> {
         if ![
             viewport.x,
             viewport.y,
@@ -328,17 +336,17 @@ impl RenderingEncoder<'_> {
             self.encoder
                 .owner
                 .device
-                .cmd_set_viewport(self.encoder.raw(), 0, &[viewport]);
+                .cmd_set_viewport(self.encoder.raw(), 0, &[viewport.to_vk()]);
         }
         self.viewport_set = true;
         Ok(())
     }
 
-    pub fn set_scissor(&mut self, scissor: vk::Rect2D) -> Result<()> {
+    pub fn set_scissor(&mut self, scissor: crate::Rect2D) -> Result<()> {
         if scissor.extent.width == 0
             || scissor.extent.height == 0
-            || i64::from(scissor.offset.x) + i64::from(scissor.extent.width) < 0
-            || i64::from(scissor.offset.y) + i64::from(scissor.extent.height) < 0
+            || i64::from(scissor.origin.x) + i64::from(scissor.extent.width) < 0
+            || i64::from(scissor.origin.y) + i64::from(scissor.extent.height) < 0
         {
             return Err(Error::Validation(
                 "scissor must be non-empty and its offset plus extent must be non-negative".into(),
@@ -348,7 +356,7 @@ impl RenderingEncoder<'_> {
             self.encoder
                 .owner
                 .device
-                .cmd_set_scissor(self.encoder.raw(), 0, &[scissor]);
+                .cmd_set_scissor(self.encoder.raw(), 0, &[scissor.to_vk()]);
         }
         self.scissor_set = true;
         Ok(())
@@ -364,7 +372,7 @@ impl RenderingEncoder<'_> {
         if pipeline.color_formats() != self.color_formats
             || pipeline.depth_format() != self.depth_format
             || pipeline.stencil_format() != self.stencil_format
-            || pipeline.sample_count() != self.sample_count
+            || pipeline.sample_count().to_vk() != self.sample_count
         {
             return Err(Error::Validation(
                 "graphics pipeline attachment formats or sample count do not match the rendering scope"
@@ -380,7 +388,7 @@ impl RenderingEncoder<'_> {
         }
         self.encoder.retain_resource(pipeline);
         self.pipeline_bound = true;
-        self.required_vertex_buffers = pipeline.vertex_buffer_count();
+        self.required_vertex_buffers = pipeline.vertex_buffer_slots().to_vec();
         Ok(())
     }
 
@@ -401,7 +409,7 @@ impl RenderingEncoder<'_> {
                 "vertex buffer was created by a different Device".into(),
             ));
         }
-        if !buffer.usage().contains(vk::BufferUsageFlags::VERTEX_BUFFER) {
+        if !buffer.usage().contains(BufferUsages::VERTEX) {
             return Err(Error::Validation(
                 "vertex buffer is missing VERTEX_BUFFER usage".into(),
             ));
@@ -441,7 +449,7 @@ impl RenderingEncoder<'_> {
                 "index buffer was created by a different Device".into(),
             ));
         }
-        if !buffer.usage().contains(vk::BufferUsageFlags::INDEX_BUFFER) {
+        if !buffer.usage().contains(BufferUsages::INDEX) {
             return Err(Error::Validation(
                 "index buffer is missing INDEX_BUFFER usage".into(),
             ));
@@ -610,7 +618,10 @@ impl RenderingEncoder<'_> {
                 "draw requires viewport and scissor dynamic state".into(),
             ));
         }
-        if (0..self.required_vertex_buffers).any(|slot| !self.bound_vertex_buffers.contains(&slot))
+        if self
+            .required_vertex_buffers
+            .iter()
+            .any(|slot| !self.bound_vertex_buffers.contains(slot))
         {
             return Err(Error::Validation(
                 "draw requires every pipeline vertex-buffer slot to be bound".into(),
@@ -645,10 +656,7 @@ fn validate_indirect_draw(
             "indirect draw buffer was created by a different Device".into(),
         ));
     }
-    if !buffer
-        .usage()
-        .contains(vk::BufferUsageFlags::INDIRECT_BUFFER)
-    {
+    if !buffer.usage().contains(BufferUsages::INDIRECT) {
         return Err(Error::Validation(
             "indirect draw buffer is missing INDIRECT_BUFFER usage".into(),
         ));
@@ -729,19 +737,19 @@ fn stencil_attachment_info(attachment: StencilAttachment<'_>) -> vk::RenderingAt
 #[allow(clippy::too_many_arguments)]
 fn attachment_info(
     view: AttachmentView<'_>,
-    layout: vk::ImageLayout,
+    layout: crate::TextureLayout,
     resolve_target: Option<AttachmentView<'_>>,
-    resolve_layout: vk::ImageLayout,
-    resolve_mode: vk::ResolveModeFlags,
+    resolve_layout: crate::TextureLayout,
+    resolve_mode: ResolveMode,
     load: (vk::AttachmentLoadOp, vk::ClearValue),
     store: StoreOp,
 ) -> vk::RenderingAttachmentInfo {
     vk::RenderingAttachmentInfo::builder()
         .image_view(view.raw())
-        .image_layout(layout)
-        .resolve_mode(resolve_mode)
+        .image_layout(layout.to_vk())
+        .resolve_mode(resolve_mode.to_vk())
         .resolve_image_view(resolve_target.map_or(vk::ImageView::null(), AttachmentView::raw))
-        .resolve_image_layout(resolve_layout)
+        .resolve_image_layout(resolve_layout.to_vk())
         .load_op(load.0)
         .store_op(match store {
             StoreOp::Store => vk::AttachmentStoreOp::STORE,

@@ -56,6 +56,23 @@ pub struct MachineCodePipeline {
     inner: Arc<MachineCodePipelineInner>,
     archive: PipelineBinaryArchive,
     archive_reused: bool,
+    kind: MachineCodePipelineKind,
+}
+
+#[derive(Clone, Debug)]
+enum MachineCodePipelineKind {
+    Unspecified,
+    Graphics(MachineCodeGraphicsFacts),
+    Compute,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MachineCodeGraphicsFacts {
+    pub(crate) color_formats: Vec<Option<crate::TextureFormat>>,
+    pub(crate) depth_format: vk::Format,
+    pub(crate) stencil_format: vk::Format,
+    pub(crate) sample_count: crate::SampleCount,
+    pub(crate) vertex_buffer_slots: Vec<u32>,
 }
 
 struct MachineCodePipelineInner {
@@ -70,6 +87,7 @@ impl fmt::Debug for MachineCodePipeline {
             .field("pipeline", &self.inner.pipeline)
             .field("binary_count", &self.archive.binaries.len())
             .field("archive_reused", &self.archive_reused)
+            .field("kind", &self.kind)
             .finish_non_exhaustive()
     }
 }
@@ -85,6 +103,29 @@ impl MachineCodePipeline {
 
     pub const fn archive_reused(&self) -> bool {
         self.archive_reused
+    }
+
+    pub(crate) fn belongs_to(&self, owner: &Arc<DeviceOwner>) -> bool {
+        Arc::ptr_eq(&self.inner.owner, owner)
+    }
+
+    pub(crate) fn mark_graphics(&mut self, facts: MachineCodeGraphicsFacts) {
+        self.kind = MachineCodePipelineKind::Graphics(facts);
+    }
+
+    pub(crate) fn mark_compute(&mut self) {
+        self.kind = MachineCodePipelineKind::Compute;
+    }
+
+    pub(crate) fn graphics_facts(&self) -> Option<&MachineCodeGraphicsFacts> {
+        match &self.kind {
+            MachineCodePipelineKind::Graphics(facts) => Some(facts),
+            MachineCodePipelineKind::Unspecified | MachineCodePipelineKind::Compute => None,
+        }
+    }
+
+    pub(crate) fn is_compute(&self) -> bool {
+        matches!(self.kind, MachineCodePipelineKind::Compute)
     }
 }
 
@@ -237,6 +278,7 @@ unsafe fn create_pipeline_machine_code(
         }),
         archive,
         archive_reused,
+        kind: MachineCodePipelineKind::Unspecified,
     })
 }
 

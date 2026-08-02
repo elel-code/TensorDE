@@ -3,10 +3,9 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use vulkanalia::vk;
-
 use crate::{
-    Buffer, BufferDescriptor, Error, MemoryAllocator, MemoryLocation, Result, UploadBatch,
+    Buffer, BufferDescriptor, BufferUsages, Error, MemoryAllocator, MemoryLocation, Result,
+    UploadBatch,
 };
 
 /// Creation parameters for a [`DynamicBuffer`].
@@ -21,7 +20,7 @@ pub struct DynamicBufferDescriptor {
     /// four-byte transfer-copy granularity.
     pub initial_capacity: u64,
     /// Consumer-visible usages. `TRANSFER_DST` is added automatically.
-    pub usage: vk::BufferUsageFlags,
+    pub usage: BufferUsages,
 }
 
 impl Default for DynamicBufferDescriptor {
@@ -29,7 +28,7 @@ impl Default for DynamicBufferDescriptor {
         Self {
             label: None,
             initial_capacity: 256,
-            usage: vk::BufferUsageFlags::VERTEX_BUFFER,
+            usage: BufferUsages::VERTEX,
         }
     }
 }
@@ -164,7 +163,7 @@ fn create_buffer(
     allocator.create_buffer(&BufferDescriptor {
         label: descriptor.label.clone(),
         size: capacity,
-        usage: descriptor.usage | vk::BufferUsageFlags::TRANSFER_DST,
+        usage: descriptor.usage | BufferUsages::COPY_DESTINATION,
         memory: MemoryLocation::Device,
     })
 }

@@ -3,18 +3,29 @@ use std::fmt;
 
 use vulkanalia::{Device, prelude::v1_4::*, vk};
 
-use crate::{CompiledGraph, PassId, ResourceId, ResourceKind};
+use crate::{Buffer, CompiledGraph, Image, PassId, ResourceId, ResourceKind, ResourceState};
 
 mod external;
 mod semaphore;
 
+#[cfg(feature = "ffmpeg-vulkan-decode")]
+pub(crate) use external::retain_external_timeline_semaphore_for_owner;
 pub use external::{ExternalTimelineSemaphoreDescriptor, RetainedExternalTimelineSemaphore};
 pub use semaphore::{BinarySemaphore, BinarySemaphoreDescriptor};
 
-/// Raw resource handle associated with a render-graph resource ID while
+/// A renderer-owned resource associated with a render-graph resource ID while
 /// recording one command buffer.
+///
+/// Products construct bindings from retained renderer resources or from the
+/// matching external/surface ownership token. Raw Vulkan handles never cross
+/// the public render-graph boundary.
 #[derive(Clone, Copy, Debug)]
-pub enum ResourceBinding {
+pub struct ResourceBinding {
+    inner: ResourceBindingInner,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ResourceBindingInner {
     Buffer {
         buffer: vk::Buffer,
         offset: vk::DeviceSize,
@@ -27,10 +38,49 @@ pub enum ResourceBinding {
 }
 
 impl ResourceBinding {
+    /// Binds the complete range of one renderer-owned buffer.
+    pub fn whole_buffer(buffer: &Buffer) -> Self {
+        Self::raw_buffer(buffer.raw(), 0, buffer.size())
+    }
+
+    /// Binds every mip and layer of one renderer-owned color image.
+    pub fn whole_color_image(image: &Image) -> Self {
+        Self::raw_image(
+            image.raw(),
+            image.full_subresource_range(vk::ImageAspectFlags::COLOR),
+        )
+    }
+
+    pub(crate) const fn raw_buffer(
+        buffer: vk::Buffer,
+        offset: vk::DeviceSize,
+        size: vk::DeviceSize,
+    ) -> Self {
+        Self {
+            inner: ResourceBindingInner::Buffer {
+                buffer,
+                offset,
+                size,
+            },
+        }
+    }
+
+    pub(crate) const fn raw_image(
+        image: vk::Image,
+        subresource_range: vk::ImageSubresourceRange,
+    ) -> Self {
+        Self {
+            inner: ResourceBindingInner::Image {
+                image,
+                subresource_range,
+            },
+        }
+    }
+
     const fn kind(self) -> ResourceKind {
-        match self {
-            Self::Buffer { .. } => ResourceKind::Buffer,
-            Self::Image { .. } => ResourceKind::Image,
+        match self.inner {
+            ResourceBindingInner::Buffer { .. } => ResourceKind::Buffer,
+            ResourceBindingInner::Image { .. } => ResourceKind::Image,
         }
     }
 }
@@ -43,11 +93,17 @@ pub struct BarrierBatch {
 }
 
 impl BarrierBatch {
-    pub fn buffer_barriers(&self) -> &[vk::BufferMemoryBarrier2] {
-        &self.buffer_barriers
+    /// Creates reusable synchronization scratch with retained vector capacity.
+    /// Call [`Self::clear`] before rebuilding it for the next frame.
+    pub fn with_capacity(buffer_capacity: usize, image_capacity: usize) -> Self {
+        Self {
+            buffer_barriers: Vec::with_capacity(buffer_capacity),
+            image_barriers: Vec::with_capacity(image_capacity),
+        }
     }
 
-    pub fn image_barriers(&self) -> &[vk::ImageMemoryBarrier2] {
+    #[cfg(test)]
+    pub(crate) fn image_barriers(&self) -> &[vk::ImageMemoryBarrier2] {
         &self.image_barriers
     }
 
@@ -55,13 +111,32 @@ impl BarrierBatch {
         self.buffer_barriers.is_empty() && self.image_barriers.is_empty()
     }
 
+    /// Clears recorded barriers while preserving the batch's allocation for
+    /// the next command buffer.
+    pub fn clear(&mut self) {
+        self.buffer_barriers.clear();
+        self.image_barriers.clear();
+    }
+
+    /// Appends one semantic color-image transition without exposing Vulkan
+    /// synchronization flags or queue-family sentinels to the caller.
+    ///
+    /// Both states must describe images. Imported and exported dma-bufs use
+    /// [`crate::ResourceState::foreign_image`] on the host-owned side and an
+    /// ordinary image state while the renderer owns the image.
+    pub fn add_image_transition(
+        &mut self,
+        binding: ResourceBinding,
+        source: ResourceState,
+        destination: ResourceState,
+    ) -> Result<(), RenderGraphSyncError> {
+        self.image_barriers
+            .push(lower_image_transition(binding, source, destination)?);
+        Ok(())
+    }
+
     /// Records one `vkCmdPipelineBarrier2` call. Empty batches are skipped.
-    ///
-    /// # Safety
-    ///
-    /// The command buffer must be recording on `device`; every raw binding
-    /// must be live and owned by the queue family described by the graph state.
-    pub unsafe fn record(&self, device: &Device, command_buffer: vk::CommandBuffer) {
+    pub(crate) unsafe fn record(&self, device: &Device, command_buffer: vk::CommandBuffer) {
         if self.is_empty() {
             return;
         }
@@ -70,6 +145,50 @@ impl BarrierBatch {
             .image_memory_barriers(&self.image_barriers);
         unsafe { device.cmd_pipeline_barrier2(command_buffer, &dependency) };
     }
+}
+
+fn lower_image_transition(
+    binding: ResourceBinding,
+    source: ResourceState,
+    destination: ResourceState,
+) -> Result<vk::ImageMemoryBarrier2, RenderGraphSyncError> {
+    let ResourceBindingInner::Image {
+        image,
+        subresource_range,
+    } = binding.inner
+    else {
+        return Err(RenderGraphSyncError::InvalidImageTransition {
+            binding: binding.kind(),
+            source: source.resource_kind(),
+            destination: destination.resource_kind(),
+        });
+    };
+    if source.resource_kind() != ResourceKind::Image
+        || destination.resource_kind() != ResourceKind::Image
+    {
+        return Err(RenderGraphSyncError::InvalidImageTransition {
+            binding: ResourceKind::Image,
+            source: source.resource_kind(),
+            destination: destination.resource_kind(),
+        });
+    }
+    let (source_stages, source_access, source_layout, source_family) = source.synchronization();
+    let (destination_stages, destination_access, destination_layout, destination_family) =
+        destination.synchronization();
+    let (source_queue, destination_queue) =
+        queue_family_transfer(source_family, destination_family);
+    Ok(vk::ImageMemoryBarrier2::builder()
+        .src_stage_mask(source_stages)
+        .src_access_mask(source_access)
+        .dst_stage_mask(destination_stages)
+        .dst_access_mask(destination_access)
+        .old_layout(source_layout)
+        .new_layout(destination_layout)
+        .src_queue_family_index(source_queue)
+        .dst_queue_family_index(destination_queue)
+        .image(image)
+        .subresource_range(subresource_range)
+        .build())
 }
 
 impl CompiledGraph {
@@ -93,45 +212,40 @@ impl CompiledGraph {
                     binding: binding.kind(),
                 });
             }
-            let (source_queue, destination_queue) = queue_family_transfer(
-                barrier.source.queue_family,
-                barrier.destination.queue_family,
-            );
-            match binding {
-                ResourceBinding::Buffer {
+            match binding.inner {
+                ResourceBindingInner::Buffer {
                     buffer,
                     offset,
                     size,
-                } => batch.buffer_barriers.push(
-                    vk::BufferMemoryBarrier2::builder()
-                        .src_stage_mask(barrier.source.stages)
-                        .src_access_mask(barrier.source.access)
-                        .dst_stage_mask(barrier.destination.stages)
-                        .dst_access_mask(barrier.destination.access)
-                        .src_queue_family_index(source_queue)
-                        .dst_queue_family_index(destination_queue)
-                        .buffer(buffer)
-                        .offset(offset)
-                        .size(size)
-                        .build(),
-                ),
-                ResourceBinding::Image {
-                    image,
-                    subresource_range,
-                } => batch.image_barriers.push(
-                    vk::ImageMemoryBarrier2::builder()
-                        .src_stage_mask(barrier.source.stages)
-                        .src_access_mask(barrier.source.access)
-                        .dst_stage_mask(barrier.destination.stages)
-                        .dst_access_mask(barrier.destination.access)
-                        .old_layout(barrier.source.layout)
-                        .new_layout(barrier.destination.layout)
-                        .src_queue_family_index(source_queue)
-                        .dst_queue_family_index(destination_queue)
-                        .image(image)
-                        .subresource_range(subresource_range)
-                        .build(),
-                ),
+                } => {
+                    let (source_stages, source_access, _, source_family) =
+                        barrier.source.synchronization();
+                    let (destination_stages, destination_access, _, destination_family) =
+                        barrier.destination.synchronization();
+                    let (source_queue, destination_queue) =
+                        queue_family_transfer(source_family, destination_family);
+                    batch.buffer_barriers.push(
+                        vk::BufferMemoryBarrier2::builder()
+                            .src_stage_mask(source_stages)
+                            .src_access_mask(source_access)
+                            .dst_stage_mask(destination_stages)
+                            .dst_access_mask(destination_access)
+                            .src_queue_family_index(source_queue)
+                            .dst_queue_family_index(destination_queue)
+                            .buffer(buffer)
+                            .offset(offset)
+                            .size(size)
+                            .build(),
+                    );
+                }
+                ResourceBindingInner::Image {
+                    image: _,
+                    subresource_range: _,
+                } => batch.image_barriers.push(lower_image_transition(
+                    binding,
+                    barrier.source,
+                    barrier.destination,
+                )?),
             }
         }
         Ok(batch)
@@ -154,6 +268,11 @@ pub enum RenderGraphSyncError {
         graph: ResourceKind,
         binding: ResourceKind,
     },
+    InvalidImageTransition {
+        binding: ResourceKind,
+        source: ResourceKind,
+        destination: ResourceKind,
+    },
 }
 
 impl fmt::Display for RenderGraphSyncError {
@@ -166,7 +285,10 @@ impl std::error::Error for RenderGraphSyncError {}
 
 #[cfg(test)]
 mod tests {
-    use crate::{AccessKind, RenderGraph, RenderPass, ResourceState, ResourceUse};
+    use crate::{
+        AccessKind, ForeignImageState, RenderGraph, RenderGraphImageState, RenderPass,
+        ResourceState, ResourceUse,
+    };
 
     use super::*;
 
@@ -182,12 +304,7 @@ mod tests {
                 resource,
                 kind: ResourceKind::Image,
                 access: AccessKind::Write,
-                state: ResourceState::image(
-                    vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                    vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    2,
-                ),
+                state: ResourceState::image(RenderGraphImageState::ColorAttachmentWrite, 2),
             }],
         });
         graph.add_pass(RenderPass {
@@ -198,27 +315,22 @@ mod tests {
                 resource,
                 kind: ResourceKind::Image,
                 access: AccessKind::Read,
-                state: ResourceState::image(
-                    vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                    vk::AccessFlags2::SHADER_SAMPLED_READ,
-                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                    3,
-                ),
+                state: ResourceState::image(RenderGraphImageState::FragmentSampledRead, 3),
             }],
         });
         let compiled = graph.compile().unwrap();
         let bindings = BTreeMap::from([(
             resource,
-            ResourceBinding::Image {
-                image: vk::Image::from_raw(7),
-                subresource_range: vk::ImageSubresourceRange {
+            ResourceBinding::raw_image(
+                vk::Image::from_raw(7),
+                vk::ImageSubresourceRange {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
                     base_mip_level: 0,
                     level_count: 1,
                     base_array_layer: 0,
                     layer_count: 1,
                 },
-            },
+            ),
         )]);
         let batch = compiled.barrier_batch_before(PassId(2), &bindings).unwrap();
         assert_eq!(batch.image_barriers().len(), 1);
@@ -260,7 +372,7 @@ mod tests {
         graph.set_initial_state(
             resource,
             ResourceKind::Image,
-            ResourceState::foreign_image(vk::ImageLayout::UNDEFINED),
+            ResourceState::foreign_image(ForeignImageState::Undefined),
         );
         graph.add_pass(RenderPass {
             id: acquire,
@@ -271,9 +383,7 @@ mod tests {
                 kind: ResourceKind::Image,
                 access: AccessKind::Read,
                 state: ResourceState::image(
-                    vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                    vk::AccessFlags2::SHADER_SAMPLED_READ,
-                    vk::ImageLayout::GENERAL,
+                    RenderGraphImageState::FragmentSampledReadGeneral,
                     graphics,
                 ),
             }],
@@ -286,16 +396,13 @@ mod tests {
                 resource,
                 kind: ResourceKind::Image,
                 access: AccessKind::Read,
-                state: ResourceState::foreign_image(vk::ImageLayout::GENERAL),
+                state: ResourceState::foreign_image(ForeignImageState::General),
             }],
         });
         let compiled = graph.compile().unwrap();
         let binding = BTreeMap::from([(
             resource,
-            ResourceBinding::Image {
-                image: vk::Image::from_raw(12),
-                subresource_range: range,
-            },
+            ResourceBinding::raw_image(vk::Image::from_raw(12), range),
         )]);
         let acquire_barrier = compiled
             .barrier_batch_before(acquire, &binding)
@@ -317,5 +424,38 @@ mod tests {
             vk::QUEUE_FAMILY_FOREIGN_EXT
         );
         assert_eq!(release_barrier.new_layout, vk::ImageLayout::GENERAL);
+    }
+
+    #[test]
+    fn reusable_batch_lowers_a_foreign_image_transition_without_raw_sync_flags() {
+        let graphics = 4;
+        let binding = ResourceBinding::raw_image(
+            vk::Image::from_raw(15),
+            vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+        );
+        let mut batch = BarrierBatch::with_capacity(0, 2);
+        batch
+            .add_image_transition(
+                binding,
+                ResourceState::foreign_image(ForeignImageState::General),
+                ResourceState::image(RenderGraphImageState::ColorAttachmentWrite, graphics),
+            )
+            .unwrap();
+        let barrier = batch.image_barriers()[0];
+        assert_eq!(barrier.old_layout, vk::ImageLayout::GENERAL);
+        assert_eq!(
+            barrier.new_layout,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+        );
+        assert_eq!(barrier.src_queue_family_index, vk::QUEUE_FAMILY_FOREIGN_EXT);
+        assert_eq!(barrier.dst_queue_family_index, graphics);
+        batch.clear();
+        assert!(batch.is_empty());
     }
 }

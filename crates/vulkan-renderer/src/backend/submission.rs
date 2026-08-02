@@ -115,6 +115,70 @@ impl Queue {
         }
     }
 
+    /// Submits managed command buffers at a caller-reserved timeline value and
+    /// signals binary semaphores for an external consumer.
+    ///
+    /// This is for frame schedulers that must reserve a timeline value before
+    /// descriptor allocation, while still delegating command-buffer lifetime
+    /// and resource retirement to the shared renderer.
+    ///
+    /// # Safety
+    ///
+    /// `frame` must be a fresh value from this backend. Wait semaphores must
+    /// satisfy [`Queue::submit_raw`], and every signal semaphore must be
+    /// unsignalled with no pending signal operation.
+    pub unsafe fn submit_with_binary_signals_at<I>(
+        &self,
+        frame: FrameToken,
+        command_buffers: I,
+        waits: &[SemaphoreWait],
+        signals: &[&BinarySemaphore],
+    ) -> Result<()>
+    where
+        I: IntoIterator<Item = CommandBuffer>,
+    {
+        if signals
+            .iter()
+            .any(|semaphore| !semaphore.belongs_to(&self.owner))
+        {
+            return Err(Error::Validation(
+                "binary signal semaphore was created by a different Device".into(),
+            ));
+        }
+        let mut command_buffers = command_buffers.into_iter().collect::<Vec<_>>();
+        if command_buffers
+            .iter()
+            .any(|command_buffer| !command_buffer.belongs_to(&self.owner))
+        {
+            return Err(Error::Validation(
+                "command buffer was created by a different Device".into(),
+            ));
+        }
+        let handles = command_buffers
+            .iter()
+            .map(CommandBuffer::raw)
+            .collect::<Vec<_>>();
+        let signals = signals
+            .iter()
+            .map(|semaphore| semaphore.raw())
+            .collect::<Vec<_>>();
+        {
+            let _submit_guard = self
+                .owner
+                .submit_lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            submit_to_graphics_queue_locked(&self.owner, frame, &handles, waits, &signals)?;
+        }
+        let mut leases = Vec::new();
+        for command_buffer in &mut command_buffers {
+            leases.extend(command_buffer.take_for_submission());
+        }
+        self.owner.retire_command_buffers_after(frame, handles);
+        self.submission_retirement.retire_after(frame, leases);
+        Ok(())
+    }
+
     /// Submits work, signals binary semaphores, and retains leases until the
     /// returned timeline value completes.
     ///
@@ -182,6 +246,48 @@ impl Queue {
         waits: &[SemaphoreWait],
     ) -> Result<()> {
         submit_to_graphics_queue(&self.owner, frame, command_buffers, waits)
+    }
+
+    /// Submits externally recorded command buffers on a caller-reserved frame
+    /// token and signals binary semaphores for an external consumer.
+    ///
+    /// This is the native-stream counterpart of
+    /// [`Self::submit_with_binary_signals`].  It is for integrations whose
+    /// command recording has not yet been expressed through
+    /// [`crate::CommandEncoder`], while keeping timeline submission and binary
+    /// semaphore ownership in the shared renderer.
+    ///
+    /// # Safety
+    ///
+    /// Every command buffer must satisfy [`Self::submit_raw`]. Every signal
+    /// semaphore must be unsignalled with no pending signal operation, and
+    /// every synchronization object must remain live until submission
+    /// completes.
+    pub unsafe fn submit_raw_with_binary_signals(
+        &self,
+        frame: FrameToken,
+        command_buffers: &[vk::CommandBuffer],
+        waits: &[SemaphoreWait],
+        signals: &[&BinarySemaphore],
+    ) -> Result<()> {
+        if signals
+            .iter()
+            .any(|semaphore| !semaphore.belongs_to(&self.owner))
+        {
+            return Err(Error::Validation(
+                "binary signal semaphore was created by a different Device".into(),
+            ));
+        }
+        let signals = signals
+            .iter()
+            .map(|semaphore| semaphore.raw())
+            .collect::<Vec<_>>();
+        let _submit_guard = self
+            .owner
+            .submit_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        submit_to_graphics_queue_locked(&self.owner, frame, command_buffers, waits, &signals)
     }
 
     /// Allocates a monotonic timeline value and submits externally owned

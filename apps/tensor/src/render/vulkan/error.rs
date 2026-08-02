@@ -6,6 +6,13 @@ use super::super::DeviceSelectionError;
 
 #[derive(Debug, Error)]
 pub enum RendererError {
+    #[error(
+        "Tensor requires VP_KHR_roadmap_2026 revision 11 Vulkan {required}, but target requested {requested}"
+    )]
+    UnsupportedRendererProfile {
+        required: Version,
+        requested: Version,
+    },
     #[error("failed to load Vulkan library {LIBRARY}: {0}")]
     LoadLibrary(String),
     #[error("failed to load the Vulkan entry points: {0}")]
@@ -20,16 +27,16 @@ pub enum RendererError {
     EnumerateDevices(vk::ErrorCode),
     #[error("failed to enumerate Vulkan device extensions: {0:?}")]
     EnumerateExtensions(vk::ErrorCode),
-    #[error("failed to probe Vulkan dma-buf format {format} modifier {modifier:#x}: {source:?}")]
-    ProbeFormat {
-        format: Fourcc,
-        modifier: u64,
-        source: vk::ErrorCode,
-    },
+    #[error("failed to initialize the shared Vulkan probe: {0}")]
+    Probe(String),
+    #[error("failed to probe Vulkan dma-buf format {format}: {details}")]
+    ProbeFormat { format: Fourcc, details: String },
     #[error(transparent)]
     Selection(#[from] DeviceSelectionError),
     #[error("failed to create the Vulkan descriptor-heap dma-buf device: {0:?}")]
     CreateDevice(vk::ErrorCode),
+    #[error("failed to create the shared Vulkan renderer device: {0}")]
+    CreateSharedDevice(String),
     #[error("failed to create Vulkan frame resources: {0:?}")]
     #[cfg(feature = "tty")]
     CreateFrameResources(String),
@@ -48,9 +55,12 @@ pub enum RendererError {
         modifier: u64,
         plane_count: u32,
     },
-    #[error("failed to query the renderer timeline semaphore: {0:?}")]
+    #[error("failed to query the shared renderer timeline: {0}")]
     #[cfg(feature = "tty")]
-    QueryTimeline(vk::ErrorCode),
+    QueryTimeline(String),
+    #[error("failed to reserve a shared renderer frame timeline value: {0}")]
+    #[cfg(feature = "tty")]
+    ReserveFrame(String),
     #[error("failed to submit a renderer frame: {0}")]
     #[cfg(feature = "tty")]
     SubmitFrame(String),

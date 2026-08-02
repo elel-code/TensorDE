@@ -213,7 +213,7 @@ pub fn lower_slang_bindings_to_descriptor_heap_at_offset(
             )));
         }
     }
-    let mut body = retained.join("\n");
+    let mut body = lower_generated_texture_macros(retained.join("\n"));
     for binding in &bindings {
         body = replace_identifier(
             &body,
@@ -428,12 +428,40 @@ fn replace_identifier(source: &str, name: &str, replacement: &str) -> String {
     output
 }
 
+fn lower_generated_texture_macros(source: String) -> String {
+    source
+        .replace(
+            "#define texture2D(S, UV) S ## _texture.Sample(S ## _sampler, UV)",
+            "#define texture2D(S, UV) gilderHeap_ ## S ## _texture().Sample(gilderHeap_ ## S ## _sampler(), UV)",
+        )
+        .replace(
+            "#define texture3D(S, UVW) S ## _texture.Sample(S ## _sampler, UVW)",
+            "#define texture3D(S, UVW) gilderHeap_ ## S ## _texture().Sample(gilderHeap_ ## S ## _sampler(), UVW)",
+        )
+        .replace(
+            "#define texture(S, UV) S ## _texture.Sample(S ## _sampler, UV)",
+            "#define texture(S, UV) gilderHeap_ ## S ## _texture().Sample(gilderHeap_ ## S ## _sampler(), UV)",
+        )
+        .replace(
+            "#define texture2DLod(S, UV, LOD) S ## _texture.SampleLevel(S ## _sampler, UV, LOD)",
+            "#define texture2DLod(S, UV, LOD) gilderHeap_ ## S ## _texture().SampleLevel(gilderHeap_ ## S ## _sampler(), UV, LOD)",
+        )
+        .replace(
+            "#define textureLod(S, UV, LOD) S ## _texture.SampleLevel(S ## _sampler, UV, LOD)",
+            "#define textureLod(S, UV, LOD) gilderHeap_ ## S ## _texture().SampleLevel(gilderHeap_ ## S ## _sampler(), UV, LOD)",
+        )
+        .replace(
+            "#define texelFetch(S, COORD, LOD) S ## _texture.Load(int3(COORD, LOD))",
+            "#define texelFetch(S, COORD, LOD) gilderHeap_ ## S ## _texture().Load(int3(COORD, LOD))",
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn lowers_glsl_frontend_resources_to_typed_heap_accessors() {
+    fn lowers_direct_native_resources_to_typed_heap_accessors() {
         let source = r#"Texture2D<float4 > image_0 : register(t0);
 SamplerState imageSampler_0 : register(s0);
 struct GlobalParams_0

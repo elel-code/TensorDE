@@ -1,185 +1,202 @@
-#![allow(unsafe_code)]
-
-use std::{mem, slice};
+use std::ffi::CStr;
 
 use thiserror::Error;
-use vulkan_renderer::vulkanalia::vk::{DeviceV1_0, Handle, HasBuilder};
-use vulkan_renderer::vulkanalia::{Device, vk};
+use vulkan_renderer::{
+    BlendState, ColorTargetState, ColorWrites, Device as RendererDevice, Error as RendererError,
+    FragmentState, GraphicsPipeline, GraphicsPipelineDescriptor, MultisampleState, PrimitiveState,
+    ProgrammableStage, ShaderBindingMap, ShaderModuleDescriptor, ShaderModuleError, TextureFormat,
+    VertexState,
+};
 
-mod cursor;
-pub(super) use cursor::{CursorPipeline, CursorPipelineError};
-mod focus_ring;
-pub(super) use focus_ring::{FocusRingPipeline, FocusRingPipelineError};
-
-const VERTEX_SHADER: &[u32] =
+const CLIENT_VERTEX_SHADER: &[u32] =
     vulkan_renderer::include_spirv!("../../../shaders/spirv/client.vert.spv");
-const FRAGMENT_SHADER: &[u32] =
+const CLIENT_FRAGMENT_SHADER: &[u32] =
     vulkan_renderer::include_spirv!("../../../shaders/spirv/client.frag.spv");
+const CURSOR_VERTEX_SHADER: &[u32] =
+    vulkan_renderer::include_spirv!("../../../shaders/spirv/cursor.vert.spv");
+const CURSOR_FRAGMENT_SHADER: &[u32] =
+    vulkan_renderer::include_spirv!("../../../shaders/spirv/cursor.frag.spv");
+const FOCUS_RING_VERTEX_SHADER: &[u32] =
+    vulkan_renderer::include_spirv!("../../../shaders/spirv/focus_ring.vert.spv");
+const FOCUS_RING_FRAGMENT_SHADER: &[u32] =
+    vulkan_renderer::include_spirv!("../../../shaders/spirv/focus_ring.frag.spv");
+const ENTRY_POINT: &CStr = c"main";
 
-/// The first real scene pipeline. It deliberately has no descriptor-set
-/// layout or binding mapping: the bindless Slang fragment shader selects the
-/// sampled image and the shared linear-clamp sampler through absolute
-/// descriptor-heap element indices in its push record.
-pub(super) struct ClientImagePipeline {
-    pipeline: vk::Pipeline,
+const CLIENT_IMAGE_PROGRAM: PipelineProgram = PipelineProgram {
+    label: "tensor-client-image",
+    vertex_label: "tensor-client-vertex",
+    fragment_label: "tensor-client-fragment",
+    vertex: CLIENT_VERTEX_SHADER,
+    fragment: CLIENT_FRAGMENT_SHADER,
+};
+const CURSOR_PROGRAM: PipelineProgram = PipelineProgram {
+    label: "tensor-cursor",
+    vertex_label: "tensor-cursor-vertex",
+    fragment_label: "tensor-cursor-fragment",
+    vertex: CURSOR_VERTEX_SHADER,
+    fragment: CURSOR_FRAGMENT_SHADER,
+};
+const FOCUS_RING_PROGRAM: PipelineProgram = PipelineProgram {
+    label: "tensor-focus-ring",
+    vertex_label: "tensor-focus-ring-vertex",
+    fragment_label: "tensor-focus-ring-fragment",
+    vertex: FOCUS_RING_VERTEX_SHADER,
+    fragment: FOCUS_RING_FRAGMENT_SHADER,
+};
+
+#[derive(Clone, Copy)]
+struct PipelineProgram {
+    label: &'static str,
+    vertex_label: &'static str,
+    fragment_label: &'static str,
+    vertex: &'static [u32],
+    fragment: &'static [u32],
 }
 
-/// Validate the exact SPIR-V modules used by the client-image pipeline while
-/// the renderer is still in its startup gate.  This turns a driver or shader
-/// compatibility failure into a clean startup error instead of discovering it
-/// after a client has committed its first buffer.
-pub(super) fn validate_shader_modules(device: &Device) -> Result<(), ClientPipelineError> {
-    let (vertex_module, fragment_module) = create_shader_modules(device)?;
-    unsafe {
-        device.destroy_shader_module(fragment_module, None);
-        device.destroy_shader_module(vertex_module, None);
+/// Shared typed pipeline for descriptor-heap client-surface sampling.
+///
+/// The compositor supplies only its output format. Shader-module ownership,
+/// dynamic-rendering state, null-layout descriptor-heap ABI, and pipeline
+/// destruction remain in `vulkan-renderer`.
+pub(super) struct ClientImagePipeline {
+    pipeline: GraphicsPipeline,
+}
+
+/// Shared descriptor-heap pipeline for Tensor's analytic fallback cursor.
+pub(super) struct CursorPipeline {
+    pipeline: GraphicsPipeline,
+}
+
+/// Shared descriptor-heap pipeline for Tensor's compositor-owned focus ring.
+pub(super) struct FocusRingPipeline {
+    pipeline: GraphicsPipeline,
+}
+
+/// Validates every SPIR-V module used by the compositor before the first
+/// output can be registered. Pipeline creation stays cold and retained; frame
+/// recording only selects a previously materialized pipeline by output format.
+pub(super) fn validate_shader_modules(
+    renderer: &RendererDevice,
+) -> Result<(), TensorPipelineError> {
+    for program in [CLIENT_IMAGE_PROGRAM, CURSOR_PROGRAM, FOCUS_RING_PROGRAM] {
+        validate_program(renderer, program)?;
     }
     Ok(())
 }
 
 impl ClientImagePipeline {
     pub(super) fn new(
-        device: &Device,
-        target_format: vk::Format,
-    ) -> Result<Self, ClientPipelineError> {
-        let (vertex_module, fragment_module) = create_shader_modules(device)?;
-
-        let entry = b"main\0";
-        let vertex_stage = vk::PipelineShaderStageCreateInfo::builder()
-            .stage(vk::ShaderStageFlags::VERTEX)
-            .module(vertex_module)
-            .name(entry)
-            .build();
-        let fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
-            .stage(vk::ShaderStageFlags::FRAGMENT)
-            .module(fragment_module)
-            .name(entry)
-            .build();
-        let stages = [vertex_stage, fragment_stage];
-
-        let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder().build();
-        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
-            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .build();
-        let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
-            .viewport_count(1)
-            .scissor_count(1)
-            .build();
-        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-        let dynamic_state = vk::PipelineDynamicStateCreateInfo::builder()
-            .dynamic_states(&dynamic_states)
-            .build();
-        let rasterization = vk::PipelineRasterizationStateCreateInfo::builder()
-            .polygon_mode(vk::PolygonMode::FILL)
-            .cull_mode(vk::CullModeFlags::NONE)
-            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-            .line_width(1.0)
-            .build();
-        let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
-            .rasterization_samples(vk::SampleCountFlags::_1)
-            .build();
-        let color_attachment = vk::PipelineColorBlendAttachmentState::builder()
-            .blend_enable(true)
-            .src_color_blend_factor(vk::BlendFactor::ONE)
-            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-            .color_blend_op(vk::BlendOp::ADD)
-            .src_alpha_blend_factor(vk::BlendFactor::ONE)
-            .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-            .alpha_blend_op(vk::BlendOp::ADD)
-            .color_write_mask(
-                vk::ColorComponentFlags::R
-                    | vk::ColorComponentFlags::G
-                    | vk::ColorComponentFlags::B
-                    | vk::ColorComponentFlags::A,
-            )
-            .build();
-        let color_attachments = [color_attachment];
-        let color_blend = vk::PipelineColorBlendStateCreateInfo::builder()
-            .attachments(&color_attachments)
-            .build();
-        let formats = [target_format];
-        let mut rendering = vk::PipelineRenderingCreateInfo::builder()
-            .color_attachment_formats(&formats)
-            .build();
-        let mut flags = vk::PipelineCreateFlags2CreateInfo::builder()
-            .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT)
-            .build();
-        let pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
-            .stages(&stages)
-            .vertex_input_state(&vertex_input)
-            .input_assembly_state(&input_assembly)
-            .viewport_state(&viewport_state)
-            .rasterization_state(&rasterization)
-            .multisample_state(&multisample)
-            .color_blend_state(&color_blend)
-            .dynamic_state(&dynamic_state)
-            .layout(vk::PipelineLayout::null())
-            .render_pass(vk::RenderPass::null())
-            .subpass(0)
-            .push_next(&mut rendering)
-            .push_next(&mut flags)
-            .build();
-        let result = unsafe {
-            device.create_graphics_pipelines(
-                vk::PipelineCache::null(),
-                slice::from_ref(&pipeline_info),
-                None,
-            )
-        };
-        unsafe {
-            device.destroy_shader_module(vertex_module, None);
-            device.destroy_shader_module(fragment_module, None);
-        }
-        let (pipelines, _) = result.map_err(ClientPipelineError::CreatePipeline)?;
-        let pipeline = pipelines
-            .first()
-            .copied()
-            .ok_or(ClientPipelineError::NoPipeline)?;
-        Ok(Self { pipeline })
+        renderer: &RendererDevice,
+        target_format: TextureFormat,
+    ) -> Result<Self, TensorPipelineError> {
+        Ok(Self {
+            pipeline: create_pipeline(renderer, target_format, CLIENT_IMAGE_PROGRAM)?,
+        })
     }
 
-    pub(super) const fn handle(&self) -> vk::Pipeline {
-        self.pipeline
-    }
-
-    pub(super) unsafe fn destroy(self, device: &Device) {
-        unsafe { device.destroy_pipeline(self.pipeline, None) };
+    pub(super) const fn pipeline(&self) -> &GraphicsPipeline {
+        &self.pipeline
     }
 }
 
-fn create_shader_modules(
-    device: &Device,
-) -> Result<(vk::ShaderModule, vk::ShaderModule), ClientPipelineError> {
-    let vertex_info = shader_module_info(VERTEX_SHADER);
-    let vertex_module = unsafe { device.create_shader_module(&vertex_info, None) }
-        .map_err(ClientPipelineError::CreateVertexModule)?;
-    let fragment_info = shader_module_info(FRAGMENT_SHADER);
-    match unsafe { device.create_shader_module(&fragment_info, None) } {
-        Ok(fragment_module) => Ok((vertex_module, fragment_module)),
-        Err(error) => {
-            unsafe { device.destroy_shader_module(vertex_module, None) };
-            Err(ClientPipelineError::CreateFragmentModule(error))
-        }
+impl CursorPipeline {
+    pub(super) fn new(
+        renderer: &RendererDevice,
+        target_format: TextureFormat,
+    ) -> Result<Self, TensorPipelineError> {
+        Ok(Self {
+            pipeline: create_pipeline(renderer, target_format, CURSOR_PROGRAM)?,
+        })
+    }
+
+    pub(super) const fn pipeline(&self) -> &GraphicsPipeline {
+        &self.pipeline
     }
 }
 
-fn shader_module_info(code: &[u32]) -> vk::ShaderModuleCreateInfo {
-    vk::ShaderModuleCreateInfo::builder()
-        .code_size(mem::size_of_val(code))
-        .code(code)
-        .build()
+impl FocusRingPipeline {
+    pub(super) fn new(
+        renderer: &RendererDevice,
+        target_format: TextureFormat,
+    ) -> Result<Self, TensorPipelineError> {
+        Ok(Self {
+            pipeline: create_pipeline(renderer, target_format, FOCUS_RING_PROGRAM)?,
+        })
+    }
+
+    pub(super) const fn pipeline(&self) -> &GraphicsPipeline {
+        &self.pipeline
+    }
+}
+
+fn validate_program(
+    renderer: &RendererDevice,
+    program: PipelineProgram,
+) -> Result<(), TensorPipelineError> {
+    let _vertex =
+        renderer.create_shader_module(shader_descriptor(program.vertex_label, program.vertex))?;
+    let _fragment = renderer
+        .create_shader_module(shader_descriptor(program.fragment_label, program.fragment))?;
+    Ok(())
+}
+
+fn create_pipeline(
+    renderer: &RendererDevice,
+    target_format: TextureFormat,
+    program: PipelineProgram,
+) -> Result<GraphicsPipeline, TensorPipelineError> {
+    let vertex =
+        renderer.create_shader_module(shader_descriptor(program.vertex_label, program.vertex))?;
+    let fragment = renderer
+        .create_shader_module(shader_descriptor(program.fragment_label, program.fragment))?;
+    let bindings = ShaderBindingMap::default();
+    let targets = [Some(ColorTargetState {
+        format: target_format,
+        blend: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+        write_mask: ColorWrites::ALL,
+    })];
+    renderer
+        .create_graphics_pipeline(&GraphicsPipelineDescriptor {
+            label: Some(program.label),
+            vertex: VertexState {
+                stage: ProgrammableStage {
+                    module: &vertex,
+                    entry_point: ENTRY_POINT,
+                    bindings: &bindings,
+                },
+                buffers: &[],
+            },
+            primitive: PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            fragment: FragmentState {
+                stage: ProgrammableStage {
+                    module: &fragment,
+                    entry_point: ENTRY_POINT,
+                    bindings: &bindings,
+                },
+                targets: &targets,
+            },
+            advanced_blend: None,
+            local_read_mapping: None,
+            cache: None,
+        })
+        .map_err(TensorPipelineError::from)
+}
+
+fn shader_descriptor(label: &str, spirv: &[u32]) -> ShaderModuleDescriptor {
+    ShaderModuleDescriptor {
+        label: Some(label.into()),
+        spirv: spirv.to_vec(),
+    }
 }
 
 #[derive(Debug, Error)]
-pub(super) enum ClientPipelineError {
-    #[error("failed to create the client vertex shader module: {0:?}")]
-    CreateVertexModule(vk::ErrorCode),
-    #[error("failed to create the client fragment shader module: {0:?}")]
-    CreateFragmentModule(vk::ErrorCode),
-    #[error("failed to create the client graphics pipeline: {0:?}")]
-    CreatePipeline(vk::ErrorCode),
-    #[error("Vulkan returned no client graphics pipeline")]
-    NoPipeline,
+pub(super) enum TensorPipelineError {
+    #[error("shared renderer rejected a Tensor shader module: {0}")]
+    ShaderModule(#[from] ShaderModuleError),
+    #[error("shared renderer failed to create a Tensor graphics pipeline: {0}")]
+    Pipeline(#[from] RendererError),
 }
 
 #[cfg(test)]
@@ -187,15 +204,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shader_module_info_carries_the_complete_spirv_byte_length() {
-        assert!(vulkan_renderer::validate_spirv(VERTEX_SHADER).is_ok());
-        assert!(vulkan_renderer::validate_spirv(FRAGMENT_SHADER).is_ok());
-        let vertex = shader_module_info(VERTEX_SHADER);
-        let fragment = shader_module_info(FRAGMENT_SHADER);
-
-        assert_eq!(vertex.code_size, mem::size_of_val(VERTEX_SHADER));
-        assert_eq!(fragment.code_size, mem::size_of_val(FRAGMENT_SHADER));
-        assert!(!vertex.code.is_null());
-        assert!(!fragment.code.is_null());
+    fn tensor_pipeline_shader_descriptors_own_complete_spirv_words() {
+        for program in [CLIENT_IMAGE_PROGRAM, CURSOR_PROGRAM, FOCUS_RING_PROGRAM] {
+            let vertex = shader_descriptor(program.vertex_label, program.vertex);
+            let fragment = shader_descriptor(program.fragment_label, program.fragment);
+            assert!(vertex.validate().is_ok());
+            assert!(fragment.validate().is_ok());
+            assert_eq!(vertex.spirv.as_slice(), program.vertex);
+            assert_eq!(fragment.spirv.as_slice(), program.fragment);
+        }
     }
 }

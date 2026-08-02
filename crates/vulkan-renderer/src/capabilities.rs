@@ -3,6 +3,8 @@ use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign};
 
 use vulkanalia::Version;
 
+use crate::SampleCounts;
+
 pub const ROADMAP_2026_PROFILE_NAME: &str = "VP_KHR_roadmap_2026";
 pub const ROADMAP_2026_PROFILE_REVISION: u32 = 11;
 pub const ROADMAP_2026_API_VERSION: Version = Version::new(1, 4, 328);
@@ -87,16 +89,37 @@ impl BackendProfile {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CoreFeatures {
+    pub sampler_anisotropy: bool,
+    pub sample_rate_shading: bool,
+    pub texture_compression_bc: bool,
+    pub shader_draw_parameters: bool,
     pub timeline_semaphore: bool,
+    pub scalar_block_layout: bool,
+    pub descriptor_indexing: bool,
+    pub runtime_descriptor_array: bool,
     pub buffer_device_address: bool,
     pub synchronization2: bool,
     pub dynamic_rendering: bool,
+    pub shader_demote_to_helper_invocation: bool,
+    pub maintenance4: bool,
     pub maintenance5: bool,
     pub maintenance6: bool,
     pub dynamic_rendering_local_read: bool,
+    pub host_image_copy: bool,
+    pub shader_untyped_pointers: bool,
     pub descriptor_heap: bool,
     pub pipeline_binaries: bool,
     pub present_mode_fifo_latest_ready: bool,
+    pub present_id2: bool,
+    pub present_wait2: bool,
+    pub swapchain_maintenance1: bool,
+    pub advanced_blend: bool,
+    pub advanced_blend_coherent_operations: bool,
+    pub multisampled_render_to_single_sampled: bool,
+    pub maintenance7: bool,
+    pub maintenance8: bool,
+    pub maintenance9: bool,
+    pub maintenance10: bool,
     pub external_memory_dma_buf: bool,
     pub external_semaphore_sync_fd: bool,
 }
@@ -165,6 +188,27 @@ impl Features {
     pub const EXTERNAL_MEMORY_DMA_BUF: Self = Self(1 << 9);
     pub const EXTERNAL_SEMAPHORE_SYNC_FD: Self = Self(1 << 10);
     pub const PIPELINE_BINARIES: Self = Self(1 << 11);
+    pub const SAMPLER_ANISOTROPY: Self = Self(1 << 12);
+    pub const SAMPLE_RATE_SHADING: Self = Self(1 << 13);
+    pub const TEXTURE_COMPRESSION_BC: Self = Self(1 << 14);
+    pub const SHADER_DRAW_PARAMETERS: Self = Self(1 << 15);
+    pub const SCALAR_BLOCK_LAYOUT: Self = Self(1 << 16);
+    pub const DESCRIPTOR_INDEXING: Self = Self(1 << 17);
+    pub const RUNTIME_DESCRIPTOR_ARRAY: Self = Self(1 << 18);
+    pub const SHADER_DEMOTE_TO_HELPER_INVOCATION: Self = Self(1 << 19);
+    pub const MAINTENANCE4: Self = Self(1 << 20);
+    pub const HOST_IMAGE_COPY: Self = Self(1 << 21);
+    pub const SHADER_UNTYPED_POINTERS: Self = Self(1 << 22);
+    pub const PRESENT_ID2: Self = Self(1 << 23);
+    pub const PRESENT_WAIT2: Self = Self(1 << 24);
+    pub const SWAPCHAIN_MAINTENANCE1: Self = Self(1 << 25);
+    pub const ADVANCED_BLEND: Self = Self(1 << 26);
+    pub const ADVANCED_BLEND_COHERENT: Self = Self(1 << 27);
+    pub const MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED: Self = Self(1 << 28);
+    pub const MAINTENANCE7: Self = Self(1 << 29);
+    pub const MAINTENANCE8: Self = Self(1 << 30);
+    pub const MAINTENANCE9: Self = Self(1 << 31);
+    pub const MAINTENANCE10: Self = Self(1 << 32);
 
     pub const VULKAN14_RENDERER_BASELINE: Self = Self(
         Self::TIMELINE_SEMAPHORE.0
@@ -182,6 +226,34 @@ impl Features {
             | Self::DESCRIPTOR_HEAP.0
             | Self::FIFO_LATEST_READY.0
             | Self::PIPELINE_BINARIES.0,
+    );
+
+    /// Complete graphics/presentation capability set consumed by Gilder's
+    /// authored scene executor. Optional product choices such as 4x MSAA are
+    /// requested separately and never enabled by environment inspection in
+    /// the shared renderer.
+    pub const RETAINED_SCENE_PRESENTATION: Self = Self(
+        Self::STANDARD_DEFAULTS.0
+            | Self::SAMPLER_ANISOTROPY.0
+            | Self::SAMPLE_RATE_SHADING.0
+            | Self::TEXTURE_COMPRESSION_BC.0
+            | Self::SHADER_DRAW_PARAMETERS.0
+            | Self::SCALAR_BLOCK_LAYOUT.0
+            | Self::DESCRIPTOR_INDEXING.0
+            | Self::RUNTIME_DESCRIPTOR_ARRAY.0
+            | Self::SHADER_DEMOTE_TO_HELPER_INVOCATION.0
+            | Self::MAINTENANCE4.0
+            | Self::MAINTENANCE6.0
+            | Self::DYNAMIC_RENDERING_LOCAL_READ.0
+            | Self::HOST_IMAGE_COPY.0
+            | Self::SHADER_UNTYPED_POINTERS.0
+            | Self::PRESENT_ID2.0
+            | Self::PRESENT_WAIT2.0
+            | Self::SWAPCHAIN_MAINTENANCE1.0
+            | Self::MAINTENANCE7.0
+            | Self::MAINTENANCE8.0
+            | Self::MAINTENANCE9.0
+            | Self::MAINTENANCE10.0,
     );
 
     pub const fn empty() -> Self {
@@ -203,26 +275,59 @@ impl Features {
     /// Expands feature dependencies that Vulkan requires to be enabled on the
     /// logical device. The expanded set is the device's reported contract.
     pub const fn with_dependencies(self) -> Self {
+        let mut bits = self.0;
         if self.contains(Self::DESCRIPTOR_HEAP) {
-            Self(self.0 | Self::BUFFER_DEVICE_ADDRESS.0 | Self::MAINTENANCE5.0)
-        } else {
-            self
+            bits |= Self::BUFFER_DEVICE_ADDRESS.0 | Self::MAINTENANCE5.0;
         }
+        if self.contains(Self::PRESENT_WAIT2) {
+            bits |= Self::PRESENT_ID2.0;
+        }
+        if self.contains(Self::ADVANCED_BLEND_COHERENT) {
+            bits |= Self::ADVANCED_BLEND.0;
+        }
+        Self(bits)
     }
 
     pub const fn from_core(features: CoreFeatures) -> Self {
         let mut bits = 0;
+        if features.sampler_anisotropy {
+            bits |= Self::SAMPLER_ANISOTROPY.0;
+        }
+        if features.sample_rate_shading {
+            bits |= Self::SAMPLE_RATE_SHADING.0;
+        }
+        if features.texture_compression_bc {
+            bits |= Self::TEXTURE_COMPRESSION_BC.0;
+        }
+        if features.shader_draw_parameters {
+            bits |= Self::SHADER_DRAW_PARAMETERS.0;
+        }
         if features.timeline_semaphore {
             bits |= Self::TIMELINE_SEMAPHORE.0;
         }
         if features.buffer_device_address {
             bits |= Self::BUFFER_DEVICE_ADDRESS.0;
         }
+        if features.scalar_block_layout {
+            bits |= Self::SCALAR_BLOCK_LAYOUT.0;
+        }
+        if features.descriptor_indexing {
+            bits |= Self::DESCRIPTOR_INDEXING.0;
+        }
+        if features.runtime_descriptor_array {
+            bits |= Self::RUNTIME_DESCRIPTOR_ARRAY.0;
+        }
         if features.synchronization2 {
             bits |= Self::SYNCHRONIZATION2.0;
         }
         if features.dynamic_rendering {
             bits |= Self::DYNAMIC_RENDERING.0;
+        }
+        if features.shader_demote_to_helper_invocation {
+            bits |= Self::SHADER_DEMOTE_TO_HELPER_INVOCATION.0;
+        }
+        if features.maintenance4 {
+            bits |= Self::MAINTENANCE4.0;
         }
         if features.maintenance5 {
             bits |= Self::MAINTENANCE5.0;
@@ -233,6 +338,12 @@ impl Features {
         if features.dynamic_rendering_local_read {
             bits |= Self::DYNAMIC_RENDERING_LOCAL_READ.0;
         }
+        if features.host_image_copy {
+            bits |= Self::HOST_IMAGE_COPY.0;
+        }
+        if features.shader_untyped_pointers {
+            bits |= Self::SHADER_UNTYPED_POINTERS.0;
+        }
         if features.descriptor_heap {
             bits |= Self::DESCRIPTOR_HEAP.0;
         }
@@ -241,6 +352,36 @@ impl Features {
         }
         if features.present_mode_fifo_latest_ready {
             bits |= Self::FIFO_LATEST_READY.0;
+        }
+        if features.present_id2 {
+            bits |= Self::PRESENT_ID2.0;
+        }
+        if features.present_wait2 {
+            bits |= Self::PRESENT_WAIT2.0;
+        }
+        if features.swapchain_maintenance1 {
+            bits |= Self::SWAPCHAIN_MAINTENANCE1.0;
+        }
+        if features.advanced_blend {
+            bits |= Self::ADVANCED_BLEND.0;
+        }
+        if features.advanced_blend_coherent_operations {
+            bits |= Self::ADVANCED_BLEND_COHERENT.0;
+        }
+        if features.multisampled_render_to_single_sampled {
+            bits |= Self::MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED.0;
+        }
+        if features.maintenance7 {
+            bits |= Self::MAINTENANCE7.0;
+        }
+        if features.maintenance8 {
+            bits |= Self::MAINTENANCE8.0;
+        }
+        if features.maintenance9 {
+            bits |= Self::MAINTENANCE9.0;
+        }
+        if features.maintenance10 {
+            bits |= Self::MAINTENANCE10.0;
         }
         if features.external_memory_dma_buf {
             bits |= Self::EXTERNAL_MEMORY_DMA_BUF.0;
@@ -306,6 +447,8 @@ pub struct Limits {
     pub max_memory_allocation_count: u32,
     pub max_bound_descriptor_sets: u32,
     pub max_push_constants_size: u32,
+    pub max_color_attachments: u32,
+    pub max_per_stage_descriptor_input_attachments: u32,
     pub descriptor_heap: DescriptorHeapLimits,
 }
 
@@ -316,6 +459,8 @@ impl Limits {
             max_memory_allocation_count: 4_096,
             max_bound_descriptor_sets: 4,
             max_push_constants_size: 128,
+            max_color_attachments: 8,
+            max_per_stage_descriptor_input_attachments: 4,
             descriptor_heap: DescriptorHeapLimits::default_required(),
         }
     }
@@ -343,6 +488,16 @@ impl Limits {
                 self.max_push_constants_size as u64,
                 supported.max_push_constants_size as u64,
             ),
+            (
+                "max_color_attachments",
+                self.max_color_attachments as u64,
+                supported.max_color_attachments as u64,
+            ),
+            (
+                "max_per_stage_descriptor_input_attachments",
+                self.max_per_stage_descriptor_input_attachments as u64,
+                supported.max_per_stage_descriptor_input_attachments as u64,
+            ),
         ] {
             if required > available {
                 failures.push(format!(
@@ -356,6 +511,17 @@ impl Limits {
         );
         failures
     }
+}
+
+/// Physical-device facts used for typed path selection without raw queries.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DeviceProperties {
+    pub min_uniform_buffer_offset_alignment: u64,
+    pub max_sampler_anisotropy_x1: u32,
+    pub framebuffer_color_sample_counts: SampleCounts,
+    pub dynamic_rendering_local_read_depth_stencil_attachments: bool,
+    pub dynamic_rendering_local_read_multisampled_attachments: bool,
+    pub identical_memory_type_requirements: bool,
 }
 
 /// Limits and alignment rules exposed by `VK_EXT_descriptor_heap`.

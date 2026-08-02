@@ -137,6 +137,18 @@ fn standard_sampler_rejects_invalid_lod_ranges() {
 }
 
 #[test]
+fn typed_sampler_preserves_explicit_anisotropy_clamp() {
+    let sampler = SamplerDescriptor {
+        max_anisotropy_x1: 8,
+        ..SamplerDescriptor::default()
+    }
+    .to_vk()
+    .unwrap();
+    assert_eq!(sampler.anisotropy_enable, vk::TRUE);
+    assert_eq!(sampler.max_anisotropy, 8.0);
+}
+
+#[test]
 fn shader_heap_element_index_requires_abi_strided_offsets() {
     assert_eq!(shader_heap_element_index(0, 32, "test").unwrap(), 0);
     assert_eq!(shader_heap_element_index(96, 32, "test").unwrap(), 3);
