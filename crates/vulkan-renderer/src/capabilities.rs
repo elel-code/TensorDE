@@ -1,13 +1,11 @@
 use std::collections::BTreeSet;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign};
 
-use vulkanalia::Version;
-
-use crate::SampleCounts;
+use crate::{ApiVersion, SampleCounts};
 
 pub const ROADMAP_2026_PROFILE_NAME: &str = "VP_KHR_roadmap_2026";
 pub const ROADMAP_2026_PROFILE_REVISION: u32 = 11;
-pub const ROADMAP_2026_API_VERSION: Version = Version::new(1, 4, 328);
+pub const ROADMAP_2026_API_VERSION: ApiVersion = ApiVersion::new(1, 4, 328);
 pub const ROADMAP_2026_REQUIRED_INSTANCE_EXTENSIONS: &[&str] = &[
     "VK_KHR_surface",
     "VK_KHR_get_surface_capabilities2",
@@ -65,9 +63,9 @@ pub enum BackendProfile {
 }
 
 impl BackendProfile {
-    pub const fn required_api_version(self) -> Version {
+    pub const fn required_api_version(self) -> ApiVersion {
         match self {
-            Self::Vulkan14 => Version::V1_4_0,
+            Self::Vulkan14 => ApiVersion::V1_4_0,
             Self::Roadmap2026 => ROADMAP_2026_API_VERSION,
         }
     }
@@ -134,7 +132,7 @@ impl CoreFeatures {
 
     pub(crate) fn rejection_reasons(
         self,
-        version: Version,
+        version: ApiVersion,
         profile: BackendProfile,
         extensions: &BTreeSet<String>,
     ) -> Vec<String> {
@@ -727,7 +725,11 @@ mod tests {
         assert!(ready.renderer_ready());
         assert!(
             ready
-                .rejection_reasons(Version::V1_4_0, BackendProfile::Vulkan14, &BTreeSet::new())
+                .rejection_reasons(
+                    ApiVersion::V1_4_0,
+                    BackendProfile::Vulkan14,
+                    &BTreeSet::new(),
+                )
                 .is_empty()
         );
     }
@@ -735,7 +737,7 @@ mod tests {
     #[test]
     fn roadmap_profile_uses_the_published_revision_11_api_patch() {
         assert_eq!(ROADMAP_2026_PROFILE_REVISION, 11);
-        assert_eq!(ROADMAP_2026_API_VERSION, Version::new(1, 4, 328));
+        assert_eq!(ROADMAP_2026_API_VERSION, ApiVersion::new(1, 4, 328));
         assert!(ROADMAP_2026_REQUIRED_DEVICE_EXTENSIONS.contains(&"VK_KHR_pipeline_binary"));
     }
 

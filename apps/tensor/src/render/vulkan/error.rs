@@ -1,6 +1,6 @@
 use tensor_host::Fourcc;
 use thiserror::Error;
-use vulkan_renderer::vulkanalia::{Version, loader::LIBRARY, vk};
+use vulkan_renderer::ApiVersion;
 
 use super::super::DeviceSelectionError;
 
@@ -10,31 +10,15 @@ pub enum RendererError {
         "Tensor requires VP_KHR_roadmap_2026 revision 11 Vulkan {required}, but target requested {requested}"
     )]
     UnsupportedRendererProfile {
-        required: Version,
-        requested: Version,
+        required: ApiVersion,
+        requested: ApiVersion,
     },
-    #[error("failed to load Vulkan library {LIBRARY}: {0}")]
-    LoadLibrary(String),
-    #[error("failed to load the Vulkan entry points: {0}")]
-    LoadEntry(String),
-    #[error("failed to query the Vulkan loader version: {0:?}")]
-    LoaderVersion(vk::ErrorCode),
-    #[error("Vulkan {required} is required but the loader exposes {found}")]
-    UnsupportedLoaderVersion { required: Version, found: Version },
-    #[error("failed to create the Vulkan instance: {0:?}")]
-    CreateInstance(vk::ErrorCode),
-    #[error("failed to enumerate Vulkan physical devices: {0:?}")]
-    EnumerateDevices(vk::ErrorCode),
-    #[error("failed to enumerate Vulkan device extensions: {0:?}")]
-    EnumerateExtensions(vk::ErrorCode),
     #[error("failed to initialize the shared Vulkan probe: {0}")]
     Probe(String),
     #[error("failed to probe Vulkan dma-buf format {format}: {details}")]
     ProbeFormat { format: Fourcc, details: String },
     #[error(transparent)]
     Selection(#[from] DeviceSelectionError),
-    #[error("failed to create the Vulkan descriptor-heap dma-buf device: {0:?}")]
-    CreateDevice(vk::ErrorCode),
     #[error("failed to create the shared Vulkan renderer device: {0}")]
     CreateSharedDevice(String),
     #[error("failed to create Vulkan frame resources: {0:?}")]

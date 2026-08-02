@@ -182,7 +182,7 @@ pub(crate) fn decoded_video_submission_parts(
             frame.validate_owner(owner)?;
             frame
                 .ready
-                .wait(frame.ready_value, vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                .wait(frame.ready_value, crate::PipelineStages::FRAGMENT_SHADER)
         })
         .collect::<Result<Vec<_>>>()?;
     let leases = frames

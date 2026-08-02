@@ -1,10 +1,10 @@
-use vulkan_renderer::{ROADMAP_2026_API_VERSION, Version, vulkanalia::vk};
+use vulkan_renderer::{ApiVersion, ROADMAP_2026_API_VERSION};
 
 use super::device::{DeviceSelector, DrmNodeId, GpuPreference};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RendererTarget {
-    pub api_version: Version,
+    pub api_version: ApiVersion,
     pub descriptor_heap: DescriptorHeapTarget,
     pub device: DeviceSelector,
 }
@@ -39,13 +39,6 @@ impl DescriptorHeapTarget {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Required => "descriptor heap (VK_EXT_descriptor_heap, required)",
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn extension(self) -> vk::ExtensionName {
-        match self {
-            Self::Required => vk::EXT_DESCRIPTOR_HEAP_EXTENSION.name,
         }
     }
 }

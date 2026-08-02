@@ -4,14 +4,14 @@ use std::sync::Arc;
 use vulkan_renderer::{
     AccessKind, Adapter, BackendProfile, BinarySemaphore, BinarySemaphoreDescriptor,
     ColorAttachment, ColorSpace, CommandEncoderDescriptor, CompositeAlphaMode, Device,
-    DeviceDescriptor, DmaBufExportDescriptor, ExportedDmaBufImage, Features, ForeignImageState,
-    FrameToken, Instance, InstanceDescriptor, LoadOp, MemoryAllocator, MemoryAllocatorConfig,
-    PassId, PipelineCache, PipelineCacheDescriptor, PowerPreference, PresentMode, PresentStatus,
-    Queue, Rect2D, RenderGraph, RenderGraphImageState, RenderPass, RenderingDescriptor,
-    RequestAdapterOptions, ResolveMode, ResourceId, ResourceKind, ResourceState, ResourceUse,
-    StoreOp, Surface, SurfaceConfiguration, SurfaceConfigurationRequest, SurfaceFormat,
-    SurfaceTransform, Swapchain, SwapchainDescriptor, TextureFormat, TextureLayout, TextureUsages,
-    UploadBelt, UploadBeltDescriptor, Viewport, vk,
+    DeviceDescriptor, DmaBufExportDescriptor, ExportedDmaBufImage, Extent2D, Features,
+    ForeignImageState, FrameToken, Instance, InstanceDescriptor, LoadOp, MemoryAllocator,
+    MemoryAllocatorConfig, PassId, PipelineCache, PipelineCacheDescriptor, PipelineStages,
+    PowerPreference, PresentMode, PresentStatus, Queue, Rect2D, RenderGraph, RenderGraphImageState,
+    RenderPass, RenderingDescriptor, RequestAdapterOptions, ResolveMode, ResourceId, ResourceKind,
+    ResourceState, ResourceUse, StoreOp, Surface, SurfaceConfiguration,
+    SurfaceConfigurationRequest, SurfaceFormat, SurfaceTransform, Swapchain, SwapchainDescriptor,
+    TextureFormat, TextureLayout, TextureUsages, UploadBelt, UploadBeltDescriptor, Viewport,
 };
 
 use crate::IconFrame;
@@ -235,16 +235,14 @@ impl VulkanState {
     pub(crate) fn render_exported_layers(
         &mut self,
         plan: crate::ui::render::dmabuf::DmabufExportPlan,
-        extent: vk::Extent2D,
+        extent: Extent2D,
         colors: &[QuadVertex],
         layers: NativeFrameLayerRefs<'_>,
         icons: &mut IconFrame,
         text: &mut TextFrame,
     ) -> Result<ExportedDmaBufImage, String> {
-        let (typed_format, format, components) =
-            crate::ui::render::dmabuf::vulkan_format_for_fourcc(plan.fourcc).ok_or_else(|| {
-                format!("unsupported exported dma-buf fourcc 0x{:08x}", plan.fourcc)
-            })?;
+        let (format, components) = crate::ui::render::dmabuf::vulkan_format_for_fourcc(plan.fourcc)
+            .ok_or_else(|| format!("unsupported exported dma-buf fourcc 0x{:08x}", plan.fourcc))?;
         let exported = self
             .device
             .create_exportable_dma_buf_image(&DmaBufExportDescriptor {
@@ -252,11 +250,11 @@ impl VulkanState {
                 format,
                 extent,
                 modifiers: vec![plan.modifier],
-                usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                usage: TextureUsages::COLOR_ATTACHMENT,
                 components,
             })
             .map_err(|error| format!("create Vulkan drag-preview dma-buf: {error}"))?;
-        self.set_render_format(typed_format)?;
+        self.set_render_format(format)?;
         let queue_family = self.device.device_info().queues.graphics;
         let mut uploads = self
             .upload_belt
@@ -456,7 +454,7 @@ impl VulkanState {
                 .acquire_next_image(u64::MAX, &self.frame_slots[slot_index].acquire)
         } {
             Ok(acquired) => acquired,
-            Err(error) if error.vulkan_code() == Some(vk::ErrorCode::OUT_OF_DATE_KHR) => {
+            Err(error) if error.is_surface_out_of_date() => {
                 self.reconfigure(window.surface_size())?;
                 unsafe {
                     self.swapchain
@@ -597,7 +595,7 @@ impl VulkanState {
         }
         let acquire_wait = self.frame_slots[slot_index]
             .acquire
-            .wait(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+            .wait(PipelineStages::COLOR_ATTACHMENT_OUTPUT)
             .map_err(|error| format!("create Vulkan acquire wait: {error}"))?;
         let present_complete = &self.present_complete[image_index];
         let frame = unsafe {
@@ -610,7 +608,7 @@ impl VulkanState {
         event_loop.pre_present_notify(window.id());
         let present_status = match unsafe { acquired.present(&self.queue, &[present_complete]) } {
             Ok(status) => status,
-            Err(error) if error.vulkan_code() == Some(vk::ErrorCode::OUT_OF_DATE_KHR) => {
+            Err(error) if error.is_surface_out_of_date() => {
                 self.reconfigure(window.surface_size())?;
                 window.request_redraw();
                 return Ok(());

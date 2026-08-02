@@ -6,7 +6,7 @@ use std::{
 };
 
 use thiserror::Error;
-use vulkan_renderer::{ROADMAP_2026_API_VERSION, Version, vulkanalia::vk};
+use vulkan_renderer::{ApiVersion, DeviceType, ROADMAP_2026_API_VERSION};
 
 use super::NativeInteropCapabilities;
 
@@ -140,8 +140,8 @@ const fn same_node(left: DrmNodeId, right: DrmNodeId) -> bool {
 pub struct DeviceCandidate {
     pub ordinal: usize,
     pub name: String,
-    pub device_type: vk::PhysicalDeviceType,
-    pub api_version: Version,
+    pub device_type: DeviceType,
+    pub api_version: ApiVersion,
     pub descriptor_heap_supported: bool,
     pub descriptor_heap: DescriptorHeapProperties,
     pub buffer_device_address_supported: bool,
@@ -387,30 +387,30 @@ impl DeviceSelector {
             .ok_or(DeviceSelectionError::MissingNativeOutputFormat)
     }
 
-    fn rank(self, device_type: vk::PhysicalDeviceType) -> u8 {
+    fn rank(self, device_type: DeviceType) -> u8 {
         match self.preference {
             GpuPreference::Discrete => match device_type {
-                vk::PhysicalDeviceType::DISCRETE_GPU => 0,
-                vk::PhysicalDeviceType::INTEGRATED_GPU => 1,
-                vk::PhysicalDeviceType::VIRTUAL_GPU => 2,
-                vk::PhysicalDeviceType::OTHER => 3,
-                vk::PhysicalDeviceType::CPU => 4,
-                _ => 5,
+                DeviceType::Discrete => 0,
+                DeviceType::Integrated => 1,
+                DeviceType::Virtual => 2,
+                DeviceType::Other => 3,
+                DeviceType::Cpu => 4,
+                DeviceType::Unknown => 5,
             },
             GpuPreference::Integrated => match device_type {
-                vk::PhysicalDeviceType::INTEGRATED_GPU => 0,
-                vk::PhysicalDeviceType::DISCRETE_GPU => 1,
-                vk::PhysicalDeviceType::VIRTUAL_GPU => 2,
-                vk::PhysicalDeviceType::OTHER => 3,
-                vk::PhysicalDeviceType::CPU => 4,
-                _ => 5,
+                DeviceType::Integrated => 0,
+                DeviceType::Discrete => 1,
+                DeviceType::Virtual => 2,
+                DeviceType::Other => 3,
+                DeviceType::Cpu => 4,
+                DeviceType::Unknown => 5,
             },
             GpuPreference::Any => match device_type {
-                vk::PhysicalDeviceType::DISCRETE_GPU | vk::PhysicalDeviceType::INTEGRATED_GPU => 0,
-                vk::PhysicalDeviceType::VIRTUAL_GPU => 1,
-                vk::PhysicalDeviceType::OTHER => 2,
-                vk::PhysicalDeviceType::CPU => 3,
-                _ => 4,
+                DeviceType::Discrete | DeviceType::Integrated => 0,
+                DeviceType::Virtual => 1,
+                DeviceType::Other => 2,
+                DeviceType::Cpu => 3,
+                DeviceType::Unknown => 4,
             },
         }
     }

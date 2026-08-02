@@ -8,8 +8,16 @@ use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign};
 use vulkanalia::vk;
 
 mod resource;
+mod synchronization;
+mod version;
 
-pub use resource::{BufferUsages, ImageDimension, ImageTiling, SampleCount};
+pub use resource::{
+    BufferUsages, ComponentMapping, ComponentSwizzle, ImageDimension, ImageTiling,
+    ImageViewDimension, Origin3D, SampleCount, TextureAspects, TextureFormatFeatures,
+    TextureSubresourceLayers, TextureSubresourceRange,
+};
+pub use synchronization::PipelineStages;
+pub use version::{ApiVersion, DeviceType};
 
 #[derive(Clone, Copy, Default, Eq, Hash, PartialEq)]
 pub struct SampleCounts(u8);

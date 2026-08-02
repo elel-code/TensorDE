@@ -1,6 +1,7 @@
 use tensor_host::{DrmFormat, Modifier};
 use vulkan_renderer::{
-    Adapter, DrmDeviceIdentity as RendererDrmDeviceIdentity, Instance as RendererInstance, vk,
+    Adapter, DrmDeviceIdentity as RendererDrmDeviceIdentity, Instance as RendererInstance,
+    TextureFormatFeatures,
 };
 
 use crate::render::{
@@ -96,9 +97,9 @@ fn probe_format_capabilities(
     adapter: &Adapter,
 ) -> Result<Vec<VulkanFormatCapability>, RendererError> {
     let mut capabilities = Vec::new();
-    for &(fourcc, vulkan_format) in OUTPUT_FORMATS {
+    for &(fourcc, texture_format) in OUTPUT_FORMATS {
         let modifiers = adapter
-            .drm_format_modifier_capabilities(vulkan_format, native_image_usage())
+            .drm_format_modifier_capabilities(texture_format, native_image_usage())
             .map_err(|source| RendererError::ProbeFormat {
                 format: fourcc,
                 details: source.to_string(),
@@ -108,8 +109,8 @@ fn probe_format_capabilities(
                 .into_iter()
                 .filter(|modifier| {
                     modifier
-                        .tiling_features
-                        .contains(vk::FormatFeatureFlags2::COLOR_ATTACHMENT)
+                        .features
+                        .contains(TextureFormatFeatures::COLOR_ATTACHMENT)
                 })
                 .map(|modifier| VulkanFormatCapability {
                     format: DrmFormat::new(fourcc, Modifier::from_raw(modifier.modifier)),

@@ -4,7 +4,6 @@ use std::{mem, slice};
 
 use tensor_util::Rect;
 use thiserror::Error;
-use vulkan_renderer::vulkanalia::vk;
 use vulkan_renderer::{
     BarrierBatch, ColorAttachment, CommandEncoder, Error as RendererError, ForeignImageState,
     LoadOp, Rect2D as RendererRect2D, RenderGraphImageState, RenderingDescriptor, ResolveMode,
@@ -52,13 +51,13 @@ struct FocusRingPushData {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PreparedDraw {
     push: DrawPushData,
-    scissor: vk::Rect2D,
+    scissor: RendererRect2D,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PreparedFocusRingDraw {
     push: FocusRingPushData,
-    scissor: vk::Rect2D,
+    scissor: RendererRect2D,
 }
 
 /// Pipeline-ready scene command. Keeping this sequence separate from resource
@@ -122,16 +121,12 @@ pub(super) fn prepare_draws(
                         draw.destination.height as f32,
                     ],
                 },
-                scissor: vk::Rect2D {
-                    offset: vk::Offset2D {
-                        x: draw.clip.x,
-                        y: draw.clip.y,
-                    },
-                    extent: vk::Extent2D {
-                        width: draw.clip.width,
-                        height: draw.clip.height,
-                    },
-                },
+                scissor: RendererRect2D::new(
+                    draw.clip.x,
+                    draw.clip.y,
+                    draw.clip.width,
+                    draw.clip.height,
+                ),
             })
         })
         .collect()
@@ -168,16 +163,12 @@ pub(super) fn prepare_focus_ring_draws(
                         ring.destination.height as f32,
                     ],
                 },
-                scissor: vk::Rect2D {
-                    offset: vk::Offset2D {
-                        x: ring.clip.x,
-                        y: ring.clip.y,
-                    },
-                    extent: vk::Extent2D {
-                        width: ring.clip.width,
-                        height: ring.clip.height,
-                    },
-                },
+                scissor: RendererRect2D::new(
+                    ring.clip.x,
+                    ring.clip.y,
+                    ring.clip.width,
+                    ring.clip.height,
+                ),
             })
         })
         .collect()
@@ -410,7 +401,7 @@ pub(super) fn record_scene(
                         mem::size_of::<DrawPushData>(),
                     )
                 };
-                rendering.set_scissor(renderer_scissor(draw.scissor))?;
+                rendering.set_scissor(draw.scissor)?;
                 rendering.push_data(0, push_bytes)?;
                 unsafe { rendering.draw(0..6, 0..1)? };
             }
@@ -428,7 +419,7 @@ pub(super) fn record_scene(
                         mem::size_of::<FocusRingPushData>(),
                     )
                 };
-                rendering.set_scissor(renderer_scissor(ring.scissor))?;
+                rendering.set_scissor(ring.scissor)?;
                 rendering.push_data(0, push_bytes)?;
                 unsafe { rendering.draw(0..6, 0..1)? };
             }
@@ -447,7 +438,7 @@ pub(super) fn record_scene(
                         mem::size_of::<CursorPushData>(),
                     )
                 };
-                rendering.set_scissor(renderer_scissor(scissor))?;
+                rendering.set_scissor(scissor)?;
                 rendering.push_data(0, push_bytes)?;
                 unsafe { rendering.draw(0..6, 0..1)? };
             }
@@ -462,7 +453,7 @@ pub(super) fn record_scene(
                         mem::size_of::<DrawPushData>(),
                     )
                 };
-                rendering.set_scissor(renderer_scissor(draw.scissor))?;
+                rendering.set_scissor(draw.scissor)?;
                 rendering.push_data(0, push_bytes)?;
                 unsafe { rendering.draw(0..6, 0..1)? };
             }
@@ -486,15 +477,6 @@ pub(super) fn record_scene(
     )?;
     unsafe { encoder.pipeline_barrier(&barriers.release) };
     Ok(())
-}
-
-fn renderer_scissor(scissor: vk::Rect2D) -> RendererRect2D {
-    RendererRect2D::new(
-        scissor.offset.x,
-        scissor.offset.y,
-        scissor.extent.width,
-        scissor.extent.height,
-    )
 }
 
 fn append_image_transition(

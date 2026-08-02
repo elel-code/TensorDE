@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use vulkanalia::vk::{self, Handle};
 
-use crate::{Backend, Error, Result, SemaphoreWait};
+use crate::{Backend, Error, PipelineStages, Result, SemaphoreWait};
 
 /// Metadata for a decoder/host-owned timeline semaphore from this logical
 /// device.
@@ -57,7 +57,7 @@ impl RetainedExternalTimelineSemaphore {
     /// completes. Use [`crate::CommandEncoder::retain_resource`] to attach this
     /// object to the command buffer that records the wait when the caller does
     /// not otherwise retain it through that timeline value.
-    pub fn wait(&self, value: u64, stages: vk::PipelineStageFlags2) -> Result<SemaphoreWait> {
+    pub fn wait(&self, value: u64, stages: PipelineStages) -> Result<SemaphoreWait> {
         if value == 0 {
             return Err(Error::Validation(
                 "external timeline semaphore wait value must be non-zero".into(),
@@ -71,7 +71,7 @@ impl RetainedExternalTimelineSemaphore {
         Ok(SemaphoreWait {
             semaphore: self.inner.semaphore,
             value,
-            stages,
+            stages: stages.to_vk(),
         })
     }
 }

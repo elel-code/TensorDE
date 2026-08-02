@@ -9,7 +9,7 @@ use crate::backend::DeviceOwner;
 use crate::{
     Backend, BinarySemaphore, Buffer, BufferCopy, BufferDescriptor, BufferImageCopy,
     CommandEncoder, CommandEncoderDescriptor, Error, FrameToken, Image, MemoryAllocator,
-    MemoryLocation, Queue, Result, SemaphoreWait,
+    MemoryLocation, Queue, Result, SemaphoreWait, TextureLayout,
 };
 
 mod texture;
@@ -333,7 +333,7 @@ impl UploadBatch<'_> {
     pub unsafe fn write_image(
         &mut self,
         image: &Image,
-        layout: vk::ImageLayout,
+        layout: TextureLayout,
         mut copy: BufferImageCopy,
         data: &[u8],
     ) -> Result<UploadSlice> {
@@ -362,7 +362,7 @@ impl UploadBatch<'_> {
     pub unsafe fn write_image_data(
         &mut self,
         image: &Image,
-        layout: vk::ImageLayout,
+        layout: TextureLayout,
         upload: ImageUpload,
         data: &[u8],
     ) -> Result<UploadSlice> {
@@ -380,22 +380,6 @@ impl UploadBatch<'_> {
                 .copy_buffer_to_image(source, image, layout, &[copy])?;
         }
         Ok(slice)
-    }
-
-    /// Typed-layout variant of [`Self::write_image_data`].
-    ///
-    /// # Safety
-    ///
-    /// The caller must transition `image` into and out of `layout` for the
-    /// declared transfer access.
-    pub unsafe fn write_image_data_typed(
-        &mut self,
-        image: &Image,
-        layout: crate::TextureLayout,
-        upload: ImageUpload,
-        data: &[u8],
-    ) -> Result<UploadSlice> {
-        unsafe { self.write_image_data(image, layout.to_vk(), upload, data) }
     }
 
     fn stage(&mut self, data: &[u8]) -> Result<UploadSlice> {

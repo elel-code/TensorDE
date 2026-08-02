@@ -1,7 +1,10 @@
 use vulkanalia::{prelude::v1_4::*, vk};
 
 use super::CommandEncoder;
-use crate::{Buffer, BufferUsages, Error, Extent2D, Image, Origin2D, Result, TextureLayout};
+use crate::{
+    Buffer, BufferUsages, Error, Extent2D, Extent3D, Image, Origin2D, Origin3D, Result,
+    TextureLayout, TextureSubresourceLayers, TextureSubresourceRange,
+};
 
 mod validation;
 
@@ -25,9 +28,9 @@ pub struct BufferImageCopy {
     pub buffer_row_length: u32,
     /// Texel rows per image; zero requests tightly packed Vulkan semantics.
     pub buffer_image_height: u32,
-    pub image_subresource: vk::ImageSubresourceLayers,
-    pub image_offset: vk::Offset3D,
-    pub image_extent: vk::Extent3D,
+    pub image_subresource: TextureSubresourceLayers,
+    pub image_offset: Origin3D,
+    pub image_extent: Extent3D,
 }
 
 /// Typed color-image upload region for one buffer-to-image copy.
@@ -48,11 +51,11 @@ pub struct ColorBufferImageCopy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ImageCopy {
-    pub source_subresource: vk::ImageSubresourceLayers,
-    pub source_offset: vk::Offset3D,
-    pub destination_subresource: vk::ImageSubresourceLayers,
-    pub destination_offset: vk::Offset3D,
-    pub extent: vk::Extent3D,
+    pub source_subresource: TextureSubresourceLayers,
+    pub source_offset: Origin3D,
+    pub destination_subresource: TextureSubresourceLayers,
+    pub destination_offset: Origin3D,
+    pub extent: Extent3D,
 }
 
 /// Backend-neutral color-image copy over explicit mip and array-layer ranges.
@@ -71,10 +74,10 @@ pub struct ColorImageCopy {
 /// Source and destination boxes for one device-side image scale operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ImageBlit {
-    pub source_subresource: vk::ImageSubresourceLayers,
-    pub source_offsets: [vk::Offset3D; 2],
-    pub destination_subresource: vk::ImageSubresourceLayers,
-    pub destination_offsets: [vk::Offset3D; 2],
+    pub source_subresource: TextureSubresourceLayers,
+    pub source_offsets: [Origin3D; 2],
+    pub destination_subresource: TextureSubresourceLayers,
+    pub destination_offsets: [Origin3D; 2],
 }
 
 /// Reconstruction filter used by [`CommandEncoder::blit_image`].
@@ -110,8 +113,8 @@ impl CommandEncoder {
                 "color image clear requires TransferDestination or General layout".into(),
             ));
         }
-        let ranges = [image.full_subresource_range(vk::ImageAspectFlags::COLOR)];
-        unsafe { self.clear_color_image(image, layout.to_vk(), color, &ranges) }
+        let ranges = [image.full_subresource_range(crate::TextureAspects::COLOR)];
+        unsafe { self.clear_color_image(image, layout, color, &ranges) }
     }
 
     /// Records a small inline buffer update without allocating staging memory.
@@ -221,7 +224,7 @@ impl CommandEncoder {
         &mut self,
         source: &Buffer,
         image: &Image,
-        layout: vk::ImageLayout,
+        layout: TextureLayout,
         regions: &[BufferImageCopy],
     ) -> Result<()> {
         validate_buffer_image_resources(self, source, image, layout)?;
@@ -233,9 +236,9 @@ impl CommandEncoder {
                     .buffer_offset(region.buffer_offset)
                     .buffer_row_length(region.buffer_row_length)
                     .buffer_image_height(region.buffer_image_height)
-                    .image_subresource(region.image_subresource)
-                    .image_offset(region.image_offset)
-                    .image_extent(region.image_extent)
+                    .image_subresource(region.image_subresource.to_vk())
+                    .image_offset(region.image_offset.to_vk())
+                    .image_extent(region.image_extent.to_vk())
                     .build(),
             );
         }
@@ -245,7 +248,7 @@ impl CommandEncoder {
         let copy = vk::CopyBufferToImageInfo2::builder()
             .src_buffer(source.raw())
             .dst_image(image.raw())
-            .dst_image_layout(layout)
+            .dst_image_layout(layout.to_vk())
             .regions(&copies);
         unsafe {
             self.owner
@@ -277,12 +280,7 @@ impl CommandEncoder {
             .map(lower_color_buffer_image_copy)
             .collect::<Result<Vec<_>>>()?;
         unsafe {
-            self.copy_buffer_to_image(
-                source,
-                image,
-                TextureLayout::TransferDestination.to_vk(),
-                &regions,
-            )
+            self.copy_buffer_to_image(source, image, TextureLayout::TransferDestination, &regions)
         }
     }
 
@@ -295,9 +293,9 @@ impl CommandEncoder {
     pub unsafe fn copy_image_to_image(
         &mut self,
         source: &Image,
-        source_layout: vk::ImageLayout,
+        source_layout: TextureLayout,
         destination: &Image,
-        destination_layout: vk::ImageLayout,
+        destination_layout: TextureLayout,
         regions: &[ImageCopy],
     ) -> Result<()> {
         validate_image_copy_resources(
@@ -312,11 +310,11 @@ impl CommandEncoder {
             validate_image_copy(source, destination, *region)?;
             copies.push(
                 vk::ImageCopy2::builder()
-                    .src_subresource(region.source_subresource)
-                    .src_offset(region.source_offset)
-                    .dst_subresource(region.destination_subresource)
-                    .dst_offset(region.destination_offset)
-                    .extent(region.extent)
+                    .src_subresource(region.source_subresource.to_vk())
+                    .src_offset(region.source_offset.to_vk())
+                    .dst_subresource(region.destination_subresource.to_vk())
+                    .dst_offset(region.destination_offset.to_vk())
+                    .extent(region.extent.to_vk())
                     .build(),
             );
         }
@@ -325,9 +323,9 @@ impl CommandEncoder {
         }
         let copy = vk::CopyImageInfo2::builder()
             .src_image(source.raw())
-            .src_image_layout(source_layout)
+            .src_image_layout(source_layout.to_vk())
             .dst_image(destination.raw())
-            .dst_image_layout(destination_layout)
+            .dst_image_layout(destination_layout.to_vk())
             .regions(&copies);
         unsafe { self.owner.device.cmd_copy_image2(self.raw(), &copy) };
         self.retain_resource(source);
@@ -364,9 +362,9 @@ impl CommandEncoder {
         unsafe {
             self.copy_image_to_image(
                 source,
-                source_layout.to_vk(),
+                source_layout,
                 destination,
-                destination_layout.to_vk(),
+                destination_layout,
                 &regions,
             )
         }
@@ -381,9 +379,9 @@ impl CommandEncoder {
     pub unsafe fn clear_color_image(
         &mut self,
         image: &Image,
-        layout: vk::ImageLayout,
+        layout: TextureLayout,
         color: [f32; 4],
-        ranges: &[vk::ImageSubresourceRange],
+        ranges: &[TextureSubresourceRange],
     ) -> Result<()> {
         validate_color_clear(self, image, layout, color, ranges)?;
         if ranges.is_empty() {
@@ -391,9 +389,17 @@ impl CommandEncoder {
         }
         let color = vk::ClearColorValue { float32: color };
         unsafe {
-            self.owner
-                .device
-                .cmd_clear_color_image(self.raw(), image.raw(), layout, &color, ranges)
+            self.owner.device.cmd_clear_color_image(
+                self.raw(),
+                image.raw(),
+                layout.to_vk(),
+                &color,
+                &ranges
+                    .iter()
+                    .copied()
+                    .map(TextureSubresourceRange::to_vk)
+                    .collect::<Vec<_>>(),
+            )
         };
         self.retain_resource(image);
         Ok(())
@@ -408,9 +414,9 @@ impl CommandEncoder {
     pub unsafe fn blit_image(
         &mut self,
         source: &Image,
-        source_layout: vk::ImageLayout,
+        source_layout: TextureLayout,
         destination: &Image,
-        destination_layout: vk::ImageLayout,
+        destination_layout: TextureLayout,
         regions: &[ImageBlit],
         filter: ImageBlitFilter,
     ) -> Result<()> {
@@ -426,10 +432,10 @@ impl CommandEncoder {
             validate_image_blit(source, destination, *region)?;
             blits.push(
                 vk::ImageBlit2::builder()
-                    .src_subresource(region.source_subresource)
-                    .src_offsets(region.source_offsets)
-                    .dst_subresource(region.destination_subresource)
-                    .dst_offsets(region.destination_offsets)
+                    .src_subresource(region.source_subresource.to_vk())
+                    .src_offsets(region.source_offsets.map(Origin3D::to_vk))
+                    .dst_subresource(region.destination_subresource.to_vk())
+                    .dst_offsets(region.destination_offsets.map(Origin3D::to_vk))
                     .build(),
             );
         }
@@ -438,9 +444,9 @@ impl CommandEncoder {
         }
         let blit = vk::BlitImageInfo2::builder()
             .src_image(source.raw())
-            .src_image_layout(source_layout)
+            .src_image_layout(source_layout.to_vk())
             .dst_image(destination.raw())
-            .dst_image_layout(destination_layout)
+            .dst_image_layout(destination_layout.to_vk())
             .regions(&blits)
             .filter(filter.to_vk());
         unsafe { self.owner.device.cmd_blit_image2(self.raw(), &blit) };
@@ -465,22 +471,13 @@ fn lower_color_buffer_image_copy(copy: ColorBufferImageCopy) -> Result<BufferIma
         buffer_offset: copy.buffer_offset,
         buffer_row_length: copy.buffer_row_length,
         buffer_image_height: copy.buffer_image_height,
-        image_subresource: vk::ImageSubresourceLayers {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            mip_level: copy.destination_mip_level,
-            base_array_layer: copy.destination_base_array_layer,
-            layer_count: copy.layer_count,
-        },
-        image_offset: vk::Offset3D {
-            x: copy.destination_origin.x,
-            y: copy.destination_origin.y,
-            z: 0,
-        },
-        image_extent: vk::Extent3D {
-            width: copy.extent.width,
-            height: copy.extent.height,
-            depth: 1,
-        },
+        image_subresource: TextureSubresourceLayers::color(
+            copy.destination_mip_level,
+            copy.destination_base_array_layer,
+            copy.layer_count,
+        ),
+        image_offset: Origin3D::new(copy.destination_origin.x, copy.destination_origin.y, 0),
+        image_extent: Extent3D::new(copy.extent.width, copy.extent.height, 1),
     })
 }
 

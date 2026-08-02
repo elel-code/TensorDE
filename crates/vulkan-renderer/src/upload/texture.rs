@@ -1,6 +1,7 @@
-use vulkanalia::vk;
-
-use crate::{BufferImageCopy, Error, Extent3D, Image, ImageDimension, Result, TextureFormat};
+use crate::{
+    BufferImageCopy, Error, Extent3D, Image, ImageDimension, Origin3D, Result, TextureFormat,
+    TextureSubresourceLayers,
+};
 
 /// Texel-block geometry and byte size for an image format.
 ///
@@ -92,8 +93,8 @@ impl ImageDataLayout {
 pub struct ImageUpload {
     pub data_layout: ImageDataLayout,
     pub texel_block: TexelBlockLayout,
-    pub image_subresource: vk::ImageSubresourceLayers,
-    pub image_offset: vk::Offset3D,
+    pub image_subresource: TextureSubresourceLayers,
+    pub image_offset: Origin3D,
     pub image_extent: Extent3D,
 }
 
@@ -116,13 +117,8 @@ impl ImageUpload {
         Ok(Self {
             data_layout: ImageDataLayout::tightly_packed(extent, texel_block)?,
             texel_block,
-            image_subresource: vk::ImageSubresourceLayers {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                mip_level,
-                base_array_layer: 0,
-                layer_count: 1,
-            },
-            image_offset: vk::Offset3D::default(),
+            image_subresource: TextureSubresourceLayers::color(mip_level, 0, 1),
+            image_offset: Origin3D::default(),
             image_extent: extent,
         })
     }
@@ -183,7 +179,7 @@ impl ImageUpload {
                 buffer_image_height: self.data_layout.rows_per_image,
                 image_subresource: self.image_subresource,
                 image_offset: self.image_offset,
-                image_extent: self.image_extent.to_vk(),
+                image_extent: self.image_extent,
             },
             required_bytes,
         })
@@ -192,7 +188,7 @@ impl ImageUpload {
 
 fn validate_subresource_and_extent(image: &Image, upload: ImageUpload) -> Result<()> {
     let block = upload.texel_block;
-    if upload.image_subresource.aspect_mask.is_empty()
+    if upload.image_subresource.aspects.is_empty()
         || upload.image_subresource.layer_count == 0
         || upload
             .image_subresource
@@ -231,11 +227,11 @@ fn validate_subresource_and_extent(image: &Image, upload: ImageUpload) -> Result
         ));
     }
     let extent = image.extent();
-    let mip_extent = vk::Extent3D {
-        width: (extent.width >> mip).max(1),
-        height: (extent.height >> mip).max(1),
-        depth: (extent.depth_or_layers >> mip).max(1),
-    };
+    let mip_extent = Extent3D::new(
+        (extent.width >> mip).max(1),
+        (extent.height >> mip).max(1),
+        (extent.depth_or_layers >> mip).max(1),
+    );
     let end_x = (upload.image_offset.x as u32)
         .checked_add(upload.image_extent.width)
         .ok_or_else(|| Error::Validation("image upload X range overflows".into()))?;
@@ -245,7 +241,7 @@ fn validate_subresource_and_extent(image: &Image, upload: ImageUpload) -> Result
     let end_z = (upload.image_offset.z as u32)
         .checked_add(upload.image_extent.depth_or_layers)
         .ok_or_else(|| Error::Validation("image upload Z range overflows".into()))?;
-    if end_x > mip_extent.width || end_y > mip_extent.height || end_z > mip_extent.depth {
+    if end_x > mip_extent.width || end_y > mip_extent.height || end_z > mip_extent.depth_or_layers {
         return Err(Error::Validation(
             "image upload exceeds the selected mip extent".into(),
         ));
@@ -327,6 +323,7 @@ const fn div_ceil(value: u64, divisor: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TextureAspects;
 
     #[test]
     fn r8_atlas_layout_is_tightly_packed() {
@@ -349,7 +346,7 @@ mod tests {
             },
             texel_block: TexelBlockLayout::RGBA8,
             image_subresource: layers(1),
-            image_offset: vk::Offset3D::default(),
+            image_offset: Origin3D::default(),
             image_extent: Extent3D::new(3, 2, 1),
         };
         assert_eq!(required_footprint(rgba).unwrap(), 268);
@@ -361,7 +358,7 @@ mod tests {
             },
             texel_block: TexelBlockLayout::BC1,
             image_subresource: layers(1),
-            image_offset: vk::Offset3D::default(),
+            image_offset: Origin3D::default(),
             image_extent: Extent3D::new(7, 7, 1),
         };
         assert_eq!(required_footprint(bc).unwrap(), 32);
@@ -400,12 +397,7 @@ mod tests {
         assert_eq!(upload.data_layout.bytes_per_row, 16);
     }
 
-    fn layers(count: u32) -> vk::ImageSubresourceLayers {
-        vk::ImageSubresourceLayers {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            mip_level: 0,
-            base_array_layer: 0,
-            layer_count: count,
-        }
+    fn layers(count: u32) -> TextureSubresourceLayers {
+        TextureSubresourceLayers::new(TextureAspects::COLOR, 0, 0, count)
     }
 }

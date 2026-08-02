@@ -2,15 +2,16 @@ use std::collections::{BTreeMap, HashSet};
 
 use vulkan_renderer::{
     AccessKind, BarrierBatch, BlendState, Buffer, BufferUsages, ColorTargetState, CompiledGraph,
-    DescriptorHeap, DescriptorHeapDescriptor, DescriptorHeapKind, Device, DynamicBuffer,
-    DynamicBufferDescriptor, Extent3D, FragmentState, FrameToken, GraphicsPipeline,
+    ComponentMapping, DescriptorHeap, DescriptorHeapDescriptor, DescriptorHeapKind, Device,
+    DynamicBuffer, DynamicBufferDescriptor, Extent3D, FragmentState, FrameToken, GraphicsPipeline,
     GraphicsPipelineDescriptor, Image, ImageDataLayout, ImageDescriptor, ImageDimension,
-    ImageTiling, ImageUpload, ImageView, ImageViewDescriptor, MemoryAllocator, MemoryLocation,
-    MultisampleState, PassId, PipelineCache, PrimitiveState, ProgrammableStage, RenderGraph,
-    RenderGraphImageState, RenderPass, RenderingEncoder, ResourceBinding, ResourceId, ResourceKind,
-    ResourceState, ResourceUse, SampleCount, SampledTextureBinding, SamplerDescriptor,
-    ShaderModuleDescriptor, TexelBlockLayout, TextureFormat, TextureUsages, UploadBatch,
-    VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode, vk,
+    ImageTiling, ImageUpload, ImageView, ImageViewDescriptor, ImageViewDimension, MemoryAllocator,
+    MemoryLocation, MultisampleState, Origin3D, PassId, PipelineCache, PrimitiveState,
+    ProgrammableStage, RenderGraph, RenderGraphImageState, RenderPass, RenderingEncoder,
+    ResourceBinding, ResourceId, ResourceKind, ResourceState, ResourceUse, SampleCount,
+    SampledTextureBinding, SamplerDescriptor, ShaderModuleDescriptor, TexelBlockLayout,
+    TextureAspects, TextureFormat, TextureLayout, TextureSubresourceLayers, TextureUsages,
+    UploadBatch, VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode,
 };
 
 use crate::ui::render::texture::TextVertex;
@@ -169,24 +170,15 @@ impl VulkanTextRenderer {
                     data_layout: ImageDataLayout::tightly_packed(extent, TexelBlockLayout::R8)
                         .map_err(|error| format!("layout Vulkan text upload: {error}"))?,
                     texel_block: TexelBlockLayout::R8,
-                    image_subresource: vk::ImageSubresourceLayers {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        mip_level: 0,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
-                    image_offset: vk::Offset3D {
-                        x: upload.atlas.x as i32,
-                        y: upload.atlas.y as i32,
-                        z: 0,
-                    },
+                    image_subresource: TextureSubresourceLayers::color(0, 0, 1),
+                    image_offset: Origin3D::new(upload.atlas.x as i32, upload.atlas.y as i32, 0),
                     image_extent: extent,
                 };
                 unsafe {
                     uploads
                         .write_image_data(
                             &atlas.image,
-                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                            TextureLayout::TransferDestination,
                             image_upload,
                             upload.pixels.as_ref(),
                         )
@@ -310,17 +302,17 @@ fn create_atlas(
     let view = image
         .create_view(&ImageViewDescriptor {
             label: Some("fika-vulkan-r8-text-atlas-view".into()),
-            view_type: vk::ImageViewType::_2D,
+            dimension: ImageViewDimension::D2,
             format: TextureFormat::R8Unorm,
-            components: vk::ComponentMapping::default(),
-            subresource_range: image.full_subresource_range(vk::ImageAspectFlags::COLOR),
+            components: ComponentMapping::IDENTITY,
+            subresource_range: image.full_subresource_range(TextureAspects::COLOR),
         })
         .map_err(|error| format!("create Vulkan R8 text atlas view: {error}"))?;
     let binding = SampledTextureBinding::new(
         resource_heap,
         sampler_heap,
         &view,
-        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        TextureLayout::ShaderReadOnly,
         SamplerDescriptor::linear_clamp(),
     )
     .map_err(|error| format!("create Vulkan text atlas descriptors: {error}"))?;

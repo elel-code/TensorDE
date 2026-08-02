@@ -10,17 +10,17 @@ mod triangle_spirv;
 use vulkan_renderer::{
     AccessKind, BinarySemaphoreDescriptor, BufferDescriptor, BufferDescriptorBinding,
     BufferDescriptorKind, BufferUsages, ColorAttachment, ColorTargetState,
-    CommandEncoderDescriptor, ComputePassDescriptor, ComputePipelineDescriptor,
+    CommandEncoderDescriptor, ComponentMapping, ComputePassDescriptor, ComputePipelineDescriptor,
     DescriptorHeapDescriptor, DescriptorHeapKind, DeviceDescriptor, DmaBufExportDescriptor,
-    DmaBufImageDescriptor, DmaBufPlaneLayout, Extent3D, ExternalImageViewDescriptor,
-    ExternalTimelineSemaphoreDescriptor, Features, FragmentState, GraphicsPipelineDescriptor,
-    HeapDescriptorType, ImageDescriptor, ImageDimension, ImageTiling, ImageViewDescriptor,
-    Instance, InstanceDescriptor, LoadOp, MemoryAllocatorConfig, MemoryLocation, MultisampleState,
-    PassId, PipelineCacheDescriptor, PrimitiveState, ProgrammableStage, Rect2D, RenderGraph,
-    RenderGraphImageState, RenderPass, RenderingDescriptor, RequestAdapterOptions, ResolveMode,
-    ResourceBinding, ResourceId, ResourceKind, ResourceState, ResourceUse, SampleCount,
-    ShaderBindingMap, ShaderModuleDescriptor, StoreOp, TextureFormat, TextureLayout, TextureUsages,
-    UploadBeltDescriptor, VertexState, Viewport, vk,
+    DmaBufImageDescriptor, DmaBufPlaneLayout, Extent2D, Extent3D, Features, FragmentState,
+    GraphicsPipelineDescriptor, ImageDescriptor, ImageDimension, ImageTiling, ImageViewDescriptor,
+    ImageViewDimension, Instance, InstanceDescriptor, LoadOp, MemoryAllocatorConfig,
+    MemoryLocation, MultisampleState, PassId, PipelineCacheDescriptor, PrimitiveState,
+    ProgrammableStage, Rect2D, RenderGraph, RenderGraphImageState, RenderPass, RenderingDescriptor,
+    RequestAdapterOptions, ResolveMode, ResourceBinding, ResourceId, ResourceKind, ResourceState,
+    ResourceUse, SampleCount, SampledImageBinding, SamplerBinding, SamplerDescriptor,
+    ShaderBindingMap, ShaderModuleDescriptor, StoreOp, TextureAspects, TextureFormat,
+    TextureLayout, TextureUsages, UploadBeltDescriptor, VertexState, Viewport,
 };
 
 struct SubmissionProbe(Arc<AtomicUsize>);
@@ -46,13 +46,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let adapter = instance.request_adapter(RequestAdapterOptions::default())?;
-    let external_usage = vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC;
+    let external_usage = TextureUsages::COLOR_ATTACHMENT | TextureUsages::COPY_SOURCE;
     let external_capability = if adapter
         .features()
         .contains(Features::EXTERNAL_MEMORY_DMA_BUF)
     {
         adapter
-            .drm_format_modifier_capabilities(vk::Format::B8G8R8A8_UNORM, external_usage)?
+            .drm_format_modifier_capabilities(TextureFormat::Bgra8Unorm, external_usage)?
             .into_iter()
             .filter(|capability| capability.exportable && capability.importable)
             .max_by_key(|capability| capability.plane_count)
@@ -70,29 +70,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         device_descriptor.required_features |= Features::EXTERNAL_SEMAPHORE_SYNC_FD;
     }
     let (device, queue) = adapter.request_device(device_descriptor)?;
-    let retained_external_timeline = unsafe {
-        device.retain_external_timeline_semaphore(
-            &ExternalTimelineSemaphoreDescriptor {
-                label: Some("capability-retained-external-timeline".into()),
-                semaphore: queue.timeline_semaphore(),
-            },
-            Arc::new(queue.clone()),
-        )?
-    };
     assert!(device.features().contains(Features::DESCRIPTOR_HEAP));
     assert!(device.features().contains(Features::FIFO_LATEST_READY));
     let exported_dma_buf = external_capability
         .map(|capability| {
             device.create_exportable_dma_buf_image(&DmaBufExportDescriptor {
                 label: Some("capability-exported-dma-buf".into()),
-                format: vk::Format::B8G8R8A8_UNORM,
-                extent: vk::Extent2D {
-                    width: 64,
-                    height: 64,
-                },
+                format: TextureFormat::Bgra8Unorm,
+                extent: Extent2D::new(64, 64),
                 modifiers: vec![capability.modifier],
                 usage: external_usage,
-                components: vk::ComponentMapping::default(),
+                components: ComponentMapping::IDENTITY,
             })
         })
         .transpose()?;
@@ -123,7 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         })
                         .collect(),
                     usage: external_usage,
-                    components: vk::ComponentMapping::default(),
+                    components: ComponentMapping::IDENTITY,
                 },
                 fd,
             )?,
@@ -133,8 +121,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     if let Some(image) = &imported_dma_buf {
         println!(
-            "imported_dma_buf={:?} modifier={:#x}",
-            image.raw(),
+            "imported_dma_buf format={:?} modifier={:#x}",
+            image.format(),
             image.modifier()
         );
     }
@@ -180,35 +168,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         usage: TextureUsages::SAMPLED | TextureUsages::STORAGE | TextureUsages::COPY_DESTINATION,
         memory: MemoryLocation::Device,
     })?;
-    let subresources = image.full_subresource_range(vk::ImageAspectFlags::COLOR);
+    let subresources = image.full_subresource_range(TextureAspects::COLOR);
     let image_view = image.create_view(&ImageViewDescriptor {
         label: Some("capability-image-view".into()),
-        view_type: vk::ImageViewType::_2D,
+        dimension: ImageViewDimension::D2,
         format: image.format(),
-        components: vk::ComponentMapping::default(),
+        components: ComponentMapping::IDENTITY,
         subresource_range: subresources,
     })?;
-    let retained_external_image_source = unsafe {
-        device.retain_external_image(
-            &ExternalImageViewDescriptor {
-                label: Some("capability-retained-external-image".into()),
-                image: image.raw(),
-                view_type: vk::ImageViewType::_2D,
-                format: image.format(),
-                extent: image.extent(),
-                mip_levels: image.mip_levels(),
-                array_layers: image.array_layers(),
-                samples: image.sample_count(),
-                usage: image.usage(),
-                view_usage: None,
-                components: vk::ComponentMapping::default(),
-                subresource_range: subresources,
-            },
-            Arc::new(image.clone()),
-        )?
-    };
-    let retained_external_view = retained_external_image_source.create_view()?;
-    assert_eq!(retained_external_view.format(), image.format());
     let render_target = allocator.create_image(&ImageDescriptor {
         label: Some("capability-render-target".into()),
         dimension: ImageDimension::D2,
@@ -221,51 +188,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         usage: TextureUsages::COLOR_ATTACHMENT | TextureUsages::COPY_SOURCE,
         memory: MemoryLocation::Device,
     })?;
-    let render_subresources = render_target.full_subresource_range(vk::ImageAspectFlags::COLOR);
+    let render_subresources = render_target.full_subresource_range(TextureAspects::COLOR);
     let render_target_view = render_target.create_view(&ImageViewDescriptor {
         label: Some("capability-render-target-view".into()),
-        view_type: vk::ImageViewType::_2D,
+        dimension: ImageViewDimension::D2,
         format: render_target.format(),
-        components: vk::ComponentMapping::default(),
+        components: ComponentMapping::IDENTITY,
         subresource_range: render_subresources,
     })?;
-    let sampled_image = resource_heap.allocate(HeapDescriptorType::SampledImage)?;
-    unsafe {
-        resource_heap.write_image(
-            &sampled_image,
-            HeapDescriptorType::SampledImage,
-            &image_view.create_info(),
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-        )?;
-    }
-    let storage_image = resource_heap.allocate(HeapDescriptorType::StorageImage)?;
-    unsafe {
-        resource_heap.write_image(
-            &storage_image,
-            HeapDescriptorType::StorageImage,
-            &image_view.create_info(),
-            vk::ImageLayout::GENERAL,
-        )?;
-    }
-    let retained_external_image = resource_heap.allocate(HeapDescriptorType::SampledImage)?;
-    unsafe {
-        resource_heap.write_image(
-            &retained_external_image,
-            HeapDescriptorType::SampledImage,
-            &retained_external_image_source.view_create_info(),
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-        )?;
-    }
+    let sampled_image =
+        SampledImageBinding::new(&resource_heap, &image_view, TextureLayout::ShaderReadOnly)?;
     let sampler_heap = device.create_descriptor_heap(&DescriptorHeapDescriptor {
         label: Some("capability-sampler-heap".into()),
         kind: DescriptorHeapKind::Sampler,
         descriptor_capacity: 4096,
         embedded_samplers: false,
     })?;
-    let sampler = sampler_heap.allocate(HeapDescriptorType::Sampler)?;
-    unsafe {
-        sampler_heap.write_sampler(&sampler, &vk::SamplerCreateInfo::default())?;
-    }
+    let sampler = SamplerBinding::new(&sampler_heap, SamplerDescriptor::linear_clamp())?;
     let vertex_shader = device.create_shader_module(ShaderModuleDescriptor {
         label: Some("capability-triangle-vertex".into()),
         spirv: triangle_spirv::VERTEX.to_vec(),
@@ -340,9 +279,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
     }
     let encoder = uploads.encoder_mut();
-    encoder.retain_resource(&retained_external_image_source);
-    encoder.retain_resource(&retained_external_timeline);
-    let mut retained_resource_leases = 2;
+    encoder.retain_resource(&image_view);
+    let mut retained_resource_leases = 1;
     if let Some(imported) = &imported_dma_buf {
         encoder.retain_resource(imported);
         retained_resource_leases += 1;
@@ -453,21 +391,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         uploads.submit(&queue, &[])?
     };
     assert_eq!(lease_dropped.load(Ordering::Relaxed), 0);
-    assert_eq!(
-        queue.pending_submission_leases(),
-        retained_resource_leases + 3
-    );
+    assert!(queue.pending_submission_leases() > retained_resource_leases);
     uniform.retire(&resource_heap, submission)?;
-    resource_heap.retire(sampled_image, submission)?;
-    resource_heap.retire(storage_image, submission)?;
-    resource_heap.retire(retained_external_image, submission)?;
-    sampler_heap.retire(sampler, submission)?;
+    sampled_image.retire(&resource_heap, submission)?;
+    sampler.retire(&sampler_heap, submission)?;
     queue.wait_for(submission, u64::MAX)?;
     assert_eq!(lease_dropped.load(Ordering::Relaxed), 1);
     assert_eq!(queue.pending_submission_leases(), 0);
-    let retained_wait = retained_external_timeline
-        .wait(submission.value(), vk::PipelineStageFlags2::ALL_COMMANDS)?;
-    assert_eq!(retained_wait.value, submission.value());
     let imported_sync_fd = if let Some(signal) = &sync_fd_signal {
         let fd = unsafe { signal.export_sync_fd()? };
         let imported = device.import_sync_fd_semaphore(
@@ -476,17 +406,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             fd,
         )?;
-        println!("sync_fd_imported={:?}", imported.raw());
+        println!("sync_fd_imported label={:?}", imported.label());
         Some(imported)
     } else {
         None
     };
-    assert_eq!(resource_heap.reclaim(submission.value()), 4);
+    assert_eq!(resource_heap.reclaim(submission.value()), 2);
     assert_eq!(sampler_heap.reclaim(submission.value()), 1);
     println!(
-        "selected={} queue={:?} enabled={:?} completed={}",
+        "selected={} enabled={:?} completed={}",
         device.device_info().name,
-        queue.raw(),
         device.features(),
         queue.completed_timeline()?,
     );

@@ -2,8 +2,10 @@ use super::{
     Buffer, BufferCopy, BufferImageCopy, ColorImageCopy, CommandEncoder, Error, Image, ImageBlit,
     ImageCopy, Result,
 };
-use crate::{BufferUsages, SampleCount, TextureUsages};
-use vulkanalia::vk;
+use crate::{
+    BufferUsages, Extent3D, Origin3D, SampleCount, TextureAspects, TextureLayout,
+    TextureSubresourceLayers, TextureSubresourceRange, TextureUsages,
+};
 
 pub(super) fn lower_color_image_copy(copy: ColorImageCopy) -> Result<ImageCopy> {
     if copy.extent.is_empty() || copy.layer_count == 0 {
@@ -12,42 +14,28 @@ pub(super) fn lower_color_image_copy(copy: ColorImageCopy) -> Result<ImageCopy> 
         ));
     }
     Ok(ImageCopy {
-        source_subresource: vk::ImageSubresourceLayers {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            mip_level: copy.source_mip_level,
-            base_array_layer: copy.source_base_array_layer,
-            layer_count: copy.layer_count,
-        },
-        source_offset: vk::Offset3D {
-            x: copy.source_origin.x,
-            y: copy.source_origin.y,
-            z: 0,
-        },
-        destination_subresource: vk::ImageSubresourceLayers {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            mip_level: copy.destination_mip_level,
-            base_array_layer: copy.destination_base_array_layer,
-            layer_count: copy.layer_count,
-        },
-        destination_offset: vk::Offset3D {
-            x: copy.destination_origin.x,
-            y: copy.destination_origin.y,
-            z: 0,
-        },
-        extent: vk::Extent3D {
-            width: copy.extent.width,
-            height: copy.extent.height,
-            depth: 1,
-        },
+        source_subresource: TextureSubresourceLayers::color(
+            copy.source_mip_level,
+            copy.source_base_array_layer,
+            copy.layer_count,
+        ),
+        source_offset: Origin3D::new(copy.source_origin.x, copy.source_origin.y, 0),
+        destination_subresource: TextureSubresourceLayers::color(
+            copy.destination_mip_level,
+            copy.destination_base_array_layer,
+            copy.layer_count,
+        ),
+        destination_offset: Origin3D::new(copy.destination_origin.x, copy.destination_origin.y, 0),
+        extent: Extent3D::new(copy.extent.width, copy.extent.height, 1),
     })
 }
 
 pub(super) fn validate_color_clear(
     encoder: &CommandEncoder,
     image: &Image,
-    layout: vk::ImageLayout,
+    layout: TextureLayout,
     color: [f32; 4],
-    ranges: &[vk::ImageSubresourceRange],
+    ranges: &[TextureSubresourceRange],
 ) -> Result<()> {
     if !image.belongs_to(&encoder.owner) {
         return Err(Error::Validation(
@@ -57,7 +45,7 @@ pub(super) fn validate_color_clear(
     if !image.usage().contains(TextureUsages::COPY_DESTINATION)
         || !matches!(
             layout,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL | vk::ImageLayout::GENERAL
+            TextureLayout::TransferDestination | TextureLayout::General
         )
     {
         return Err(Error::Validation(
@@ -70,7 +58,7 @@ pub(super) fn validate_color_clear(
         ));
     }
     for range in ranges {
-        if range.aspect_mask != vk::ImageAspectFlags::COLOR
+        if range.aspects != TextureAspects::COLOR
             || range.level_count == 0
             || range.layer_count == 0
             || range
@@ -93,9 +81,9 @@ pub(super) fn validate_color_clear(
 pub(super) fn validate_image_blit_resources(
     encoder: &CommandEncoder,
     source: &Image,
-    source_layout: vk::ImageLayout,
+    source_layout: TextureLayout,
     destination: &Image,
-    destination_layout: vk::ImageLayout,
+    destination_layout: TextureLayout,
 ) -> Result<()> {
     validate_image_copy_resources(
         encoder,
@@ -124,7 +112,7 @@ pub(super) fn validate_image_blit(
         blit.destination_offsets,
     )?;
     if blit.source_subresource.layer_count != blit.destination_subresource.layer_count
-        || blit.source_subresource.aspect_mask != blit.destination_subresource.aspect_mask
+        || blit.source_subresource.aspects != blit.destination_subresource.aspects
     {
         return Err(Error::Validation(
             "image blit source and destination layers/aspects must match".into(),
@@ -135,10 +123,10 @@ pub(super) fn validate_image_blit(
 
 fn validate_blit_box(
     image: &Image,
-    subresource: vk::ImageSubresourceLayers,
-    offsets: [vk::Offset3D; 2],
+    subresource: TextureSubresourceLayers,
+    offsets: [Origin3D; 2],
 ) -> Result<()> {
-    if subresource.aspect_mask != vk::ImageAspectFlags::COLOR
+    if subresource.aspects != TextureAspects::COLOR
         || subresource.layer_count == 0
         || subresource.mip_level >= image.mip_levels()
         || subresource
@@ -152,18 +140,18 @@ fn validate_blit_box(
     }
     let base = image.extent();
     let mip = subresource.mip_level;
-    let extent = vk::Extent3D {
-        width: (base.width >> mip).max(1),
-        height: (base.height >> mip).max(1),
-        depth: (base.depth_or_layers >> mip).max(1),
-    };
+    let extent = Extent3D::new(
+        (base.width >> mip).max(1),
+        (base.height >> mip).max(1),
+        (base.depth_or_layers >> mip).max(1),
+    );
     for offset in offsets {
         if offset.x < 0
             || offset.y < 0
             || offset.z < 0
             || offset.x as u32 > extent.width
             || offset.y as u32 > extent.height
-            || offset.z as u32 > extent.depth
+            || offset.z as u32 > extent.depth_or_layers
         {
             return Err(Error::Validation(
                 "image blit offset exceeds the selected mip extent".into(),
@@ -182,9 +170,9 @@ fn validate_blit_box(
 pub(super) fn validate_image_copy_resources(
     encoder: &CommandEncoder,
     source: &Image,
-    source_layout: vk::ImageLayout,
+    source_layout: TextureLayout,
     destination: &Image,
-    destination_layout: vk::ImageLayout,
+    destination_layout: TextureLayout,
 ) -> Result<()> {
     if !source.belongs_to(&encoder.owner) || !destination.belongs_to(&encoder.owner) {
         return Err(Error::Validation(
@@ -207,10 +195,10 @@ pub(super) fn validate_image_copy_resources(
     }
     if !matches!(
         source_layout,
-        vk::ImageLayout::TRANSFER_SRC_OPTIMAL | vk::ImageLayout::GENERAL
+        TextureLayout::TransferSource | TextureLayout::General
     ) || !matches!(
         destination_layout,
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL | vk::ImageLayout::GENERAL
+        TextureLayout::TransferDestination | TextureLayout::General
     ) {
         return Err(Error::Validation(
             "image copy layouts must be transfer-optimal or general".into(),
@@ -245,7 +233,7 @@ pub(super) fn validate_image_copy(
         copy.extent,
     )?;
     if copy.source_subresource.layer_count != copy.destination_subresource.layer_count
-        || copy.source_subresource.aspect_mask != copy.destination_subresource.aspect_mask
+        || copy.source_subresource.aspects != copy.destination_subresource.aspects
     {
         return Err(Error::Validation(
             "image copy source and destination layers/aspects must match".into(),
@@ -256,11 +244,11 @@ pub(super) fn validate_image_copy(
 
 fn validate_copy_subresource(
     image: &Image,
-    subresource: vk::ImageSubresourceLayers,
-    offset: vk::Offset3D,
-    extent: vk::Extent3D,
+    subresource: TextureSubresourceLayers,
+    offset: Origin3D,
+    extent: Extent3D,
 ) -> Result<()> {
-    if subresource.aspect_mask.is_empty()
+    if subresource.aspects.is_empty()
         || subresource.layer_count == 0
         || subresource.mip_level >= image.mip_levels()
         || subresource
@@ -269,7 +257,7 @@ fn validate_copy_subresource(
             .is_none_or(|end| end > image.array_layers())
         || extent.width == 0
         || extent.height == 0
-        || extent.depth == 0
+        || extent.depth_or_layers == 0
         || offset.x < 0
         || offset.y < 0
         || offset.z < 0
@@ -280,11 +268,11 @@ fn validate_copy_subresource(
     }
     let base = image.extent();
     let mip = subresource.mip_level;
-    let mip_extent = vk::Extent3D {
-        width: (base.width >> mip).max(1),
-        height: (base.height >> mip).max(1),
-        depth: (base.depth_or_layers >> mip).max(1),
-    };
+    let mip_extent = Extent3D::new(
+        (base.width >> mip).max(1),
+        (base.height >> mip).max(1),
+        (base.depth_or_layers >> mip).max(1),
+    );
     if (offset.x as u32)
         .checked_add(extent.width)
         .is_none_or(|end| end > mip_extent.width)
@@ -292,8 +280,8 @@ fn validate_copy_subresource(
             .checked_add(extent.height)
             .is_none_or(|end| end > mip_extent.height)
         || (offset.z as u32)
-            .checked_add(extent.depth)
-            .is_none_or(|end| end > mip_extent.depth)
+            .checked_add(extent.depth_or_layers)
+            .is_none_or(|end| end > mip_extent.depth_or_layers)
     {
         return Err(Error::Validation(
             "image copy region exceeds the selected mip extent".into(),
@@ -348,7 +336,7 @@ pub(super) fn validate_buffer_image_resources(
     encoder: &CommandEncoder,
     source: &Buffer,
     image: &Image,
-    layout: vk::ImageLayout,
+    layout: TextureLayout,
 ) -> Result<()> {
     if !source.belongs_to(&encoder.owner) || !image.belongs_to(&encoder.owner) {
         return Err(Error::Validation(
@@ -369,7 +357,7 @@ pub(super) fn validate_buffer_image_resources(
     }
     if !matches!(
         layout,
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL | vk::ImageLayout::GENERAL
+        TextureLayout::TransferDestination | TextureLayout::General
     ) {
         return Err(Error::Validation(
             "buffer-to-image copy layout must be TRANSFER_DST_OPTIMAL or GENERAL".into(),
@@ -393,13 +381,15 @@ pub(super) fn validate_buffer_image_copy(
             "buffer-to-image source offset must be a multiple of four bytes".into(),
         ));
     }
-    if copy.image_extent.width == 0 || copy.image_extent.height == 0 || copy.image_extent.depth == 0
+    if copy.image_extent.width == 0
+        || copy.image_extent.height == 0
+        || copy.image_extent.depth_or_layers == 0
     {
         return Err(Error::Validation(
             "buffer-to-image extent must be non-empty".into(),
         ));
     }
-    if copy.image_subresource.aspect_mask.is_empty()
+    if copy.image_subresource.aspects.is_empty()
         || copy.image_subresource.layer_count == 0
         || copy.image_subresource.mip_level >= image.mip_levels()
         || copy
@@ -419,17 +409,17 @@ pub(super) fn validate_buffer_image_copy(
     }
     let mip = copy.image_subresource.mip_level;
     let extent = image.extent();
-    let mip_extent = vk::Extent3D {
-        width: (extent.width >> mip).max(1),
-        height: (extent.height >> mip).max(1),
-        depth: (extent.depth_or_layers >> mip).max(1),
-    };
+    let mip_extent = Extent3D::new(
+        (extent.width >> mip).max(1),
+        (extent.height >> mip).max(1),
+        (extent.depth_or_layers >> mip).max(1),
+    );
     let end_x = (copy.image_offset.x as u32).checked_add(copy.image_extent.width);
     let end_y = (copy.image_offset.y as u32).checked_add(copy.image_extent.height);
-    let end_z = (copy.image_offset.z as u32).checked_add(copy.image_extent.depth);
+    let end_z = (copy.image_offset.z as u32).checked_add(copy.image_extent.depth_or_layers);
     if end_x.is_none_or(|end| end > mip_extent.width)
         || end_y.is_none_or(|end| end > mip_extent.height)
-        || end_z.is_none_or(|end| end > mip_extent.depth)
+        || end_z.is_none_or(|end| end > mip_extent.depth_or_layers)
     {
         return Err(Error::Validation(
             "buffer-to-image copy exceeds the selected mip extent".into(),

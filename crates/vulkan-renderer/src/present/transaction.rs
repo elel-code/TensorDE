@@ -356,7 +356,7 @@ impl PresentationTransaction {
 
         let acquire_wait = self.frame_slots[frame_slot]
             .acquire
-            .wait(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)?;
+            .wait(crate::PipelineStages::COLOR_ATTACHMENT_OUTPUT)?;
         let present_signal = &self.present_signals[image_index as usize];
         #[cfg(feature = "ffmpeg-vulkan-decode")]
         let submission_scope = if late_acquire {

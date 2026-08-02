@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use vulkanalia::{Instance, Version, prelude::v1_4::*, vk};
+use vulkanalia::{Instance, prelude::v1_4::*, vk};
 
 use super::{Candidate, DeviceInfo, PciAddress};
 use crate::capabilities::{
@@ -13,7 +13,7 @@ use crate::roadmap_2026::query_roadmap_2026_device_requirements;
 use crate::video::{
     VideoDecodeOperations, query_supported_decode_profiles, query_video_queue_operations,
 };
-use crate::{Error, Result};
+use crate::{ApiVersion, DeviceType, Error, Result};
 
 pub(crate) fn probe_devices(instance: &Instance) -> Result<Vec<Candidate>> {
     let handles = unsafe { instance.enumerate_physical_devices() }
@@ -136,8 +136,8 @@ pub(crate) fn probe_devices(instance: &Instance) -> Result<Vec<Candidate>> {
                 info: DeviceInfo {
                     ordinal,
                     name: properties.device_name.to_string_lossy().into_owned(),
-                    api_version: Version::from(properties.api_version),
-                    device_type: properties.device_type,
+                    api_version: ApiVersion::from_raw(properties.api_version),
+                    device_type: DeviceType::from_vk(properties.device_type),
                     vendor_id: properties.vendor_id,
                     device_id: properties.device_id,
                     driver_version: properties.driver_version,

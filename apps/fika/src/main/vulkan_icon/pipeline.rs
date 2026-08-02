@@ -133,17 +133,7 @@ mod tests {
     #[test]
     fn bitmap_blit_preserves_aspect_ratio_and_centers_letterbox() {
         let blit = fit_bitmap_blit(Extent3D::new(400, 200, 1), Extent3D::new(128, 128, 1));
-        assert_eq!(
-            blit.destination_offsets[0],
-            vk::Offset3D { x: 0, y: 32, z: 0 }
-        );
-        assert_eq!(
-            blit.destination_offsets[1],
-            vk::Offset3D {
-                x: 128,
-                y: 96,
-                z: 1
-            }
-        );
+        assert_eq!(blit.destination_offsets[0], Origin3D::new(0, 32, 0));
+        assert_eq!(blit.destination_offsets[1], Origin3D::new(128, 96, 1));
     }
 }

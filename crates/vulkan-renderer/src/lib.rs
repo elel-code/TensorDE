@@ -64,7 +64,7 @@ pub use descriptor_heap::{
     descriptor_heap_element_index,
 };
 pub use dynamic_buffer::{DynamicBuffer, DynamicBufferDescriptor, DynamicBufferUpload};
-pub use error::{Error, Result};
+pub use error::{Error, Result, VulkanFailure};
 pub use external_image::{
     ExternalImageViewDescriptor, RetainedExternalImage, RetainedExternalImageView,
 };
@@ -127,9 +127,12 @@ pub use sync::{
     RenderGraphSyncError, ResourceBinding, RetainedExternalTimelineSemaphore,
 };
 pub use types::{
-    BufferUsages, ColorSpace, CompositeAlphaMode, CompositeAlphaModes, Extent2D, Extent3D,
-    ImageDimension, ImageTiling, Origin2D, Rect2D, SampleCount, SampleCounts, SurfaceFormat,
-    SurfaceTransform, SurfaceTransforms, TextureFormat, TextureLayout, TextureUsages, Viewport,
+    ApiVersion, BufferUsages, ColorSpace, ComponentMapping, ComponentSwizzle, CompositeAlphaMode,
+    CompositeAlphaModes, DeviceType, Extent2D, Extent3D, ImageDimension, ImageTiling,
+    ImageViewDimension, Origin2D, Origin3D, PipelineStages, Rect2D, SampleCount, SampleCounts,
+    SurfaceFormat, SurfaceTransform, SurfaceTransforms, TextureAspects, TextureFormat,
+    TextureFormatFeatures, TextureLayout, TextureSubresourceLayers, TextureSubresourceRange,
+    TextureUsages, Viewport,
 };
 pub use upload::{
     ImageDataLayout, ImageUpload, TexelBlockLayout, UploadBatch, UploadBelt, UploadBeltDescriptor,
@@ -144,16 +147,9 @@ pub use video::{
 pub use video::{
     VideoDecodeCodecs, VideoDecodeDevice, VideoDecodeOperations, VideoDecodeRequirements,
 };
-/// Full raw Vulkanalia re-export for embedders migrating onto this crate.
-///
-/// Applications must not add their own `vulkanalia` dependency; version and
-/// feature selection (including `libloading`) is owned here so the whole
-/// workspace shares one loader contract.
-pub use vulkanalia;
 /// Includes a little-endian, four-byte-aligned SPIR-V asset as `&[u32]`.
 ///
 /// This is the standard shader-asset inclusion path for consumers. It keeps
 /// Vulkanalia's alignment and byte-length validation available without making
 /// applications depend on Vulkanalia directly.
 pub use vulkanalia::include_shader_code as include_spirv;
-pub use vulkanalia::{Version, vk};

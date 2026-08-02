@@ -24,7 +24,7 @@ fn required_interop() -> NativeInteropCapabilities {
     }
 }
 
-fn candidate(ordinal: usize, device_type: vk::PhysicalDeviceType, heap: bool) -> DeviceCandidate {
+fn candidate(ordinal: usize, device_type: DeviceType, heap: bool) -> DeviceCandidate {
     DeviceCandidate {
         ordinal,
         name: format!("device-{ordinal}"),
@@ -64,9 +64,9 @@ fn candidate(ordinal: usize, device_type: vk::PhysicalDeviceType, heap: bool) ->
 #[test]
 fn default_prefers_discrete_gpu_with_heap() {
     let candidates = [
-        candidate(0, vk::PhysicalDeviceType::CPU, true),
-        candidate(1, vk::PhysicalDeviceType::DISCRETE_GPU, true),
-        candidate(2, vk::PhysicalDeviceType::INTEGRATED_GPU, true),
+        candidate(0, DeviceType::Cpu, true),
+        candidate(1, DeviceType::Discrete, true),
+        candidate(2, DeviceType::Integrated, true),
     ];
 
     assert_eq!(
@@ -81,8 +81,8 @@ fn default_prefers_discrete_gpu_with_heap() {
 #[test]
 fn unsupported_heap_devices_are_never_selected() {
     let candidates = [
-        candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, false),
-        candidate(1, vk::PhysicalDeviceType::CPU, false),
+        candidate(0, DeviceType::Discrete, false),
+        candidate(1, DeviceType::Cpu, false),
     ];
 
     assert!(matches!(
@@ -93,7 +93,7 @@ fn unsupported_heap_devices_are_never_selected() {
 
 #[test]
 fn timeline_semaphores_are_required_for_native_frame_scheduling() {
-    let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+    let mut candidate = candidate(0, DeviceType::Discrete, true);
     candidate.timeline_semaphore_supported = false;
 
     assert!(matches!(
@@ -104,7 +104,7 @@ fn timeline_semaphores_are_required_for_native_frame_scheduling() {
 
 #[test]
 fn buffer_device_address_is_required_for_descriptor_heap_binding() {
-    let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+    let mut candidate = candidate(0, DeviceType::Discrete, true);
     candidate.buffer_device_address_supported = false;
 
     assert!(matches!(
@@ -115,7 +115,7 @@ fn buffer_device_address_is_required_for_descriptor_heap_binding() {
 
 #[test]
 fn maintenance5_is_required_for_descriptor_heap_pipelines() {
-    let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+    let mut candidate = candidate(0, DeviceType::Discrete, true);
     candidate.maintenance5_supported = false;
 
     assert!(matches!(
@@ -126,7 +126,7 @@ fn maintenance5_is_required_for_descriptor_heap_pipelines() {
 
 #[test]
 fn dynamic_rendering_is_required_for_client_image_pipelines() {
-    let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+    let mut candidate = candidate(0, DeviceType::Discrete, true);
     candidate.dynamic_rendering_supported = false;
 
     assert!(matches!(
@@ -137,7 +137,7 @@ fn dynamic_rendering_is_required_for_client_image_pipelines() {
 
 #[test]
 fn unusable_descriptor_heap_limits_are_rejected() {
-    let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+    let mut candidate = candidate(0, DeviceType::Discrete, true);
     candidate.descriptor_heap.max_resource_heap_size = 0;
 
     assert!(matches!(
@@ -148,7 +148,7 @@ fn unusable_descriptor_heap_limits_are_rejected() {
 
 #[test]
 fn descriptor_heap_draw_push_and_embedded_sampler_limits_are_required() {
-    let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+    let mut candidate = candidate(0, DeviceType::Discrete, true);
     candidate.descriptor_heap.max_push_data_size = 32;
     assert!(matches!(
         DeviceSelector::new(GpuPreference::Any).select([&candidate]),
@@ -179,9 +179,9 @@ fn descriptor_heap_draw_push_and_embedded_sampler_limits_are_required() {
 
 #[test]
 fn older_vulkan_devices_are_rejected_before_ranking() {
-    let mut discrete = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
-    discrete.api_version = Version::V1_3_0;
-    let integrated = candidate(1, vk::PhysicalDeviceType::INTEGRATED_GPU, true);
+    let mut discrete = candidate(0, DeviceType::Discrete, true);
+    discrete.api_version = ApiVersion::V1_3_0;
+    let integrated = candidate(1, DeviceType::Integrated, true);
     let candidates = [discrete, integrated];
 
     assert_eq!(
@@ -195,8 +195,8 @@ fn older_vulkan_devices_are_rejected_before_ranking() {
 
 #[test]
 fn reports_when_all_descriptor_heap_devices_are_too_old() {
-    let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
-    candidate.api_version = Version::V1_3_0;
+    let mut candidate = candidate(0, DeviceType::Discrete, true);
+    candidate.api_version = ApiVersion::V1_3_0;
 
     assert!(matches!(
         DeviceSelector::new(GpuPreference::Discrete).select([&candidate]),
@@ -206,7 +206,7 @@ fn reports_when_all_descriptor_heap_devices_are_too_old() {
 
 #[test]
 fn graphics_queue_is_a_required_renderer_capability() {
-    let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+    let mut candidate = candidate(0, DeviceType::Discrete, true);
     candidate.graphics_queue_family = None;
 
     assert!(matches!(
@@ -217,8 +217,8 @@ fn graphics_queue_is_a_required_renderer_capability() {
 
 #[test]
 fn configured_drm_node_overrides_gpu_type_ranking() {
-    let discrete = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
-    let integrated = candidate(1, vk::PhysicalDeviceType::INTEGRATED_GPU, true);
+    let discrete = candidate(0, DeviceType::Discrete, true);
+    let integrated = candidate(1, DeviceType::Integrated, true);
     let requested = integrated.drm.unwrap().render.unwrap();
 
     let selected = DeviceSelector::new(GpuPreference::Discrete)
@@ -231,7 +231,7 @@ fn configured_drm_node_overrides_gpu_type_ranking() {
 
 #[test]
 fn rejects_a_drm_node_without_a_vulkan_device() {
-    let candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+    let candidate = candidate(0, DeviceType::Discrete, true);
     let requested = DrmNodeId::new(226, 191);
 
     assert!(matches!(
@@ -244,7 +244,7 @@ fn rejects_a_drm_node_without_a_vulkan_device() {
 
 #[test]
 fn drm_primary_and_render_nodes_are_both_required() {
-    let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+    let mut candidate = candidate(0, DeviceType::Discrete, true);
     candidate.drm = Some(DrmDeviceIdentity::new(Some(DrmNodeId::new(226, 0)), None));
 
     assert!(matches!(
@@ -318,7 +318,7 @@ fn reports_the_first_missing_native_interop_capability() {
     ];
 
     for (interop, expected) in cases {
-        let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+        let mut candidate = candidate(0, DeviceType::Discrete, true);
         candidate.interop = interop;
         let error = DeviceSelector::new(GpuPreference::Discrete)
             .select([&candidate])
@@ -329,7 +329,7 @@ fn reports_the_first_missing_native_interop_capability() {
 
 #[test]
 fn device_without_an_exportable_output_format_is_not_selected() {
-    let mut candidate = candidate(0, vk::PhysicalDeviceType::DISCRETE_GPU, true);
+    let mut candidate = candidate(0, DeviceType::Discrete, true);
     candidate.native_output_format_count = 0;
 
     assert_eq!(

@@ -6,8 +6,6 @@
 
 use std::fmt;
 
-use vulkanalia::vk;
-
 use crate::pipeline::{format_has_depth, format_has_stencil};
 use crate::{
     Backend, DescriptorHeap, DescriptorHeapDescriptor, DescriptorHeapKind, Error, Extent2D, Image,
@@ -317,15 +315,10 @@ impl MemoryAllocator {
             })?;
             let view = image.create_view(&ImageViewDescriptor {
                 label,
-                view_type: vk::ImageViewType::_2D,
+                dimension: crate::ImageViewDimension::D2,
                 format: descriptor.format,
-                components: vk::ComponentMapping {
-                    r: vk::ComponentSwizzle::IDENTITY,
-                    g: vk::ComponentSwizzle::IDENTITY,
-                    b: vk::ComponentSwizzle::IDENTITY,
-                    a: vk::ComponentSwizzle::IDENTITY,
-                },
-                subresource_range: image.full_subresource_range(vk::ImageAspectFlags::COLOR),
+                components: crate::ComponentMapping::default(),
+                subresource_range: image.full_subresource_range(crate::TextureAspects::COLOR),
             })?;
             images.push(image);
             views.push(view);
@@ -453,7 +446,7 @@ impl Backend {
         let mut indices = Vec::with_capacity(targets.len());
         for frame_slot in 0..targets.len() {
             let target = targets.target(frame_slot)?;
-            let image = SampledImageBinding::new_typed(
+            let image = SampledImageBinding::new(
                 &resource_heap,
                 target.view,
                 crate::TextureLayout::ShaderReadOnly,

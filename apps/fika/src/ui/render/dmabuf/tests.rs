@@ -2,21 +2,24 @@ use super::*;
 
 #[test]
 fn fourcc_maps_native_vulkan_formats_and_xrgb_alpha() {
-    use vulkan_renderer::vk;
-
-    let (argb_typed, argb, argb_components) =
+    let (argb, argb_components) =
         vulkan_format_for_fourcc(fourcc::ARGB8888).expect("ARGB8888 Vulkan format");
-    assert_eq!(argb_typed, vulkan_renderer::TextureFormat::Bgra8Unorm);
-    assert_eq!(argb, vk::Format::B8G8R8A8_UNORM);
-    assert_eq!(argb_components.a, vk::ComponentSwizzle::A);
+    assert_eq!(argb, vulkan_renderer::TextureFormat::Bgra8Unorm);
+    assert_eq!(
+        argb_components.alpha,
+        vulkan_renderer::ComponentSwizzle::Alpha
+    );
 
-    let (_, xrgb, xrgb_components) =
+    let (xrgb, xrgb_components) =
         vulkan_format_for_fourcc(fourcc::XRGB8888).expect("XRGB8888 Vulkan format");
-    assert_eq!(xrgb, vk::Format::B8G8R8A8_UNORM);
-    assert_eq!(xrgb_components.a, vk::ComponentSwizzle::ONE);
+    assert_eq!(xrgb, vulkan_renderer::TextureFormat::Bgra8Unorm);
+    assert_eq!(
+        xrgb_components.alpha,
+        vulkan_renderer::ComponentSwizzle::One
+    );
 
-    let (_, rgba, _) = vulkan_format_for_fourcc(fourcc::RGBA8888).expect("RGBA8888 Vulkan format");
-    assert_eq!(rgba, vk::Format::R8G8B8A8_UNORM);
+    let (rgba, _) = vulkan_format_for_fourcc(fourcc::RGBA8888).expect("RGBA8888 Vulkan format");
+    assert_eq!(rgba, vulkan_renderer::TextureFormat::Rgba8Unorm);
     assert!(vulkan_format_for_fourcc(0xdead_beef).is_none());
 }
 

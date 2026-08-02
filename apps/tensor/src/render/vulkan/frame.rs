@@ -4,7 +4,6 @@ use std::{
 };
 
 use thiserror::Error;
-use vulkan_renderer::vulkanalia::vk;
 use vulkan_renderer::{
     BinarySemaphore, BinarySemaphoreDescriptor, CommandEncoderDescriptor, DescriptorAllocation,
     DescriptorHeap, DescriptorHeapUploadBatch, Device as RendererDevice, Error as RendererError,
@@ -413,22 +412,13 @@ impl VulkanFrameError {
     }
 
     pub(super) const fn is_device_lost(&self) -> bool {
-        matches!(
-            self,
-            Self::DescriptorHeap(RendererError::Vulkan {
-                source: vk::ErrorCode::DEVICE_LOST,
-                ..
-            }) | Self::CommandEncoder(RendererError::Vulkan {
-                source: vk::ErrorCode::DEVICE_LOST,
-                ..
-            }) | Self::SharedRecord(RendererError::Vulkan {
-                source: vk::ErrorCode::DEVICE_LOST,
-                ..
-            }) | Self::SharedSubmit(RendererError::Vulkan {
-                source: vk::ErrorCode::DEVICE_LOST,
-                ..
-            })
-        )
+        match self {
+            Self::DescriptorHeap(error)
+            | Self::CommandEncoder(error)
+            | Self::SharedRecord(error)
+            | Self::SharedSubmit(error) => error.is_device_lost(),
+            _ => false,
+        }
     }
 }
 

@@ -6,7 +6,8 @@ use vulkanalia::{prelude::v1_4::*, vk};
 
 use super::{DedicatedResource, MemoryAllocator, MemoryBlock, MemoryClass, align_up};
 use crate::{
-    AllocationRequirements, Error, ImageDescriptor, MemoryLocation, MemoryTypeSelector, Result,
+    AllocationRequirements, ComponentMapping, Error, ImageDescriptor, ImageViewDimension,
+    MemoryLocation, MemoryTypeSelector, Result, TextureAspects, TextureSubresourceRange,
 };
 
 impl MemoryAllocator {
@@ -223,17 +224,14 @@ impl Image {
         Arc::ptr_eq(&self.inner.owner, owner)
     }
 
-    pub fn full_subresource_range(
-        &self,
-        aspect_mask: vk::ImageAspectFlags,
-    ) -> vk::ImageSubresourceRange {
-        vk::ImageSubresourceRange {
-            aspect_mask,
-            base_mip_level: 0,
-            level_count: self.inner.mip_levels,
-            base_array_layer: 0,
-            layer_count: self.inner.array_layers,
-        }
+    pub fn full_subresource_range(&self, aspects: TextureAspects) -> TextureSubresourceRange {
+        TextureSubresourceRange::new(
+            aspects,
+            0,
+            self.inner.mip_levels,
+            0,
+            self.inner.array_layers,
+        )
     }
 
     pub fn create_view(&self, descriptor: &ImageViewDescriptor) -> Result<ImageView> {
@@ -249,10 +247,10 @@ impl Image {
         )?;
         let create = vk::ImageViewCreateInfo::builder()
             .image(self.inner.handle)
-            .view_type(descriptor.view_type)
+            .view_type(descriptor.dimension.to_vk())
             .format(descriptor.format.to_vk())
-            .components(descriptor.components)
-            .subresource_range(descriptor.subresource_range);
+            .components(descriptor.components.to_vk())
+            .subresource_range(descriptor.subresource_range.to_vk());
         let handle = unsafe { self.inner.owner.device.create_image_view(&create, None) }
             .map_err(|source| Error::vulkan("vkCreateImageView", source))?;
         Ok(ImageView {
@@ -268,10 +266,10 @@ impl Image {
     pub fn create_color_view(&self, label: impl Into<Option<String>>) -> Result<ImageView> {
         self.create_view(&ImageViewDescriptor {
             label: label.into(),
-            view_type: vk::ImageViewType::_2D,
+            dimension: ImageViewDimension::D2,
             format: self.format(),
-            components: vk::ComponentMapping::default(),
-            subresource_range: self.full_subresource_range(vk::ImageAspectFlags::COLOR),
+            components: ComponentMapping::default(),
+            subresource_range: self.full_subresource_range(TextureAspects::COLOR),
         })
     }
 }
@@ -309,10 +307,10 @@ impl Drop for ImageInner {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImageViewDescriptor {
     pub label: Option<String>,
-    pub view_type: vk::ImageViewType,
+    pub dimension: ImageViewDimension,
     pub format: crate::TextureFormat,
-    pub components: vk::ComponentMapping,
-    pub subresource_range: vk::ImageSubresourceRange,
+    pub components: ComponentMapping,
+    pub subresource_range: TextureSubresourceRange,
 }
 
 /// Cloneable ownership handle for an image view and its parent allocation.
@@ -366,13 +364,13 @@ impl ImageView {
         &self.inner.image.owner
     }
 
-    pub fn create_info(&self) -> vk::ImageViewCreateInfo {
+    pub(crate) fn create_info(&self) -> vk::ImageViewCreateInfo {
         vk::ImageViewCreateInfo::builder()
             .image(self.inner.image.handle)
-            .view_type(self.inner.descriptor.view_type)
+            .view_type(self.inner.descriptor.dimension.to_vk())
             .format(self.inner.descriptor.format.to_vk())
-            .components(self.inner.descriptor.components)
-            .subresource_range(self.inner.descriptor.subresource_range)
+            .components(self.inner.descriptor.components.to_vk())
+            .subresource_range(self.inner.descriptor.subresource_range.to_vk())
             .build()
     }
 }
@@ -395,11 +393,11 @@ impl Drop for ImageViewInner {
 }
 
 fn validate_subresource_range(
-    range: vk::ImageSubresourceRange,
+    range: TextureSubresourceRange,
     mip_levels: u32,
     array_layers: u32,
 ) -> Result<()> {
-    if range.aspect_mask.is_empty() || range.level_count == 0 || range.layer_count == 0 {
+    if range.aspects.is_empty() || range.level_count == 0 || range.layer_count == 0 {
         return Err(Error::Validation(
             "image view subresource range must be non-empty".into(),
         ));

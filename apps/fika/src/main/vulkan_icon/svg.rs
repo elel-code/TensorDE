@@ -2,13 +2,14 @@ use std::collections::BTreeMap;
 
 use vulkan_renderer::{
     AccessKind, BlendState, BufferDescriptor, BufferState, BufferUsages, ColorAttachment,
-    ColorTargetState, CompiledGraph, DescriptorHeap, Device, FragmentState, GraphicsPipeline,
-    GraphicsPipelineDescriptor, ImageViewDescriptor, IndexFormat, LoadOp, MemoryAllocator,
-    MemoryLocation, MultisampleState, PassId, PipelineCache, PrimitiveState, ProgrammableStage,
-    Rect2D, RenderGraph, RenderGraphImageState, RenderPass, RenderingDescriptor, ResolveMode,
-    ResourceBinding, ResourceId, ResourceKind, ResourceState, ResourceUse, SampledImageBinding,
-    ShaderBindingMap, ShaderModuleDescriptor, StoreOp, TextureFormat, TextureLayout, TextureUsages,
-    UploadBatch, VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode, Viewport, vk,
+    ColorTargetState, CompiledGraph, ComponentMapping, DescriptorHeap, Device, FragmentState,
+    GraphicsPipeline, GraphicsPipelineDescriptor, ImageViewDescriptor, ImageViewDimension,
+    IndexFormat, LoadOp, MemoryAllocator, MemoryLocation, MultisampleState, PassId, PipelineCache,
+    PrimitiveState, ProgrammableStage, Rect2D, RenderGraph, RenderGraphImageState, RenderPass,
+    RenderingDescriptor, ResolveMode, ResourceBinding, ResourceId, ResourceKind, ResourceState,
+    ResourceUse, SampledImageBinding, ShaderBindingMap, ShaderModuleDescriptor, StoreOp,
+    TextureAspects, TextureFormat, TextureLayout, TextureUsages, UploadBatch, VertexAttribute,
+    VertexBufferLayout, VertexState, VertexStepMode, Viewport,
 };
 
 use crate::{
@@ -68,9 +69,8 @@ impl SvgIconRasterizer {
         let Some((image, view)) = self.rasterize(allocator, uploads, &bytes, width, height)? else {
             return Ok(None);
         };
-        let binding =
-            SampledImageBinding::new(heap, &view, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .map_err(|error| format!("create Vulkan SVG icon descriptor: {error}"))?;
+        let binding = SampledImageBinding::new(heap, &view, TextureLayout::ShaderReadOnly)
+            .map_err(|error| format!("create Vulkan SVG icon descriptor: {error}"))?;
         Ok(Some(VulkanIconTexture {
             image: VulkanIconImage::Resident {
                 _image: image,
@@ -126,10 +126,10 @@ impl SvgIconRasterizer {
         let view = image
             .create_view(&ImageViewDescriptor {
                 label: Some("fika-vulkan-svg-icon-view".into()),
-                view_type: vk::ImageViewType::_2D,
+                dimension: ImageViewDimension::D2,
                 format: image.format(),
-                components: vk::ComponentMapping::default(),
-                subresource_range: image.full_subresource_range(vk::ImageAspectFlags::COLOR),
+                components: ComponentMapping::IDENTITY,
+                subresource_range: image.full_subresource_range(TextureAspects::COLOR),
             })
             .map_err(|error| format!("create Vulkan SVG icon view: {error}"))?;
         let bindings = resource_bindings(&image, &vertices, &indices);

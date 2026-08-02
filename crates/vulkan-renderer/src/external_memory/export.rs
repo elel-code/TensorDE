@@ -12,28 +12,26 @@ use vulkanalia::{
 
 use super::{choose_import_memory_type, color_subresource_range};
 use crate::backend::DeviceOwner;
-use crate::{Backend, Error, Features, ResourceBinding, Result};
+use crate::{
+    Backend, ComponentMapping, Error, Extent2D, Features, ResourceBinding, Result, TextureFormat,
+    TextureSubresourceRange, TextureUsages,
+};
 
 /// Descriptor for a Vulkan-owned image whose dedicated memory is exportable
 /// as one Linux dma-buf fd.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DmaBufExportDescriptor {
     pub label: Option<String>,
-    pub format: vk::Format,
-    pub extent: vk::Extent2D,
+    pub format: TextureFormat,
+    pub extent: Extent2D,
     /// Acceptable modifiers. The driver may select any listed value.
     pub modifiers: Vec<u64>,
-    pub usage: vk::ImageUsageFlags,
-    pub components: vk::ComponentMapping,
+    pub usage: TextureUsages,
+    pub components: ComponentMapping,
 }
 
 impl DmaBufExportDescriptor {
     fn validate(&self) -> Result<()> {
-        if self.format == vk::Format::UNDEFINED {
-            return Err(Error::Validation(
-                "dma-buf export format must not be VK_FORMAT_UNDEFINED".into(),
-            ));
-        }
         if self.extent.width == 0 || self.extent.height == 0 {
             return Err(Error::Validation(
                 "dma-buf export extent must be non-zero".into(),
@@ -96,19 +94,15 @@ impl fmt::Debug for ExportedDmaBufImage {
 }
 
 impl ExportedDmaBufImage {
-    pub fn raw(&self) -> vk::Image {
-        self.inner.image
-    }
-
-    pub fn view(&self) -> vk::ImageView {
+    pub(crate) fn view(&self) -> vk::ImageView {
         self.inner.view
     }
 
-    pub fn format(&self) -> vk::Format {
+    pub fn format(&self) -> TextureFormat {
         self.inner.format
     }
 
-    pub fn extent(&self) -> vk::Extent2D {
+    pub fn extent(&self) -> Extent2D {
         self.inner.extent
     }
 
@@ -120,7 +114,7 @@ impl ExportedDmaBufImage {
         &self.inner.planes
     }
 
-    pub fn usage(&self) -> vk::ImageUsageFlags {
+    pub fn usage(&self) -> TextureUsages {
         self.inner.usage
     }
 
@@ -133,22 +127,22 @@ impl ExportedDmaBufImage {
         self.inner.fd.try_clone()
     }
 
-    pub const fn subresource_range(&self) -> vk::ImageSubresourceRange {
+    pub const fn subresource_range(&self) -> TextureSubresourceRange {
         color_subresource_range()
     }
 
-    pub fn view_create_info(&self) -> vk::ImageViewCreateInfo {
+    pub(crate) fn view_create_info(&self) -> vk::ImageViewCreateInfo {
         vk::ImageViewCreateInfo::builder()
             .image(self.inner.image)
             .view_type(vk::ImageViewType::_2D)
-            .format(self.inner.format)
-            .components(self.inner.components)
-            .subresource_range(self.subresource_range())
+            .format(self.inner.format.to_vk())
+            .components(self.inner.components.to_vk())
+            .subresource_range(self.subresource_range().to_vk())
             .build()
     }
 
     pub fn resource_binding(&self) -> ResourceBinding {
-        ResourceBinding::raw_image(self.inner.image, self.subresource_range())
+        ResourceBinding::raw_image(self.inner.image, self.subresource_range().to_vk())
     }
 
     pub(crate) fn owner(&self) -> &Arc<DeviceOwner> {
@@ -168,12 +162,12 @@ struct ExportedDmaBufImageInner {
     memory: vk::DeviceMemory,
     view: vk::ImageView,
     fd: OwnedFd,
-    format: vk::Format,
-    extent: vk::Extent2D,
+    format: TextureFormat,
+    extent: Extent2D,
     modifier: u64,
     planes: Vec<DmaBufExportPlane>,
-    usage: vk::ImageUsageFlags,
-    components: vk::ComponentMapping,
+    usage: TextureUsages,
+    components: ComponentMapping,
     label: Option<String>,
 }
 
@@ -245,7 +239,7 @@ fn create_export_image(
         .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
     let create = vk::ImageCreateInfo::builder()
         .image_type(vk::ImageType::_2D)
-        .format(descriptor.format)
+        .format(descriptor.format.to_vk())
         .extent(vk::Extent3D {
             width: descriptor.extent.width,
             height: descriptor.extent.height,
@@ -255,7 +249,7 @@ fn create_export_image(
         .array_layers(1)
         .samples(vk::SampleCountFlags::_1)
         .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
-        .usage(descriptor.usage)
+        .usage(descriptor.usage.to_vk())
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED)
         .push_next(&mut modifiers)
@@ -350,9 +344,9 @@ fn finish_export(
     let view_info = vk::ImageViewCreateInfo::builder()
         .image(image)
         .view_type(vk::ImageViewType::_2D)
-        .format(descriptor.format)
-        .components(descriptor.components)
-        .subresource_range(color_subresource_range());
+        .format(descriptor.format.to_vk())
+        .components(descriptor.components.to_vk())
+        .subresource_range(color_subresource_range().to_vk());
     let view = unsafe { owner.device.create_image_view(&view_info, None) }
         .map_err(|source| Error::vulkan("vkCreateImageView(export dma-buf)", source))?;
     Ok(ExportedDmaBufImage {
@@ -390,14 +384,11 @@ mod tests {
     fn descriptor() -> DmaBufExportDescriptor {
         DmaBufExportDescriptor {
             label: None,
-            format: vk::Format::B8G8R8A8_UNORM,
-            extent: vk::Extent2D {
-                width: 1920,
-                height: 1080,
-            },
+            format: TextureFormat::Bgra8Unorm,
+            extent: Extent2D::new(1920, 1080),
             modifiers: vec![9, 10],
-            usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
-            components: vk::ComponentMapping::default(),
+            usage: TextureUsages::COLOR_ATTACHMENT,
+            components: ComponentMapping::default(),
         }
     }
 

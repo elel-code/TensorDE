@@ -3,7 +3,9 @@ use std::fmt;
 
 use vulkanalia::{Device, prelude::v1_4::*, vk};
 
-use crate::{Buffer, CompiledGraph, Image, PassId, ResourceId, ResourceKind, ResourceState};
+use crate::{
+    Buffer, CompiledGraph, Image, PassId, ResourceId, ResourceKind, ResourceState, TextureAspects,
+};
 
 mod external;
 mod semaphore;
@@ -47,7 +49,7 @@ impl ResourceBinding {
     pub fn whole_color_image(image: &Image) -> Self {
         Self::raw_image(
             image.raw(),
-            image.full_subresource_range(vk::ImageAspectFlags::COLOR),
+            image.full_subresource_range(TextureAspects::COLOR).to_vk(),
         )
     }
 

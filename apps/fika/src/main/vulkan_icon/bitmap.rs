@@ -48,21 +48,13 @@ pub(super) fn fit_bitmap_blit(source: Extent3D, target: Extent3D) -> ImageBlit {
     ImageBlit {
         source_subresource: color_layers(),
         source_offsets: [
-            vk::Offset3D::default(),
-            vk::Offset3D {
-                x: source.width as i32,
-                y: source.height as i32,
-                z: 1,
-            },
+            Origin3D::default(),
+            Origin3D::new(source.width as i32, source.height as i32, 1),
         ],
         destination_subresource: color_layers(),
         destination_offsets: [
-            vk::Offset3D { x, y, z: 0 },
-            vk::Offset3D {
-                x: x + width,
-                y: y + height,
-                z: 1,
-            },
+            Origin3D::new(x, y, 0),
+            Origin3D::new(x + width, y + height, 1),
         ],
     }
 }

@@ -1,4 +1,4 @@
-use vulkan_renderer::vulkanalia::vk;
+use vulkan_renderer::Rect2D;
 
 use crate::render::{FrameSubmission, cursor::MAX_CURSOR_OVERLAYS};
 
@@ -11,7 +11,7 @@ use super::{
 pub(in crate::render::vulkan::frame) enum PreparedCursorDraw {
     Vector {
         push: CursorPushData,
-        scissor: vk::Rect2D,
+        scissor: Rect2D,
     },
     Texture(PreparedDraw),
 }
@@ -61,16 +61,12 @@ pub(in crate::render::vulkan::frame) fn prepare_cursor_draws(
     let viewport = validate_viewport(frame.target.viewport)?;
     for (index, cursor) in frame.draw_plan.cursor_batch().draw_order() {
         let image_descriptor = &frame.draw_plan.cursor_image_descriptors()[index];
-        let scissor = vk::Rect2D {
-            offset: vk::Offset2D {
-                x: cursor.clip.x,
-                y: cursor.clip.y,
-            },
-            extent: vk::Extent2D {
-                width: cursor.clip.width,
-                height: cursor.clip.height,
-            },
-        };
+        let scissor = Rect2D::new(
+            cursor.clip.x,
+            cursor.clip.y,
+            cursor.clip.width,
+            cursor.clip.height,
+        );
         if let (Some(texture), Some(image_descriptor)) = (cursor.texture, image_descriptor) {
             let descriptor_index =
                 descriptor_index(frame.descriptors, descriptor_stride, *image_descriptor)?;

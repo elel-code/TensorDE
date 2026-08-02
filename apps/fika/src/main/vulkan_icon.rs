@@ -2,17 +2,19 @@ use std::collections::{BTreeMap, HashMap};
 
 use vulkan_renderer::{
     AccessKind, BlendState, Buffer, BufferUsages, ColorAttachment, ColorTargetState, CompiledGraph,
-    DescriptorHeap, DescriptorHeapDescriptor, DescriptorHeapKind, Device, DmaBufImageDescriptor,
-    DmaBufPlaneLayout, DynamicBuffer, DynamicBufferDescriptor, Extent3D, ForeignImageState,
-    FragmentState, FrameToken, GraphicsPipeline, GraphicsPipelineDescriptor, Image, ImageBlit,
-    ImageBlitFilter, ImageDataLayout, ImageDescriptor, ImageDimension, ImageTiling, ImageUpload,
-    ImageView, ImageViewDescriptor, ImportedDmaBufImage, LoadOp, MemoryAllocator, MemoryLocation,
-    MultisampleState, PassId, PipelineCache, PrimitiveState, ProgrammableStage, Rect2D,
+    ComponentMapping, DescriptorHeap, DescriptorHeapDescriptor, DescriptorHeapKind, Device,
+    DmaBufImageDescriptor, DmaBufPlaneLayout, DynamicBuffer, DynamicBufferDescriptor, Extent2D,
+    Extent3D, ForeignImageState, FragmentState, FrameToken, GraphicsPipeline,
+    GraphicsPipelineDescriptor, Image, ImageBlit, ImageBlitFilter, ImageDataLayout,
+    ImageDescriptor, ImageDimension, ImageTiling, ImageUpload, ImageView, ImageViewDescriptor,
+    ImageViewDimension, ImportedDmaBufImage, LoadOp, MemoryAllocator, MemoryLocation,
+    MultisampleState, Origin3D, PassId, PipelineCache, PrimitiveState, ProgrammableStage, Rect2D,
     RenderGraph, RenderGraphImageState, RenderPass, RenderingDescriptor, RenderingEncoder,
     ResolveMode, ResourceBinding, ResourceId, ResourceKind, ResourceState, ResourceUse,
     SampleCount, SampledImageBinding, SamplerBinding, SamplerDescriptor, ShaderBindingMap,
-    ShaderModuleDescriptor, StoreOp, TexelBlockLayout, TextureFormat, TextureLayout, TextureUsages,
-    UploadBatch, VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode, Viewport, vk,
+    ShaderModuleDescriptor, StoreOp, TexelBlockLayout, TextureAspects, TextureFormat,
+    TextureLayout, TextureSubresourceLayers, TextureUsages, UploadBatch, VertexAttribute,
+    VertexBufferLayout, VertexState, VertexStepMode, Viewport,
 };
 
 use crate::{
@@ -411,12 +413,9 @@ impl VulkanIconRenderer {
             let Some((_image, view)) = rendered else {
                 continue;
             };
-            let binding = SampledImageBinding::new(
-                &self.resource_heap,
-                &view,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            )
-            .map_err(|error| format!("create Vulkan preview child descriptor: {error}"))?;
+            let binding =
+                SampledImageBinding::new(&self.resource_heap, &view, TextureLayout::ShaderReadOnly)
+                    .map_err(|error| format!("create Vulkan preview child descriptor: {error}"))?;
             let image_index = binding
                 .shader_heap_index()
                 .map_err(|error| format!("resolve Vulkan preview child descriptor: {error}"))?;
@@ -474,10 +473,10 @@ impl VulkanIconRenderer {
         let view = image
             .create_view(&ImageViewDescriptor {
                 label: Some("fika-vulkan-folder-preview-view".into()),
-                view_type: vk::ImageViewType::_2D,
+                dimension: ImageViewDimension::D2,
                 format: image.format(),
-                components: vk::ComponentMapping::default(),
-                subresource_range: image.full_subresource_range(vk::ImageAspectFlags::COLOR),
+                components: ComponentMapping::IDENTITY,
+                subresource_range: image.full_subresource_range(TextureAspects::COLOR),
             })
             .map_err(|error| format!("create Vulkan folder-preview view: {error}"))?;
         self.preview.composite(
@@ -491,12 +490,9 @@ impl VulkanIconRenderer {
             &child_views,
         )?;
         self.transient_bindings.extend(child_bindings);
-        let binding = SampledImageBinding::new(
-            &self.resource_heap,
-            &view,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-        )
-        .map_err(|error| format!("create Vulkan folder-preview descriptor: {error}"))?;
+        let binding =
+            SampledImageBinding::new(&self.resource_heap, &view, TextureLayout::ShaderReadOnly)
+                .map_err(|error| format!("create Vulkan folder-preview descriptor: {error}"))?;
         Ok(Some(VulkanIconTexture {
             image: VulkanIconImage::Resident {
                 _image: image,
@@ -531,10 +527,10 @@ impl VulkanIconRenderer {
         let view = image
             .create_view(&ImageViewDescriptor {
                 label: Some("fika-vulkan-preview-child-view".into()),
-                view_type: vk::ImageViewType::_2D,
+                dimension: ImageViewDimension::D2,
                 format: image.format(),
-                components: vk::ComponentMapping::default(),
-                subresource_range: image.full_subresource_range(vk::ImageAspectFlags::COLOR),
+                components: ComponentMapping::IDENTITY,
+                subresource_range: image.full_subresource_range(TextureAspects::COLOR),
             })
             .map_err(|error| format!("create Vulkan preview child view: {error}"))?;
         if bitmap.width == width && bitmap.height == height {
@@ -564,10 +560,10 @@ impl VulkanIconRenderer {
         let view = image
             .create_view(&ImageViewDescriptor {
                 label: Some("fika-vulkan-resident-icon-view".into()),
-                view_type: vk::ImageViewType::_2D,
+                dimension: ImageViewDimension::D2,
                 format: image.format(),
-                components: vk::ComponentMapping::default(),
-                subresource_range: image.full_subresource_range(vk::ImageAspectFlags::COLOR),
+                components: ComponentMapping::IDENTITY,
+                subresource_range: image.full_subresource_range(TextureAspects::COLOR),
             })
             .map_err(|error| format!("create Vulkan resident icon view: {error}"))?;
         if bitmap.width == width && bitmap.height == height {
@@ -575,12 +571,9 @@ impl VulkanIconRenderer {
         } else {
             self.scale_bitmap(allocator, uploads, &image, bitmap)?;
         }
-        let binding = SampledImageBinding::new(
-            &self.resource_heap,
-            &view,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-        )
-        .map_err(|error| format!("create Vulkan resident icon descriptor: {error}"))?;
+        let binding =
+            SampledImageBinding::new(&self.resource_heap, &view, TextureLayout::ShaderReadOnly)
+                .map_err(|error| format!("create Vulkan resident icon descriptor: {error}"))?;
         Ok(VulkanIconTexture {
             image: VulkanIconImage::Resident {
                 _image: image,
@@ -649,9 +642,9 @@ impl VulkanIconRenderer {
                 .encoder_mut()
                 .clear_color_image(
                     target,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    TextureLayout::TransferDestination,
                     [0.0; 4],
-                    &[target.full_subresource_range(vk::ImageAspectFlags::COLOR)],
+                    &[target.full_subresource_range(TextureAspects::COLOR)],
                 )
                 .map_err(|error| format!("clear Vulkan scaled icon target: {error}"))?;
             uploads.encoder_mut().pipeline_barrier(&before_blit);
@@ -659,9 +652,9 @@ impl VulkanIconRenderer {
                 .encoder_mut()
                 .blit_image(
                     &source,
-                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    TextureLayout::TransferSource,
                     target,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    TextureLayout::TransferDestination,
                     &[fit_bitmap_blit(source.extent(), target.extent())],
                     ImageBlitFilter::Linear,
                 )

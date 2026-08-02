@@ -11,7 +11,10 @@ use std::sync::Arc;
 use vulkanalia::{Instance, prelude::v1_4::*, vk};
 
 use crate::backend::DeviceOwner;
-use crate::{Adapter, Backend, Error, Features, ResourceBinding, Result};
+use crate::{
+    Adapter, Backend, ComponentMapping, Error, Extent2D, Features, ResourceBinding, Result,
+    TextureFormat, TextureFormatFeatures, TextureSubresourceRange, TextureUsages,
+};
 
 mod export;
 mod import;
@@ -109,26 +112,21 @@ impl LinuxDmaBufCapabilities {
 /// Descriptor for importing one Linux dma-buf fd with one to four explicit DRM
 /// memory-plane layouts as a Vulkan image.
 ///
-/// DRM fourcc-to-Vulkan-format policy belongs to the host integration layer;
-/// this descriptor receives the already selected Vulkan format and modifier.
+/// DRM fourcc-to-texture-format policy belongs to the host integration layer;
+/// this descriptor receives the already selected renderer format and modifier.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DmaBufImageDescriptor {
     pub label: Option<String>,
-    pub format: vk::Format,
-    pub extent: vk::Extent2D,
+    pub format: TextureFormat,
+    pub extent: Extent2D,
     pub modifier: u64,
     pub planes: Vec<DmaBufPlaneLayout>,
-    pub usage: vk::ImageUsageFlags,
-    pub components: vk::ComponentMapping,
+    pub usage: TextureUsages,
+    pub components: ComponentMapping,
 }
 
 impl DmaBufImageDescriptor {
     fn validate(&self) -> Result<()> {
-        if self.format == vk::Format::UNDEFINED {
-            return Err(Error::Validation(
-                "dma-buf image format must not be VK_FORMAT_UNDEFINED".into(),
-            ));
-        }
         if self.extent.width == 0 || self.extent.height == 0 {
             return Err(Error::Validation(
                 "dma-buf image extent must be non-zero".into(),
@@ -163,7 +161,7 @@ impl DmaBufImageDescriptor {
 pub struct DrmFormatModifierCapability {
     pub modifier: u64,
     pub plane_count: u32,
-    pub tiling_features: vk::FormatFeatureFlags2,
+    pub features: TextureFormatFeatures,
     pub importable: bool,
     pub exportable: bool,
 }
@@ -191,19 +189,15 @@ impl fmt::Debug for ImportedDmaBufImage {
 }
 
 impl ImportedDmaBufImage {
-    pub fn raw(&self) -> vk::Image {
-        self.inner.image
-    }
-
-    pub fn view(&self) -> vk::ImageView {
+    pub(crate) fn view(&self) -> vk::ImageView {
         self.inner.view
     }
 
-    pub fn format(&self) -> vk::Format {
+    pub fn format(&self) -> TextureFormat {
         self.inner.format
     }
 
-    pub fn extent(&self) -> vk::Extent2D {
+    pub fn extent(&self) -> Extent2D {
         self.inner.extent
     }
 
@@ -211,7 +205,7 @@ impl ImportedDmaBufImage {
         self.inner.modifier
     }
 
-    pub fn usage(&self) -> vk::ImageUsageFlags {
+    pub fn usage(&self) -> TextureUsages {
         self.inner.usage
     }
 
@@ -219,25 +213,25 @@ impl ImportedDmaBufImage {
         self.inner.label.as_deref()
     }
 
-    pub const fn subresource_range(&self) -> vk::ImageSubresourceRange {
+    pub const fn subresource_range(&self) -> TextureSubresourceRange {
         color_subresource_range()
     }
 
     /// Reconstructs the create-info consumed by `VK_EXT_descriptor_heap` image
     /// descriptor writes. The returned value borrows no temporary pNext data.
-    pub fn view_create_info(&self) -> vk::ImageViewCreateInfo {
+    pub(crate) fn view_create_info(&self) -> vk::ImageViewCreateInfo {
         vk::ImageViewCreateInfo::builder()
             .image(self.inner.image)
             .view_type(vk::ImageViewType::_2D)
-            .format(self.inner.format)
-            .components(self.inner.components)
-            .subresource_range(self.subresource_range())
+            .format(self.inner.format.to_vk())
+            .components(self.inner.components.to_vk())
+            .subresource_range(self.subresource_range().to_vk())
             .build()
     }
 
     /// Creates the typed binding used to resolve this image in a render graph.
     pub fn resource_binding(&self) -> ResourceBinding {
-        ResourceBinding::raw_image(self.inner.image, self.subresource_range())
+        ResourceBinding::raw_image(self.inner.image, self.subresource_range().to_vk())
     }
 
     pub(crate) fn owner(&self) -> &Arc<DeviceOwner> {
@@ -256,11 +250,11 @@ struct ImportedDmaBufImageInner {
     image: vk::Image,
     memories: Vec<vk::DeviceMemory>,
     view: vk::ImageView,
-    format: vk::Format,
-    extent: vk::Extent2D,
+    format: TextureFormat,
+    extent: Extent2D,
     modifier: u64,
-    usage: vk::ImageUsageFlags,
-    components: vk::ComponentMapping,
+    usage: TextureUsages,
+    components: ComponentMapping,
     label: Option<String>,
 }
 
@@ -328,15 +322,15 @@ impl Adapter {
     /// logical-device creation. Unsupported modifiers are omitted.
     pub fn drm_format_modifier_capabilities(
         &self,
-        format: vk::Format,
-        usage: vk::ImageUsageFlags,
+        format: TextureFormat,
+        usage: TextureUsages,
     ) -> Result<Vec<DrmFormatModifierCapability>> {
         query_modifier_capabilities(
             &self.instance_owner().instance,
             self.physical_device(),
             &self.info().extensions,
-            format,
-            usage,
+            format.to_vk(),
+            usage.to_vk(),
         )
     }
 }
@@ -375,16 +369,16 @@ impl Backend {
     /// device's physical adapter.
     pub fn drm_format_modifier_capabilities(
         &self,
-        format: vk::Format,
-        usage: vk::ImageUsageFlags,
+        format: TextureFormat,
+        usage: TextureUsages,
     ) -> Result<Vec<DrmFormatModifierCapability>> {
         let owner = self.shared_owner();
         query_modifier_capabilities(
             &owner.instance_owner().instance,
             owner.physical_device(),
             &self.device_info().extensions,
-            format,
-            usage,
+            format.to_vk(),
+            usage.to_vk(),
         )
     }
 
@@ -478,8 +472,8 @@ impl Backend {
         }
         if !capability.importable
             || !capability
-                .tiling_features
-                .contains(vk::FormatFeatureFlags2::DISJOINT)
+                .features
+                .contains(TextureFormatFeatures::DISJOINT)
         {
             return Err(Error::Validation(
                 "DRM format modifier is not importable with DISJOINT plane memory".into(),
@@ -499,14 +493,8 @@ impl Backend {
     }
 }
 
-pub(super) const fn color_subresource_range() -> vk::ImageSubresourceRange {
-    vk::ImageSubresourceRange {
-        aspect_mask: vk::ImageAspectFlags::COLOR,
-        base_mip_level: 0,
-        level_count: 1,
-        base_array_layer: 0,
-        layer_count: 1,
-    }
+pub(super) const fn color_subresource_range() -> TextureSubresourceRange {
+    TextureSubresourceRange::full_color(1, 1)
 }
 
 pub(super) fn choose_import_memory_type(
@@ -626,7 +614,7 @@ fn query_modifier_capabilities(
         capabilities.push(DrmFormatModifierCapability {
             modifier: modifier.drm_format_modifier,
             plane_count: modifier.drm_format_modifier_plane_count,
-            tiling_features: modifier.drm_format_modifier_tiling_features,
+            features: TextureFormatFeatures::from_vk(modifier.drm_format_modifier_tiling_features),
             importable: compatible
                 && external
                     .external_memory_features
@@ -648,18 +636,15 @@ mod tests {
     fn descriptor() -> DmaBufImageDescriptor {
         DmaBufImageDescriptor {
             label: None,
-            format: vk::Format::B8G8R8A8_UNORM,
-            extent: vk::Extent2D {
-                width: 128,
-                height: 72,
-            },
+            format: TextureFormat::Bgra8Unorm,
+            extent: Extent2D::new(128, 72),
             modifier: 9,
             planes: vec![DmaBufPlaneLayout {
                 offset: 0,
                 row_pitch: 512,
             }],
-            usage: vk::ImageUsageFlags::SAMPLED,
-            components: vk::ComponentMapping::default(),
+            usage: TextureUsages::SAMPLED,
+            components: ComponentMapping::default(),
         }
     }
 

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use vulkanalia::{
-    Device, Entry, Version,
+    Device, Entry,
     loader::{LIBRARY, LibloadingLoader},
     prelude::v1_4::*,
     vk,
@@ -19,7 +19,7 @@ use crate::frame::FrameToken;
 use crate::memory::MemoryTypeInfo;
 use crate::queue::{QueueFamilyInfo, QueuePlan};
 use crate::video::{VideoDecodeCodecs, VideoDecodeDevice, VideoDecodeRequirements};
-use crate::{Error, Result};
+use crate::{ApiVersion, DeviceType, Error, Result};
 
 mod device;
 mod owner;
@@ -86,8 +86,8 @@ impl Default for BackendConfig {
 pub struct DeviceInfo {
     pub ordinal: usize,
     pub name: String,
-    pub api_version: Version,
-    pub device_type: vk::PhysicalDeviceType,
+    pub api_version: ApiVersion,
+    pub device_type: DeviceType,
     pub vendor_id: u32,
     pub device_id: u32,
     pub driver_version: u32,
@@ -178,10 +178,10 @@ pub struct Queue {
 
 #[derive(Clone, Copy, Debug)]
 pub struct SemaphoreWait {
-    pub semaphore: vk::Semaphore,
+    pub(crate) semaphore: vk::Semaphore,
     /// Zero for a binary semaphore, otherwise the required timeline value.
-    pub value: u64,
-    pub stages: vk::PipelineStageFlags2,
+    pub(crate) value: u64,
+    pub(crate) stages: vk::PipelineStageFlags2,
 }
 
 pub struct Backend {
@@ -216,9 +216,11 @@ impl Backend {
         }
         config.required_features = config.required_features.with_dependencies();
         let entry = load_entry()?;
-        let loader_version = entry
-            .version()
-            .map_err(|source| Error::vulkan("vkEnumerateInstanceVersion", source))?;
+        let loader_version = ApiVersion::from_vk(
+            entry
+                .version()
+                .map_err(|source| Error::vulkan("vkEnumerateInstanceVersion", source))?,
+        );
         let required_version = config.profile.required_api_version();
         if loader_version < required_version {
             return Err(Error::LoaderVersion {
@@ -485,7 +487,7 @@ pub(crate) fn load_entry() -> Result<Entry> {
 
 pub(crate) fn create_instance(
     entry: Entry,
-    api_version: Version,
+    api_version: ApiVersion,
     extension_names: &[String],
 ) -> Result<Arc<InstanceOwner>> {
     let extension_names = c_strings(extension_names)?;
@@ -496,7 +498,7 @@ pub(crate) fn create_instance(
     let application = vk::ApplicationInfo::builder()
         .application_name(b"vulkan-renderer\0")
         .engine_name(b"vulkan-renderer\0")
-        .api_version(api_version.into());
+        .api_version(api_version.to_raw());
     let info = vk::InstanceCreateInfo::builder()
         .application_info(&application)
         .enabled_extension_names(&extension_pointers);
@@ -704,17 +706,17 @@ fn c_strings(names: &[String]) -> Result<Vec<CString>> {
         .collect()
 }
 
-fn device_rank(preference: DevicePreference, device_type: vk::PhysicalDeviceType) -> u8 {
-    let discrete = device_type == vk::PhysicalDeviceType::DISCRETE_GPU;
-    let integrated = device_type == vk::PhysicalDeviceType::INTEGRATED_GPU;
+fn device_rank(preference: DevicePreference, device_type: DeviceType) -> u8 {
+    let discrete = device_type == DeviceType::Discrete;
+    let integrated = device_type == DeviceType::Integrated;
     match preference {
         DevicePreference::Discrete if discrete => 0,
         DevicePreference::Discrete if integrated => 1,
         DevicePreference::Integrated if integrated => 0,
         DevicePreference::Integrated if discrete => 1,
         DevicePreference::Any if discrete || integrated => 0,
-        _ if device_type == vk::PhysicalDeviceType::VIRTUAL_GPU => 2,
-        _ if device_type == vk::PhysicalDeviceType::CPU => 4,
+        _ if device_type == DeviceType::Virtual => 2,
+        _ if device_type == DeviceType::Cpu => 4,
         _ => 3,
     }
 }

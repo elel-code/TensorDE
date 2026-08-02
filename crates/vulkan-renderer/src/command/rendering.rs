@@ -78,7 +78,7 @@ impl ImportedDmaBufImage {
         AttachmentView {
             owner: self.owner(),
             raw: self.view(),
-            format: self.format(),
+            format: self.format().to_vk(),
             sample_count: vk::SampleCountFlags::_1,
         }
     }
@@ -90,7 +90,7 @@ impl ExportedDmaBufImage {
         AttachmentView {
             owner: self.owner(),
             raw: self.view(),
-            format: self.format(),
+            format: self.format().to_vk(),
             sample_count: vk::SampleCountFlags::_1,
         }
     }

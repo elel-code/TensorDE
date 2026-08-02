@@ -27,7 +27,7 @@ fn prepared_client(descriptor_index: u32) -> PreparedDraw {
             uv_origin_axis_x: [0.0; 4],
             uv_axis_y_surface_size: [0.0; 4],
         },
-        scissor: vk::Rect2D::default(),
+        scissor: RendererRect2D::default(),
     }
 }
 
@@ -39,7 +39,7 @@ fn prepared_ring() -> PreparedFocusRingDraw {
             inner_rect: [0.0; 4],
             shape: [0.0; 4],
         },
-        scissor: vk::Rect2D::default(),
+        scissor: RendererRect2D::default(),
     }
 }
 

@@ -9,10 +9,10 @@ use std::{
 
 use tensor_host::Fourcc;
 use tracing::{debug, info};
-use vulkan_renderer::vulkanalia::{Version, vk};
 use vulkan_renderer::{
-    BackendProfile, DeviceDescriptor, Features, Instance as RendererInstance, InstanceDescriptor,
-    Limits, ROADMAP_2026_API_VERSION, TextureFormat,
+    ApiVersion, BackendProfile, DeviceDescriptor, DeviceType, Features,
+    Instance as RendererInstance, InstanceDescriptor, Limits, ROADMAP_2026_API_VERSION,
+    TextureFormat, TextureUsages,
 };
 #[cfg(feature = "tty")]
 use vulkan_renderer::{
@@ -59,15 +59,15 @@ const DESCRIPTOR_HEAP_BYTES: u64 = 16 * 1024 * 1024;
 #[cfg(feature = "tty")]
 const MAX_PENDING_SYNC_FDS_PER_OUTPUT: usize = 3;
 
-const OUTPUT_FORMATS: &[(Fourcc, vk::Format)] = &[
-    (Fourcc::XRGB8888, vk::Format::B8G8R8A8_SRGB),
-    (Fourcc::ARGB8888, vk::Format::B8G8R8A8_SRGB),
-    (Fourcc::XBGR8888, vk::Format::R8G8B8A8_SRGB),
-    (Fourcc::ABGR8888, vk::Format::R8G8B8A8_SRGB),
-    (Fourcc::XRGB2101010, vk::Format::A2R10G10B10_UNORM_PACK32),
-    (Fourcc::ARGB2101010, vk::Format::A2R10G10B10_UNORM_PACK32),
-    (Fourcc::XBGR2101010, vk::Format::A2B10G10R10_UNORM_PACK32),
-    (Fourcc::ABGR2101010, vk::Format::A2B10G10R10_UNORM_PACK32),
+const OUTPUT_FORMATS: &[(Fourcc, TextureFormat)] = &[
+    (Fourcc::XRGB8888, TextureFormat::Bgra8Srgb),
+    (Fourcc::ARGB8888, TextureFormat::Bgra8Srgb),
+    (Fourcc::XBGR8888, TextureFormat::Rgba8Srgb),
+    (Fourcc::ABGR8888, TextureFormat::Rgba8Srgb),
+    (Fourcc::XRGB2101010, TextureFormat::A2R10G10B10UnormPack32),
+    (Fourcc::ARGB2101010, TextureFormat::A2R10G10B10UnormPack32),
+    (Fourcc::XBGR2101010, TextureFormat::A2B10G10R10UnormPack32),
+    (Fourcc::ABGR2101010, TextureFormat::A2B10G10R10UnormPack32),
 ];
 
 pub(crate) struct VulkanRenderer {
@@ -89,8 +89,8 @@ pub(crate) struct VulkanRenderer {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SelectedDevice {
     pub(crate) name: String,
-    pub(crate) api_version: Version,
-    pub(crate) device_type: vk::PhysicalDeviceType,
+    pub(crate) api_version: ApiVersion,
+    pub(crate) device_type: DeviceType,
     pub(crate) graphics_queue_family: u32,
     pub(crate) primary_node: DrmNodeId,
     pub(crate) render_node: DrmNodeId,
@@ -734,28 +734,17 @@ fn client_image_allocator_config() -> MemoryAllocatorConfig {
     }
 }
 
-fn native_image_usage() -> vk::ImageUsageFlags {
-    vk::ImageUsageFlags::COLOR_ATTACHMENT
-        | vk::ImageUsageFlags::SAMPLED
-        | vk::ImageUsageFlags::TRANSFER_SRC
-        | vk::ImageUsageFlags::TRANSFER_DST
-}
-
-#[cfg(feature = "tty")]
-fn vulkan_format_for_fourcc(fourcc: Fourcc) -> Option<vk::Format> {
-    OUTPUT_FORMATS
-        .iter()
-        .find_map(|(candidate, format)| (*candidate == fourcc).then_some(*format))
+fn native_image_usage() -> TextureUsages {
+    TextureUsages::COLOR_ATTACHMENT
+        | TextureUsages::SAMPLED
+        | TextureUsages::COPY_SOURCE
+        | TextureUsages::COPY_DESTINATION
 }
 
 fn texture_format_for_fourcc(fourcc: Fourcc) -> Option<TextureFormat> {
-    match fourcc {
-        Fourcc::XRGB8888 | Fourcc::ARGB8888 => Some(TextureFormat::Bgra8Srgb),
-        Fourcc::XBGR8888 | Fourcc::ABGR8888 => Some(TextureFormat::Rgba8Srgb),
-        Fourcc::XRGB2101010 | Fourcc::ARGB2101010 => Some(TextureFormat::A2R10G10B10UnormPack32),
-        Fourcc::XBGR2101010 | Fourcc::ABGR2101010 => Some(TextureFormat::A2B10G10R10UnormPack32),
-        _ => None,
-    }
+    OUTPUT_FORMATS
+        .iter()
+        .find_map(|(candidate, format)| (*candidate == fourcc).then_some(*format))
 }
 
 #[cfg(all(test, feature = "tty"))]

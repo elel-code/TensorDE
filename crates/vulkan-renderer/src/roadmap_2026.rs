@@ -3,7 +3,6 @@
 //! The source contract is Khronos' `VP_KHR_roadmap.json`, profile version 1,
 //! API version 1.4.328, revision 11 dated 2026-01-28.
 
-use vulkanalia::Version;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
@@ -13,8 +12,6 @@ use extension_requirements::{
     ROADMAP_2026_REQUIRED_DEVICE_EXTENSIONS, extension_available,
     query_roadmap_2026_extension_features,
 };
-
-pub(crate) const ROADMAP_2026_API_VERSION: Version = Version::new(1, 4, 328);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Roadmap2026CoreRequirementProbe {
@@ -42,7 +39,7 @@ impl Roadmap2026DeviceRequirementProbe {
 }
 
 pub(crate) fn roadmap_2026_api_version_ready(api_version: u32) -> bool {
-    api_version >= u32::from(ROADMAP_2026_API_VERSION)
+    api_version >= crate::ROADMAP_2026_API_VERSION.to_raw()
 }
 
 pub(crate) fn query_roadmap_2026_device_requirements(

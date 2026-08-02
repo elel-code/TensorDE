@@ -168,20 +168,20 @@ pub struct SampledImageBinding {
 }
 
 impl SampledImageBinding {
-    /// Backend-neutral sampled-image descriptor entry point.
-    pub fn new_typed(
-        resource_heap: &DescriptorHeap,
-        view: &ImageView,
-        layout: crate::TextureLayout,
-    ) -> Result<Self> {
-        Self::new(resource_heap, view, layout.to_vk())
-    }
-
-    /// Allocates and writes one `SAMPLED_IMAGE` descriptor.
+    /// Allocates and writes one typed `SAMPLED_IMAGE` descriptor.
     ///
     /// `layout` must match the image state at shader access time. The view and
     /// its parent image must remain alive through the last submitted use.
     pub fn new(
+        resource_heap: &DescriptorHeap,
+        view: &ImageView,
+        layout: crate::TextureLayout,
+    ) -> Result<Self> {
+        validate_resource_heap_and_view(resource_heap, view)?;
+        Self::new_with_view_create_info(resource_heap, &view.create_info(), layout.to_vk())
+    }
+
+    pub(crate) fn new_raw(
         resource_heap: &DescriptorHeap,
         view: &ImageView,
         layout: vk::ImageLayout,
@@ -199,10 +199,10 @@ impl SampledImageBinding {
     pub fn new_imported_dma_buf(
         resource_heap: &DescriptorHeap,
         image: &ImportedDmaBufImage,
-        layout: vk::ImageLayout,
+        layout: crate::TextureLayout,
     ) -> Result<Self> {
         validate_resource_heap_and_owner(resource_heap, image.owner())?;
-        Self::new_with_view_create_info(resource_heap, &image.view_create_info(), layout)
+        Self::new_with_view_create_info(resource_heap, &image.view_create_info(), layout.to_vk())
     }
 
     /// Allocates and writes a sampled-image descriptor for an exportable
@@ -214,10 +214,10 @@ impl SampledImageBinding {
     pub fn new_exported_dma_buf(
         resource_heap: &DescriptorHeap,
         image: &ExportedDmaBufImage,
-        layout: vk::ImageLayout,
+        layout: crate::TextureLayout,
     ) -> Result<Self> {
         validate_resource_heap_and_owner(resource_heap, image.owner())?;
-        Self::new_with_view_create_info(resource_heap, &image.view_create_info(), layout)
+        Self::new_with_view_create_info(resource_heap, &image.view_create_info(), layout.to_vk())
     }
 
     fn new_with_view_create_info(
@@ -403,17 +403,6 @@ pub struct SampledTextureBinding {
 }
 
 impl SampledTextureBinding {
-    /// Typed layout variant for renderer-owned image views.
-    pub fn new_typed(
-        resource_heap: &DescriptorHeap,
-        sampler_heap: &DescriptorHeap,
-        view: &ImageView,
-        layout: crate::TextureLayout,
-        sampler: SamplerDescriptor,
-    ) -> Result<Self> {
-        Self::new(resource_heap, sampler_heap, view, layout.to_vk(), sampler)
-    }
-
     /// Allocates and writes descriptors for one renderer-owned image view and
     /// one sampler.
     ///
@@ -429,13 +418,21 @@ impl SampledTextureBinding {
         resource_heap: &DescriptorHeap,
         sampler_heap: &DescriptorHeap,
         view: &ImageView,
-        layout: vk::ImageLayout,
+        layout: crate::TextureLayout,
         sampler: SamplerDescriptor,
     ) -> Result<Self> {
         let sampler_info = sampler.to_vk()?;
         // SAFETY: `SamplerDescriptor` constructs a self-contained,
         // validated VkSamplerCreateInfo with no pNext chain.
-        unsafe { Self::new_raw(resource_heap, sampler_heap, view, layout, &sampler_info) }
+        unsafe {
+            Self::new_raw(
+                resource_heap,
+                sampler_heap,
+                view,
+                layout.to_vk(),
+                &sampler_info,
+            )
+        }
     }
 
     /// Raw interoperability variant of [`Self::new`].
@@ -455,7 +452,7 @@ impl SampledTextureBinding {
         sampler: &vk::SamplerCreateInfo,
     ) -> Result<Self> {
         validate_heaps_and_view(resource_heap, sampler_heap, view)?;
-        let image = SampledImageBinding::new(resource_heap, view, layout)?;
+        let image = SampledImageBinding::new_raw(resource_heap, view, layout)?;
         let sampler_allocation = match unsafe { SamplerBinding::new_raw(sampler_heap, sampler) } {
             Ok(allocation) => allocation,
             Err(error) => {

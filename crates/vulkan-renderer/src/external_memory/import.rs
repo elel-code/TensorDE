@@ -23,9 +23,9 @@ pub(super) fn finish_imported_image(
     let view_info = vk::ImageViewCreateInfo::builder()
         .image(image)
         .view_type(vk::ImageViewType::_2D)
-        .format(descriptor.format)
-        .components(descriptor.components)
-        .subresource_range(color_subresource_range());
+        .format(descriptor.format.to_vk())
+        .components(descriptor.components.to_vk())
+        .subresource_range(color_subresource_range().to_vk());
     let view = match unsafe { owner.device.create_image_view(&view_info, None) } {
         Ok(view) => view,
         Err(source) => {
@@ -82,7 +82,7 @@ pub(super) fn create_import_image(
             vk::ImageCreateFlags::empty()
         })
         .image_type(vk::ImageType::_2D)
-        .format(descriptor.format)
+        .format(descriptor.format.to_vk())
         .extent(vk::Extent3D {
             width: descriptor.extent.width,
             height: descriptor.extent.height,
@@ -92,7 +92,7 @@ pub(super) fn create_import_image(
         .array_layers(1)
         .samples(vk::SampleCountFlags::_1)
         .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
-        .usage(descriptor.usage)
+        .usage(descriptor.usage.to_vk())
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED)
         .push_next(&mut modifier)

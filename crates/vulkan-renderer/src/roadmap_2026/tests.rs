@@ -1,14 +1,15 @@
 use super::*;
+use crate::ApiVersion;
 
 #[test]
 fn roadmap_2026_api_floor_is_the_profile_version_not_vulkan_1_4_zero() {
-    assert!(!roadmap_2026_api_version_ready(u32::from(Version::V1_4_0)));
-    assert!(!roadmap_2026_api_version_ready(u32::from(Version::new(
-        1, 4, 327
-    ))));
-    assert!(roadmap_2026_api_version_ready(u32::from(
-        ROADMAP_2026_API_VERSION
-    )));
+    assert!(!roadmap_2026_api_version_ready(ApiVersion::V1_4_0.to_raw()));
+    assert!(!roadmap_2026_api_version_ready(
+        ApiVersion::new(1, 4, 327).to_raw()
+    ));
+    assert!(roadmap_2026_api_version_ready(
+        crate::ROADMAP_2026_API_VERSION.to_raw()
+    ));
 }
 
 #[test]

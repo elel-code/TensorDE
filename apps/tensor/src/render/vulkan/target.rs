@@ -3,7 +3,8 @@ use std::{collections::BTreeMap, sync::Arc};
 use tensor_host::Fourcc;
 use thiserror::Error;
 use vulkan_renderer::{
-    Device, DmaBufExportDescriptor, ExportedDmaBufImage, SampledImageDescriptor, TextureFormat, vk,
+    ComponentMapping, Device, DmaBufExportDescriptor, ExportedDmaBufImage, Extent2D,
+    SampledImageDescriptor, TextureFormat,
 };
 
 use crate::render::{
@@ -11,7 +12,7 @@ use crate::render::{
     RenderOutputId,
 };
 
-use super::{native_image_usage, texture_format_for_fourcc, vulkan_format_for_fourcc};
+use super::{native_image_usage, texture_format_for_fourcc};
 
 const OUTPUT_IMAGE_COUNT: usize = 3;
 const CURSOR_IMAGE_COUNT: usize = 3;
@@ -321,20 +322,15 @@ impl NativeOutputImage {
     ) -> Result<Self, NativeImageError> {
         let fourcc = target.format.format.code;
         let format =
-            vulkan_format_for_fourcc(fourcc).ok_or(NativeImageError::UnsupportedFourcc(fourcc))?;
-        let texture_format =
             texture_format_for_fourcc(fourcc).ok_or(NativeImageError::UnsupportedFourcc(fourcc))?;
         let image = device
             .create_exportable_dma_buf_image(&DmaBufExportDescriptor {
                 label: Some("tensor-native-output".into()),
                 format,
-                extent: vk::Extent2D {
-                    width: target.size.width,
-                    height: target.size.height,
-                },
+                extent: Extent2D::new(target.size.width, target.size.height),
                 modifiers: vec![target.format.format.modifier.raw()],
                 usage: native_image_usage(),
-                components: vk::ComponentMapping::default(),
+                components: ComponentMapping::IDENTITY,
             })
             .map_err(|source| NativeImageError::Create(source.to_string()))?;
         let expected_plane_count = usize::try_from(target.format.plane_count)
@@ -376,7 +372,7 @@ impl NativeOutputImage {
                 planes,
             },
             image,
-            format: texture_format,
+            format,
             foreign_owned: false,
         })
     }

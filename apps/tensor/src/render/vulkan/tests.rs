@@ -2,29 +2,12 @@ use super::*;
 
 #[test]
 fn typed_client_pipeline_formats_match_native_output_images() {
-    for (fourcc, raw, typed) in [
-        (
-            Fourcc::XRGB8888,
-            vk::Format::B8G8R8A8_SRGB,
-            TextureFormat::Bgra8Srgb,
-        ),
-        (
-            Fourcc::XBGR8888,
-            vk::Format::R8G8B8A8_SRGB,
-            TextureFormat::Rgba8Srgb,
-        ),
-        (
-            Fourcc::XRGB2101010,
-            vk::Format::A2R10G10B10_UNORM_PACK32,
-            TextureFormat::A2R10G10B10UnormPack32,
-        ),
-        (
-            Fourcc::XBGR2101010,
-            vk::Format::A2B10G10R10_UNORM_PACK32,
-            TextureFormat::A2B10G10R10UnormPack32,
-        ),
+    for (fourcc, typed) in [
+        (Fourcc::XRGB8888, TextureFormat::Bgra8Srgb),
+        (Fourcc::XBGR8888, TextureFormat::Rgba8Srgb),
+        (Fourcc::XRGB2101010, TextureFormat::A2R10G10B10UnormPack32),
+        (Fourcc::XBGR2101010, TextureFormat::A2B10G10R10UnormPack32),
     ] {
-        assert_eq!(vulkan_format_for_fourcc(fourcc), Some(raw));
         assert_eq!(texture_format_for_fourcc(fourcc), Some(typed));
     }
 }

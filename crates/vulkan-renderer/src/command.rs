@@ -297,7 +297,11 @@ impl CommandEncoder {
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .image(image.raw())
-            .subresource_range(image.full_subresource_range(vk::ImageAspectFlags::COLOR))
+            .subresource_range(
+                image
+                    .full_subresource_range(crate::TextureAspects::COLOR)
+                    .to_vk(),
+            )
             .build();
         unsafe {
             self.owner.device.cmd_pipeline_barrier2(

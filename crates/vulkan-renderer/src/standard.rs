@@ -17,8 +17,8 @@ use crate::backend::{
     validate_no_untyped_video_extensions,
 };
 use crate::{
-    BackendProfile, Error, Features, Limits, MemoryTypeSelector, Result, Surface,
-    SurfaceCapabilities, SurfacePresentCapabilities, VideoDecodeRequirements,
+    ApiVersion, BackendProfile, DeviceType, Error, Features, Limits, MemoryTypeSelector, Result,
+    Surface, SurfaceCapabilities, SurfacePresentCapabilities, VideoDecodeRequirements,
 };
 
 /// Describes loader/instance creation and the capability profile shared by all
@@ -154,9 +154,11 @@ impl Instance {
     /// extension requirements.
     pub fn new(descriptor: InstanceDescriptor) -> Result<Self> {
         let entry = load_entry()?;
-        let found = entry
-            .version()
-            .map_err(|source| Error::vulkan("vkEnumerateInstanceVersion", source))?;
+        let found = ApiVersion::from_vk(
+            entry
+                .version()
+                .map_err(|source| Error::vulkan("vkEnumerateInstanceVersion", source))?,
+        );
         let required = descriptor.profile.required_api_version();
         if found < required {
             return Err(Error::LoaderVersion { required, found });
@@ -192,8 +194,7 @@ impl Instance {
     pub fn request_adapter(&self, options: RequestAdapterOptions<'_>) -> Result<Adapter> {
         let mut candidates = probe_devices(&self.owner.instance)?;
         if options.force_fallback_adapter {
-            candidates
-                .retain(|candidate| candidate.info.device_type == vk::PhysicalDeviceType::CPU);
+            candidates.retain(|candidate| candidate.info.device_type == DeviceType::Cpu);
         }
         if candidates.is_empty() {
             return Err(Error::NoPhysicalDevice);

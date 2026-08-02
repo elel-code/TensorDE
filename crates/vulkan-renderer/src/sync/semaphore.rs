@@ -8,7 +8,7 @@ use vulkanalia::{
 };
 
 use crate::backend::DeviceOwner;
-use crate::{Backend, Error, Result, SemaphoreWait};
+use crate::{Backend, Error, PipelineStages, Result, SemaphoreWait};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BinarySemaphoreDescriptor {
@@ -32,7 +32,7 @@ impl BinarySemaphore {
         self.label.as_deref()
     }
 
-    pub fn wait(&self, stages: vk::PipelineStageFlags2) -> Result<SemaphoreWait> {
+    pub fn wait(&self, stages: PipelineStages) -> Result<SemaphoreWait> {
         if stages.is_empty() {
             return Err(Error::Validation(
                 "binary semaphore wait stage mask must be non-empty".into(),
@@ -41,7 +41,7 @@ impl BinarySemaphore {
         Ok(SemaphoreWait {
             semaphore: self.raw,
             value: 0,
-            stages,
+            stages: stages.to_vk(),
         })
     }
 

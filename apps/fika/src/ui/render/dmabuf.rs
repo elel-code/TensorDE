@@ -16,35 +16,27 @@ pub(crate) fn vulkan_format_for_fourcc(
     code: u32,
 ) -> Option<(
     vulkan_renderer::TextureFormat,
-    vulkan_renderer::vk::Format,
-    vulkan_renderer::vk::ComponentMapping,
+    vulkan_renderer::ComponentMapping,
 )> {
-    use vulkan_renderer::vk;
+    use vulkan_renderer::{ComponentMapping, ComponentSwizzle, TextureFormat};
 
     let alpha = if matches!(code, fourcc::XRGB8888 | fourcc::XBGR8888) {
-        vk::ComponentSwizzle::ONE
+        ComponentSwizzle::One
     } else {
-        vk::ComponentSwizzle::A
+        ComponentSwizzle::Alpha
     };
-    let (typed_format, format) = match code {
-        fourcc::ARGB8888 | fourcc::XRGB8888 | fourcc::BGRA8888 => (
-            vulkan_renderer::TextureFormat::Bgra8Unorm,
-            vk::Format::B8G8R8A8_UNORM,
-        ),
-        fourcc::ABGR8888 | fourcc::XBGR8888 | fourcc::RGBA8888 => (
-            vulkan_renderer::TextureFormat::Rgba8Unorm,
-            vk::Format::R8G8B8A8_UNORM,
-        ),
+    let format = match code {
+        fourcc::ARGB8888 | fourcc::XRGB8888 | fourcc::BGRA8888 => TextureFormat::Bgra8Unorm,
+        fourcc::ABGR8888 | fourcc::XBGR8888 | fourcc::RGBA8888 => TextureFormat::Rgba8Unorm,
         _ => return None,
     };
     Some((
-        typed_format,
         format,
-        vk::ComponentMapping {
-            r: vk::ComponentSwizzle::R,
-            g: vk::ComponentSwizzle::G,
-            b: vk::ComponentSwizzle::B,
-            a: alpha,
+        ComponentMapping {
+            red: ComponentSwizzle::Red,
+            green: ComponentSwizzle::Green,
+            blue: ComponentSwizzle::Blue,
+            alpha,
         },
     ))
 }
@@ -91,13 +83,13 @@ pub(crate) fn vulkan_exportable_formats(
 ) -> Result<Vec<wayland_client_runtime::DmabufFormat>, String> {
     let mut formats = Vec::new();
     for &fourcc in VULKAN_FOURCC_PREFERENCE {
-        let Some((_, format, _)) = vulkan_format_for_fourcc(fourcc) else {
+        let Some((format, _)) = vulkan_format_for_fourcc(fourcc) else {
             continue;
         };
         let capabilities = device
             .drm_format_modifier_capabilities(
                 format,
-                vulkan_renderer::vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                vulkan_renderer::TextureUsages::COLOR_ATTACHMENT,
             )
             .map_err(|error| {
                 format!("query Vulkan dma-buf export modifiers for fourcc 0x{fourcc:08x}: {error}")

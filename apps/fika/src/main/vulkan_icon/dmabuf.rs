@@ -10,7 +10,7 @@ impl VulkanIconRenderer {
         let Some(source) = slot.dmabuf.take() else {
             return Ok(None);
         };
-        let Some((_, format, components)) =
+        let Some((format, components)) =
             crate::ui::render::dmabuf::vulkan_format_for_fourcc(source.fourcc)
         else {
             return Ok(None);
@@ -18,16 +18,13 @@ impl VulkanIconRenderer {
         let descriptor = DmaBufImageDescriptor {
             label: Some("fika-vulkan-imported-icon".into()),
             format,
-            extent: vk::Extent2D {
-                width: slot.width.max(1),
-                height: slot.height.max(1),
-            },
+            extent: Extent2D::new(slot.width.max(1), slot.height.max(1)),
             modifier: source.plane.modifier,
             planes: vec![DmaBufPlaneLayout {
                 offset: u64::from(source.plane.offset),
                 row_pitch: u64::from(source.plane.stride),
             }],
-            usage: vk::ImageUsageFlags::SAMPLED,
+            usage: TextureUsages::SAMPLED,
             components,
         };
         let imported = device
@@ -43,7 +40,7 @@ impl VulkanIconRenderer {
         let binding = SampledImageBinding::new_imported_dma_buf(
             &self.resource_heap,
             &imported,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            TextureLayout::ShaderReadOnly,
         )
         .map_err(|error| format!("create Vulkan imported icon descriptor: {error}"))?;
         Ok(Some(VulkanIconTexture {

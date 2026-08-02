@@ -2,18 +2,18 @@ use std::{collections::HashMap, os::fd::AsFd};
 
 use tensor_host::Fourcc;
 use thiserror::Error;
-use vulkan_renderer::vulkanalia::vk;
 use vulkan_renderer::{
-    Buffer, BufferDescriptor, BufferUsages, ColorBufferImageCopy, CommandEncoder,
-    Device as RendererDevice, DmaBufImageDescriptor, DmaBufPlaneLayout, Error as RendererError,
-    Extent2D, Extent3D, Image, ImageDescriptor, ImageDimension, ImageTiling, ImageView,
-    ImageViewDescriptor, ImportedDmaBufImage, MemoryAllocator, MemoryLocation, ResourceBinding,
-    SampleCount, SampledImageDescriptor, TextureUsages,
+    Buffer, BufferDescriptor, BufferUsages, ColorBufferImageCopy, CommandEncoder, ComponentMapping,
+    ComponentSwizzle, Device as RendererDevice, DmaBufImageDescriptor, DmaBufPlaneLayout,
+    Error as RendererError, Extent2D, Extent3D, Image, ImageDescriptor, ImageDimension,
+    ImageTiling, ImageView, ImageViewDescriptor, ImageViewDimension, ImportedDmaBufImage,
+    MemoryAllocator, MemoryLocation, ResourceBinding, SampleCount, SampledImageDescriptor,
+    TextureAspects, TextureUsages,
 };
 
 use crate::{ecs::SurfaceBufferId, render::Dmabuf};
 
-use super::{texture_format_for_fourcc, vulkan_format_for_fourcc};
+use super::texture_format_for_fourcc;
 
 /// Imported client images are kept separate from compositor-owned output images.
 /// The key is a compositor-assigned stable buffer identity, never a raw file
@@ -257,7 +257,7 @@ impl ImportedClientImage {
     ) -> Result<Self, ClientImportError> {
         let format = dmabuf.format;
         let host_code = format.code;
-        let vulkan_format = vulkan_format_for_fourcc(host_code)
+        let texture_format = texture_format_for_fourcc(host_code)
             .ok_or(ClientImportError::UnsupportedFourcc(host_code))?;
         let shape = validate_shape(dmabuf)?;
         let components = component_mapping(host_code);
@@ -266,17 +266,14 @@ impl ImportedClientImage {
             .import_dma_buf_image(
                 &DmaBufImageDescriptor {
                     label: Some("tensor-client-dmabuf".into()),
-                    format: vulkan_format,
-                    extent: vk::Extent2D {
-                        width: shape.width,
-                        height: shape.height,
-                    },
+                    format: texture_format,
+                    extent: Extent2D::new(shape.width, shape.height),
                     modifier: format.modifier.raw(),
                     planes: vec![DmaBufPlaneLayout {
                         offset: u64::from(shape.offset),
                         row_pitch: u64::from(shape.stride),
                     }],
-                    usage: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC,
+                    usage: TextureUsages::SAMPLED | TextureUsages::COPY_SOURCE,
                     components,
                 },
                 fd,
@@ -322,10 +319,10 @@ impl ImportedClientImage {
         let view = image
             .create_view(&ImageViewDescriptor {
                 label: Some("tensor-client-shm-view".into()),
-                view_type: vk::ImageViewType::_2D,
+                dimension: ImageViewDimension::D2,
                 format: texture_format,
                 components: component_mapping(format),
-                subresource_range: image.full_subresource_range(vk::ImageAspectFlags::COLOR),
+                subresource_range: image.full_subresource_range(TextureAspects::COLOR),
             })
             .map_err(|source| ClientImportError::SharedShm(source.to_string()))?;
         let staging_len = shm_staging_len(size)?;
@@ -390,15 +387,15 @@ impl ImportedClientImage {
     }
 }
 
-fn component_mapping(format: Fourcc) -> vk::ComponentMapping {
-    vk::ComponentMapping {
-        r: vk::ComponentSwizzle::IDENTITY,
-        g: vk::ComponentSwizzle::IDENTITY,
-        b: vk::ComponentSwizzle::IDENTITY,
-        a: if is_opaque(format) {
-            vk::ComponentSwizzle::ONE
+fn component_mapping(format: Fourcc) -> ComponentMapping {
+    ComponentMapping {
+        red: ComponentSwizzle::Identity,
+        green: ComponentSwizzle::Identity,
+        blue: ComponentSwizzle::Identity,
+        alpha: if is_opaque(format) {
+            ComponentSwizzle::One
         } else {
-            vk::ComponentSwizzle::IDENTITY
+            ComponentSwizzle::Identity
         },
     }
 }

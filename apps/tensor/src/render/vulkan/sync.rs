@@ -6,7 +6,8 @@ use std::{
 
 use thiserror::Error;
 use vulkan_renderer::{
-    BinarySemaphore, BinarySemaphoreDescriptor, Device as RendererDevice, SemaphoreWait, vk,
+    BinarySemaphore, BinarySemaphoreDescriptor, Device as RendererDevice, PipelineStages,
+    SemaphoreWait,
 };
 
 use crate::{ecs::SurfaceId, render::FrameSubmission};
@@ -74,7 +75,7 @@ impl ClientSyncManager {
             .filter_map(|surface| self.ledger.acquire(*surface))
             .map(|semaphore| {
                 semaphore
-                    .wait(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                    .wait(PipelineStages::FRAGMENT_SHADER)
                     .expect("fragment-shader binary semaphore waits are valid")
             })
             .collect()

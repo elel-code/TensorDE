@@ -81,10 +81,7 @@ impl FikaRenderer {
         })?;
         let result = self.gpu.render_exported_layers(
             plan,
-            vulkan_renderer::vk::Extent2D {
-                width: width.max(1),
-                height: height.max(1),
-            },
+            vulkan_renderer::Extent2D::new(width.max(1), height.max(1)),
             colors,
             NativeFrameLayers::default().as_refs(),
             icons,

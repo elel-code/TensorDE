@@ -47,13 +47,13 @@ pub(super) fn upload_rgba_pixels(
         uploads
             .write_image_data(
                 image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                TextureLayout::TransferDestination,
                 ImageUpload {
                     data_layout: ImageDataLayout::tightly_packed(extent, TexelBlockLayout::RGBA8)
                         .map_err(|error| format!("layout Vulkan RGBA upload: {error}"))?,
                     texel_block: TexelBlockLayout::RGBA8,
                     image_subresource: color_layers(),
-                    image_offset: vk::Offset3D::default(),
+                    image_offset: Origin3D::default(),
                     image_extent: extent,
                 },
                 pixels,
@@ -63,13 +63,8 @@ pub(super) fn upload_rgba_pixels(
     Ok(())
 }
 
-pub(super) const fn color_layers() -> vk::ImageSubresourceLayers {
-    vk::ImageSubresourceLayers {
-        aspect_mask: vk::ImageAspectFlags::COLOR,
-        mip_level: 0,
-        base_array_layer: 0,
-        layer_count: 1,
-    }
+pub(super) const fn color_layers() -> TextureSubresourceLayers {
+    TextureSubresourceLayers::color(0, 0, 1)
 }
 
 pub(super) fn descriptor_capacity(size: u64, alignment: u64, slots: u64) -> Result<u64, String> {
