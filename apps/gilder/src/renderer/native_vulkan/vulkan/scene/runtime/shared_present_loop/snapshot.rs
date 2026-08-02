@@ -9,6 +9,7 @@ use vulkan_renderer::{
 
 use super::{SharedFrameStats, SharedSceneGpuResources};
 use crate::engine::scene::semantic_world::SemanticFrameResolver;
+use crate::renderer::native_wayland::NativeWaylandSurfaceSnapshot;
 use super::super::frame_events::SceneRuntimeEventSources;
 use super::super::semantic_diagnostics::NativeVulkanSceneDescriptorHeapSnapshot;
 use super::super::{
@@ -20,6 +21,7 @@ use super::super::{
 
 pub(super) struct SharedSnapshotInputs<'a> {
     pub options: &'a NativeVulkanScenePresentOptions,
+    pub wayland_surface: NativeWaylandSurfaceSnapshot,
     pub bootstrap: &'a PresentationBootstrap,
     pub terminal: &'a FullscreenSampledSurfaceTerminal,
     pub scene: &'a SharedSceneGpuResources,
@@ -39,6 +41,7 @@ pub(super) fn build(
 ) -> Result<NativeVulkanScenePresentSnapshot, String> {
     let SharedSnapshotInputs {
         options,
+        wayland_surface,
         bootstrap,
         terminal,
         scene,
@@ -186,6 +189,7 @@ pub(super) fn build(
         present_delta_over_6250us_count: stats.present_delta_over_6250us_count,
         present_delta_over_8334us_count: stats.present_delta_over_8334us_count,
         clear_color: options.clear_color,
+        wayland_surface,
         selected_queue,
         device,
         swapchain,

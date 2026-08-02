@@ -352,8 +352,10 @@ pub(super) fn run(
         .wait_idle()
         .map_err(|error| format!("wait for shared scene shutdown: {error}"))?;
     let elapsed = started_at.elapsed();
+    let wayland_surface = host.snapshot();
     snapshot::build(snapshot::SharedSnapshotInputs {
         options: &options,
+        wayland_surface,
         bootstrap: &bootstrap,
         terminal: &terminal,
         scene: &scene,

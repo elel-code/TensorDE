@@ -8,7 +8,9 @@ use serde_json::{Map, Value};
 use crate::engine::scene::semantic_world::SemanticFrameResolver;
 use crate::engine::scene::{SceneScriptTarget, SceneStorage};
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
-use crate::renderer::native_wayland::NativeWaylandHostOptions;
+use crate::renderer::native_wayland::{
+    NativeWaylandHostOptions, NativeWaylandSurfaceSnapshot,
+};
 
 mod command_order;
 mod composite_scissor;
@@ -148,6 +150,10 @@ pub struct NativeVulkanScenePresentSnapshot {
     pub present_delta_over_6250us_count: u64,
     pub present_delta_over_8334us_count: u64,
     pub clear_color: NativeVulkanClearColor,
+    /// Final Wayland configure/fractional-scale facts for this presentation
+    /// run. `buffer_size` is the host-side physical pixel request that must
+    /// agree with `swapchain.extent` on Gilder's exact-extent path.
+    pub wayland_surface: NativeWaylandSurfaceSnapshot,
     pub selected_queue: NativeVulkanSceneQueueSnapshot,
     pub device: NativeVulkanSceneDeviceSnapshot,
     pub swapchain: NativeVulkanSceneSwapchainSnapshot,
