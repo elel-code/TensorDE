@@ -49,6 +49,21 @@ impl PresentationImageCount {
     }
 }
 
+/// How a presentation root resolves its requested physical surface extent.
+///
+/// This is deliberately a caller-selected policy: a renderer can require the
+/// exact pixel extent obtained from its host, or it can explicitly delegate
+/// that decision to the Vulkan surface capabilities.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PresentationExtentPolicy {
+    /// Reject a fixed surface extent or capability clamp that differs from
+    /// the requested physical buffer extent.
+    ExactRequested,
+    /// Accept the surface's fixed extent, or its capability-clamped dynamic
+    /// extent, as the selected presentation extent.
+    SurfaceManaged,
+}
+
 /// Ordered, typed swapchain configuration choices for one presentation root.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PresentationSurfaceConfigurationDescriptor {
@@ -60,6 +75,7 @@ pub struct PresentationSurfaceConfigurationDescriptor {
     /// transform preferences.
     pub prefer_current_transform: bool,
     pub pre_transforms: Vec<SurfaceTransform>,
+    pub extent_policy: PresentationExtentPolicy,
     pub image_count: PresentationImageCount,
 }
 
@@ -81,7 +97,7 @@ impl PresentationSurfaceConfigurationDescriptor {
             ));
         }
         let pre_transforms = self.preferred_transforms(capabilities.current_transform);
-        SurfaceConfiguration::choose(
+        let configuration = SurfaceConfiguration::choose(
             capabilities,
             features,
             SurfaceConfigurationRequest {
@@ -96,7 +112,21 @@ impl PresentationSurfaceConfigurationDescriptor {
                     .image_count
                     .resolve(capabilities.min_image_count, capabilities.max_image_count)?,
             },
-        )
+        )?;
+        if self.extent_policy == PresentationExtentPolicy::ExactRequested
+            && configuration.extent != requested_extent
+        {
+            let source = if capabilities.current_extent.is_some() {
+                "surface fixed extent"
+            } else {
+                "surface capability range"
+            };
+            return Err(Error::Validation(format!(
+                "presentation extent policy requires requested physical buffer {:?}, but {source} selected {:?}",
+                requested_extent, configuration.extent
+            )));
+        }
+        Ok(configuration)
     }
 
     fn preferred_transforms(&self, current: SurfaceTransform) -> Vec<SurfaceTransform> {
@@ -275,6 +305,59 @@ fn validate_descriptor(descriptor: &PresentationBootstrapDescriptor) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        ColorSpace, CompositeAlphaModes, SurfacePresentCapabilities, SurfaceTransforms,
+        TextureFormat,
+    };
+    use vulkanalia::vk;
+
+    fn capabilities() -> SurfaceCapabilities {
+        SurfaceCapabilities {
+            present_supported: true,
+            min_image_count: 2,
+            max_image_count: Some(4),
+            current_extent: None,
+            min_image_extent: Extent2D::new(16, 16),
+            max_image_extent: Extent2D::new(4096, 4096),
+            max_image_array_layers: 1,
+            supported_transforms: SurfaceTransforms::from_vk(
+                vk::SurfaceTransformFlagsKHR::IDENTITY,
+            ),
+            current_transform: SurfaceTransform::Identity,
+            supported_composite_alpha: CompositeAlphaModes::from_vk(
+                vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED,
+            ),
+            supported_usage: TextureUsages::COLOR_ATTACHMENT,
+            formats: vec![SurfaceFormat::new(
+                TextureFormat::Bgra8Unorm,
+                ColorSpace::SrgbNonlinear,
+            )],
+            present_modes: SurfacePresentCapabilities::from_vk(&[
+                vk::PresentModeKHR::FIFO,
+                vk::PresentModeKHR::FIFO_LATEST_READY,
+            ]),
+            present_id2_supported: true,
+            present_wait2_supported: true,
+        }
+    }
+
+    fn descriptor(
+        extent_policy: PresentationExtentPolicy,
+    ) -> PresentationSurfaceConfigurationDescriptor {
+        PresentationSurfaceConfigurationDescriptor {
+            usage: TextureUsages::COLOR_ATTACHMENT,
+            formats: vec![SurfaceFormat::new(
+                TextureFormat::Bgra8Unorm,
+                ColorSpace::SrgbNonlinear,
+            )],
+            present_modes: vec![PresentMode::FifoLatestReady],
+            composite_alpha: vec![CompositeAlphaMode::PreMultiplied],
+            prefer_current_transform: true,
+            pre_transforms: vec![SurfaceTransform::Identity],
+            extent_policy,
+            image_count: PresentationImageCount::Exact(2),
+        }
+    }
 
     #[test]
     fn minimum_plus_image_count_clamps_to_surface_maximum() {
@@ -300,11 +383,61 @@ mod tests {
             composite_alpha: Vec::new(),
             prefer_current_transform: true,
             pre_transforms: vec![SurfaceTransform::Rotate90, SurfaceTransform::Identity],
+            extent_policy: PresentationExtentPolicy::ExactRequested,
             image_count: PresentationImageCount::Exact(2),
         };
         assert_eq!(
             descriptor.preferred_transforms(SurfaceTransform::Rotate90),
             vec![SurfaceTransform::Rotate90, SurfaceTransform::Identity]
         );
+    }
+
+    #[test]
+    fn exact_requested_extent_rejects_a_fixed_surface_extent() {
+        let mut capabilities = capabilities();
+        capabilities.current_extent = Some(Extent2D::new(2560, 1600));
+
+        let error = descriptor(PresentationExtentPolicy::ExactRequested)
+            .choose(
+                &capabilities,
+                Features::FIFO_LATEST_READY,
+                Extent2D::new(2561, 1600),
+            )
+            .expect_err("mismatched fixed extent must not silently alter the physical buffer");
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires requested physical buffer")
+        );
+    }
+
+    #[test]
+    fn surface_managed_extent_explicitly_accepts_a_fixed_surface_extent() {
+        let mut capabilities = capabilities();
+        capabilities.current_extent = Some(Extent2D::new(2560, 1600));
+
+        let configuration = descriptor(PresentationExtentPolicy::SurfaceManaged)
+            .choose(
+                &capabilities,
+                Features::FIFO_LATEST_READY,
+                Extent2D::new(2561, 1600),
+            )
+            .expect("surface-managed policy explicitly permits the fixed extent");
+
+        assert_eq!(configuration.extent, Extent2D::new(2560, 1600));
+    }
+
+    #[test]
+    fn exact_requested_extent_rejects_a_capability_clamp() {
+        let error = descriptor(PresentationExtentPolicy::ExactRequested)
+            .choose(
+                &capabilities(),
+                Features::FIFO_LATEST_READY,
+                Extent2D::new(8, 8192),
+            )
+            .expect_err("a capability clamp must remain visible to the caller");
+
+        assert!(error.to_string().contains("surface capability range"));
     }
 }

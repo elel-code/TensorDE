@@ -8,8 +8,8 @@ use adapter_policy::SharedAdapterPolicy;
 use vulkan_renderer::{
     BackendProfile, ColorSpace, CompositeAlphaMode, Extent2D, Features, PresentMode,
     PresentationAdapterRequest, PresentationBootstrapDescriptor, PresentationImageCount,
-    PresentationSurfaceConfigurationDescriptor, SampleCounts, SurfaceFormat, SurfaceTransform,
-    TextureFormat, TextureUsages, VideoDecodeRequirements,
+    PresentationExtentPolicy, PresentationSurfaceConfigurationDescriptor, SampleCounts, SurfaceFormat,
+    SurfaceTransform, TextureFormat, TextureUsages, VideoDecodeRequirements,
 };
 
 pub(in crate::renderer::native_vulkan) fn gilder_presentation_bootstrap_descriptor(
@@ -50,6 +50,10 @@ pub(in crate::renderer::native_vulkan) fn gilder_presentation_bootstrap_descript
             ],
             prefer_current_transform: true,
             pre_transforms: vec![SurfaceTransform::Identity],
+            // The Wayland host requested these fractional-scale buffer pixels.
+            // Any fixed surface extent or capability clamp that differs must
+            // be reported instead of silently changing SceneColor.
+            extent_policy: PresentationExtentPolicy::ExactRequested,
             image_count: PresentationImageCount::MinimumPlus(2),
         },
         pipeline_binary_cache_root: pipeline_binary_cache_root()?,

@@ -22,7 +22,7 @@ mod transaction;
 
 pub use bootstrap::{
     PresentationAdapterRequest, PresentationBootstrap, PresentationBootstrapDescriptor,
-    PresentationImageCount, PresentationSurfaceConfigurationDescriptor,
+    PresentationExtentPolicy, PresentationImageCount, PresentationSurfaceConfigurationDescriptor,
 };
 pub use offscreen::{
     DirectSurfaceBlocker, FrameTargetPreference, OffscreenColorTarget, OffscreenColorTargets,
