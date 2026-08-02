@@ -4,7 +4,7 @@ use super::*;
 use crate::engine::scene::{
     SceneBinaryDocument, SceneRenderPassKind, SceneRenderPassRecord, SceneRenderTargetKind,
     SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode,
-    SceneRenderingDeviceTargetAllocation, SceneShaderContractRecord,
+    SceneRenderingDeviceTargetAllocation, SceneShaderContractRecord, SceneTargetExtentDomain,
 };
 use vulkan_renderer::{BlendFactor, BlendOperation, ColorWrites, CullMode, Extent2D};
 
@@ -207,6 +207,7 @@ fn pipeline_indices_include_dynamic_rendering_target_format() {
         physical_slot: 3,
         width: 0,
         height: 0,
+        extent_domain: SceneTargetExtentDomain::PhysicalSurface,
     }];
     let target_plans = vec![SceneEffectTargetImagePlan {
         physical_slot: 3,
@@ -270,6 +271,7 @@ fn pipeline_indices_keep_scene_color_msaa_separate_from_single_sample_effect_tar
         physical_slot: 3,
         width: 0,
         height: 0,
+        extent_domain: SceneTargetExtentDomain::PhysicalSurface,
     }];
     let target_plans = vec![SceneEffectTargetImagePlan {
         physical_slot: 3,

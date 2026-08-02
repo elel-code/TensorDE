@@ -19,14 +19,22 @@ pub(super) fn target_spec(
         .map(|format| target_format(format, swapchain_format))
         .transpose()?
         .unwrap_or(swapchain_format);
-    // A non-zero authored allocation is already in the target's local domain.
-    // Replacing it with a projected screen AABB changes WE's multipass stream.
-    let (width, height) = if allocation.width != 0 && allocation.height != 0 {
-        (allocation.width, allocation.height)
-    } else {
-        image_target
+    let (width, height) = match allocation.extent_domain {
+        // The graph already resolved the owner dimensions and WE divisor on
+        // the cold path. A physical fallback here would silently collapse an
+        // authored target into the presentation domain.
+        SceneTargetExtentDomain::OwnerAuthored => {
+            if allocation.width == 0 || allocation.height == 0 {
+                return Err(format!(
+                    "owner-authored scene target graph {} {:?}:{:?} has no resolved extent",
+                    allocation.graph_index, allocation.target, allocation.target_name
+                ));
+            }
+            (allocation.width, allocation.height)
+        }
+        SceneTargetExtentDomain::PhysicalSurface => image_target
             .map(|target| scaled_extent(swapchain_extent, target))
-            .unwrap_or((swapchain_extent.width.max(1), swapchain_extent.height.max(1)))
+            .unwrap_or((swapchain_extent.width.max(1), swapchain_extent.height.max(1))),
     };
     Ok(SceneEffectTargetImagePlan {
         physical_slot: allocation.physical_slot,
@@ -197,15 +205,11 @@ pub(super) fn target_format(
 }
 
 pub(super) fn scaled_extent(extent: Extent2D, target: &SceneImageTargetRecord) -> (u32, u32) {
-    (
-        divided_axis(extent.width, target.width_divisor_milli),
-        divided_axis(extent.height, target.height_divisor_milli),
-    )
+    let [width, height] = target.scaled_extent([extent.width, extent.height]);
+    (width, height)
 }
 
 /// Matches WE's unsigned integer floor division for source-target scaling.
 pub(super) fn divided_axis(value: u32, divisor_milli: u32) -> u32 {
-    let numerator = u64::from(value.max(1)).saturating_mul(1_000);
-    let divisor = u64::from(divisor_milli.max(1));
-    ((numerator / divisor).min(u64::from(u32::MAX)) as u32).max(2)
+    scene_target_scaled_axis(value, divisor_milli)
 }

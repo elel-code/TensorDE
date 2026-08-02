@@ -530,9 +530,9 @@ struct TargetAllocationCompatibility {
     format: SceneStringId,
     width_divisor_milli: u32,
     height_divisor_milli: u32,
-    authored_width: u32,
-    authored_height: u32,
-    authored_texture_space: bool,
+    target_width: u32,
+    target_height: u32,
+    extent_domain: SceneTargetExtentDomain,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -609,8 +609,9 @@ fn graph_target_allocations(storage: &SceneStorage) -> Vec<SceneRenderingDeviceT
                 first_write_pass_id: state.first_write_pass_id,
                 last_use_pass_id: state.last_use_pass_id,
                 physical_slot: slot as u32,
-                width: compatibility.authored_width,
-                height: compatibility.authored_height,
+                width: compatibility.target_width,
+                height: compatibility.target_height,
+                extent_domain: compatibility.extent_domain,
             }
         })
         .collect()
@@ -623,9 +624,8 @@ fn target_allocations_are_compatible(
     left.format == right.format
         && left.width_divisor_milli == right.width_divisor_milli
         && left.height_divisor_milli == right.height_divisor_milli
-        && left.authored_texture_space == right.authored_texture_space
-        && (left.authored_width, left.authored_height)
-            == (right.authored_width, right.authored_height)
+        && left.extent_domain == right.extent_domain
+        && (left.target_width, left.target_height) == (right.target_width, right.target_height)
 }
 
 fn target_is_transient_aliasable(target: SceneRenderTargetKind) -> bool {
@@ -648,26 +648,24 @@ fn target_allocation_compatibility(
         state.target_name,
     )
     .unwrap_or([0, 0]);
-    storage
-        .document()
-        .image_targets
-        .iter()
-        .find(|target| target.role == state.target && target.name == state.target_name)
+    let image_target = image_target(storage, state.target, state.target_name);
+    let extent_domain = target_extent_domain(storage, state.target, state.target_name);
+    image_target
         .map(|target| TargetAllocationCompatibility {
             format: target.format,
             width_divisor_milli: target.width_divisor_milli.max(1),
             height_divisor_milli: target.height_divisor_milli.max(1),
-            authored_width: authored_extent[0],
-            authored_height: authored_extent[1],
-            authored_texture_space: authored_extent != [0, 0],
+            target_width: authored_extent[0],
+            target_height: authored_extent[1],
+            extent_domain,
         })
         .unwrap_or(TargetAllocationCompatibility {
             format: SceneStringId::NONE,
             width_divisor_milli: 1_000,
             height_divisor_milli: 1_000,
-            authored_width: authored_extent[0],
-            authored_height: authored_extent[1],
-            authored_texture_space: authored_extent != [0, 0],
+            target_width: authored_extent[0],
+            target_height: authored_extent[1],
+            extent_domain,
         })
 }
 
@@ -677,19 +675,43 @@ pub(super) fn authored_texture_space_target_extent(
     target: SceneRenderTargetKind,
     target_name: SceneStringId,
 ) -> Option<[u32; 2]> {
-    let image_layer_composite = target == SceneRenderTargetKind::FirstClassEffectTarget
-        && storage
-            .string(target_name)
-            .is_some_and(|name| name.starts_with("_rt_imageLayerComposite_"));
-    if matches!(
-        target,
-        SceneRenderTargetKind::ImageLocalMain | SceneRenderTargetKind::ImageLocalSub
-    ) || image_layer_composite
-    {
-        authored_graph_extent(storage, graph_index)
-    } else {
-        None
-    }
+    (target_extent_domain(storage, target, target_name) == SceneTargetExtentDomain::OwnerAuthored)
+        .then(|| {
+            let base = authored_graph_extent(storage, graph_index)?;
+            Some(
+                image_target(storage, target, target_name)
+                    .map(|target| target.scaled_extent(base))
+                    .unwrap_or(base),
+            )
+        })
+        .flatten()
+}
+
+fn image_target(
+    storage: &SceneStorage,
+    target: SceneRenderTargetKind,
+    target_name: SceneStringId,
+) -> Option<&SceneImageTargetRecord> {
+    storage
+        .document()
+        .image_targets
+        .iter()
+        .find(|record| record.role == target && record.name == target_name)
+}
+
+fn target_extent_domain(
+    storage: &SceneStorage,
+    target: SceneRenderTargetKind,
+    target_name: SceneStringId,
+) -> SceneTargetExtentDomain {
+    image_target(storage, target, target_name)
+        .map(|record| record.extent_domain)
+        .unwrap_or_else(|| match target {
+            SceneRenderTargetKind::ImageLocalMain | SceneRenderTargetKind::ImageLocalSub => {
+                SceneTargetExtentDomain::OwnerAuthored
+            }
+            _ => SceneTargetExtentDomain::PhysicalSurface,
+        })
 }
 
 fn authored_graph_extent(storage: &SceneStorage, graph_index: u32) -> Option<[u32; 2]> {

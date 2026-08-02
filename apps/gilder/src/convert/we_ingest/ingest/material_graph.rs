@@ -303,6 +303,11 @@ impl WeIrBuilder {
                 role: image_target_role(&name),
                 name,
                 format,
+                // WE's effect FBO factory stores the effect instance owner
+                // alongside the unscaled source dimensions, then applies the
+                // authored divisor. It is not a scene-surface target merely
+                // because its name begins with `_rt_`.
+                extent_domain: WeIrImageTargetExtentDomain::OwnerAuthored,
                 width_divisor_milli: scale_divisor_to_milli(scale),
                 height_divisor_milli: scale_divisor_to_milli(scale),
             });
@@ -610,6 +615,10 @@ impl WeIrBuilder {
                 name: FULL_FRAMEBUFFER_TARGET.to_owned(),
                 format: "rgba_backbuffer".to_owned(),
                 role: WeIrImageTargetRole::FirstClassEffectTarget,
+                // This target snapshots the current SceneColor and therefore
+                // follows the live physical scene surface, not the consumer
+                // object's authored extent.
+                extent_domain: WeIrImageTargetExtentDomain::PhysicalSurface,
                 width_divisor_milli: 1_000,
                 height_divisor_milli: 1_000,
             });

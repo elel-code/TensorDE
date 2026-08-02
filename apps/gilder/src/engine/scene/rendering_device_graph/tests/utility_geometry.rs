@@ -242,9 +242,92 @@ fn textureless_composite_layer_allocates_image_local_targets_at_authored_extent(
         },
     );
 
-    assert_eq!(compatibility.authored_width, 1760);
-    assert_eq!(compatibility.authored_height, 500);
-    assert!(compatibility.authored_texture_space);
+    assert_eq!(compatibility.target_width, 1760);
+    assert_eq!(compatibility.target_height, 500);
+    assert_eq!(
+        compatibility.extent_domain,
+        SceneTargetExtentDomain::OwnerAuthored
+    );
+}
+
+#[test]
+fn owner_authored_effect_fbo_scales_from_its_graph_owner_not_the_surface() {
+    let object = SceneObjectHandle(0);
+    let target_name = SceneStringId(0);
+    let document = SceneBinaryDocument {
+        strings: vec!["_rt_QuarterCompoBuffer1".to_owned(), "rgba8".to_owned()],
+        objects: vec![SceneObjectRecord {
+            id: object,
+            we_id: 384,
+            name: SceneStringId::NONE,
+            kind: SceneObjectKind::Image,
+            resource: SceneResourceId::NONE,
+            material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+            parent_we_id: INVALID_OBJECT_ID,
+            attachment: SceneStringId::NONE,
+            origin: SceneVec3::default(),
+            angles: SceneVec3::default(),
+            scale: SceneVec3::ONE,
+            camera_zoom: 1.0,
+            color: SceneVec3::ONE,
+            alpha: 1.0,
+            visible: true,
+            color_blend_mode: 0,
+            sort_order: 0,
+            effect_start: 0,
+            effect_count: 0,
+            render_graph: 0,
+        }],
+        meshes: vec![SceneMeshRecord {
+            object,
+            material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+            vertex_start: 0,
+            vertex_count: 0,
+            index_start: 0,
+            index_count: 0,
+            width: 3840.0,
+            height: 2160.0,
+            bounds_min: SceneVec3::default(),
+            bounds_max: SceneVec3::default(),
+        }],
+        render_graphs: vec![SceneRenderGraphRecord {
+            object,
+            activation_policy: SceneRenderGraphActivationPolicy::Always,
+            pass_start: 0,
+            pass_count: 0,
+            unsupported_start: 0,
+            unsupported_count: 0,
+        }],
+        image_targets: vec![SceneImageTargetRecord {
+            name: target_name,
+            role: SceneRenderTargetKind::FirstClassEffectTarget,
+            format: SceneStringId(1),
+            extent_domain: SceneTargetExtentDomain::OwnerAuthored,
+            width_divisor_milli: 4_000,
+            height_divisor_milli: 4_000,
+        }],
+        ..SceneBinaryDocument::default()
+    };
+    let storage = SceneStorage::from_document(document).expect("storage");
+    let compatibility = target_allocation_compatibility(
+        &storage,
+        TargetAllocationState {
+            graph_index: 0,
+            target: SceneRenderTargetKind::FirstClassEffectTarget,
+            target_name,
+            first_write_pass_id: 0,
+            last_use_pass_id: 0,
+            first_write_order: 0,
+            last_use_order: 0,
+        },
+    );
+
+    assert_eq!(compatibility.target_width, 960);
+    assert_eq!(compatibility.target_height, 540);
+    assert_eq!(
+        compatibility.extent_domain,
+        SceneTargetExtentDomain::OwnerAuthored
+    );
 }
 
 #[test]

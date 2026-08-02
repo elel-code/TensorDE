@@ -61,7 +61,8 @@ use crate::engine::scene::{
     SceneObjectHandle, SceneObjectKind, SceneObjectRecord, ScenePuppetBoneRecord,
     ScenePuppetRecord, SceneRenderBindingKind, SceneRenderBindingRecord, SceneRenderGraphRecord,
     SceneRenderPassRecord, SceneResourceId, SceneResourceKind, SceneResourceRecord,
-    SceneShaderContractRecord, SceneStringId, SceneTextureFormat, SceneTextureRecord, SceneVec3,
+    SceneShaderContractRecord, SceneStringId, SceneTargetExtentDomain, SceneTextureFormat,
+    SceneTextureRecord, SceneVec3,
 };
 
 #[test]
@@ -70,16 +71,16 @@ fn authored_targets_only_alias_images_with_identical_extents() {
         format: SceneStringId(3),
         width_divisor_milli: 1_000,
         height_divisor_milli: 1_000,
-        authored_width: 1_571,
-        authored_height: 2_621,
-        authored_texture_space: true,
+        target_width: 1_571,
+        target_height: 2_621,
+        extent_domain: SceneTargetExtentDomain::OwnerAuthored,
     };
     assert!(target_allocations_are_compatible(base, base));
     assert!(!target_allocations_are_compatible(
         base,
         TargetAllocationCompatibility {
-            authored_width: 2_318,
-            authored_height: 1_794,
+            target_width: 2_318,
+            target_height: 1_794,
             ..base
         }
     ));
@@ -522,6 +523,7 @@ fn rendering_device_graph_does_not_alias_incompatible_effect_target_images() {
                 name: SceneStringId(0),
                 role: SceneRenderTargetKind::NamedFbo,
                 format: SceneStringId(2),
+                extent_domain: SceneTargetExtentDomain::PhysicalSurface,
                 width_divisor_milli: 1_000,
                 height_divisor_milli: 1_000,
             },
@@ -529,6 +531,7 @@ fn rendering_device_graph_does_not_alias_incompatible_effect_target_images() {
                 name: SceneStringId(1),
                 role: SceneRenderTargetKind::NamedFbo,
                 format: SceneStringId(3),
+                extent_domain: SceneTargetExtentDomain::PhysicalSurface,
                 width_divisor_milli: 2_000,
                 height_divisor_milli: 2_000,
             },

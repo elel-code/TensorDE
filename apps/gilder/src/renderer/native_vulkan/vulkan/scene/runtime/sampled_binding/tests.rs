@@ -2,7 +2,7 @@ use super::*;
 use crate::engine::scene::{
     SceneBinaryDocument, SceneRenderBindingKind, SceneRenderingDeviceGraphPlan,
     SceneRenderingDeviceMaterialSampledBinding, SceneRenderingDevicePassNode,
-    SceneRenderingDeviceSampledBinding, SceneStorage,
+    SceneRenderingDeviceSampledBinding, SceneStorage, SceneTargetExtentDomain,
 };
 
 #[test]
@@ -215,8 +215,9 @@ fn sampled_binding_plan_follows_lowered_ping_pong_previous_targets() {
                 first_write_pass_id: 0,
                 last_use_pass_id: 3,
                 physical_slot: 0,
-                width: 0,
-                height: 0,
+                width: 64,
+                height: 64,
+                extent_domain: SceneTargetExtentDomain::OwnerAuthored,
             },
             SceneRenderingDeviceTargetAllocation {
                 graph_index: 0,
@@ -225,8 +226,9 @@ fn sampled_binding_plan_follows_lowered_ping_pong_previous_targets() {
                 first_write_pass_id: 1,
                 last_use_pass_id: 2,
                 physical_slot: 1,
-                width: 0,
-                height: 0,
+                width: 64,
+                height: 64,
+                extent_domain: SceneTargetExtentDomain::OwnerAuthored,
             },
         ],
         sampled_bindings: vec![
@@ -440,6 +442,7 @@ fn allocation(
         physical_slot,
         width: 0,
         height: 0,
+        extent_domain: SceneTargetExtentDomain::PhysicalSurface,
     }
 }
 

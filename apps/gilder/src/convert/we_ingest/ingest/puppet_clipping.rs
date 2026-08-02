@@ -7,8 +7,8 @@ use crate::convert::we_ingest::ir::{
 use crate::convert::we_ingest::shader_key::canonical_scene_shader_key;
 use crate::engine::render_graph::{
     ColorWriteMask, DepthTestMode, PassState, PipelineBlendMode, RenderGraph,
-    RenderPassDrawPrimitive, RenderPassNode, RenderPassRole, RenderTargetRole, RenderTargetSpec,
-    TextureBindingRole, UnsupportedGraphBoundary,
+    RenderPassDrawPrimitive, RenderPassNode, RenderPassRole, RenderTargetExtentDomain,
+    RenderTargetRole, RenderTargetSpec, TextureBindingRole, UnsupportedGraphBoundary,
 };
 use crate::engine::scene::abi::{SceneCullMode, SceneDepthTest, ScenePipelineBlend};
 
@@ -165,6 +165,9 @@ pub(super) fn apply_token_one_graph(
         role: RenderTargetRole::FirstClassEffectTarget,
         name: FULL_ALPHA_MASK.to_owned(),
         format: "r8".to_owned(),
+        // The clipping mesh is projected in the scene domain, so this
+        // generated mask follows the physical SceneColor extent.
+        extent_domain: RenderTargetExtentDomain::PhysicalSurface,
         width_divisor_milli: 2_000,
         height_divisor_milli: 2_000,
     });

@@ -217,7 +217,7 @@ mod tests {
     use crate::engine::scene::{
         RenderingServer, SceneBinaryDocument, SceneRenderTargetKind, SceneRenderingDeviceGraphPlan,
         SceneRenderingDevicePuppetBoneMatrix, SceneRenderingDeviceTargetAllocation,
-        SceneShaderContractRecord, SceneStorage, SceneStringId,
+        SceneShaderContractRecord, SceneStorage, SceneStringId, SceneTargetExtentDomain,
     };
 
     #[test]
@@ -298,6 +298,7 @@ mod tests {
                     physical_slot: 0,
                     width: 0,
                     height: 0,
+                    extent_domain: SceneTargetExtentDomain::PhysicalSurface,
                 },
                 SceneRenderingDeviceTargetAllocation {
                     graph_index: 0,
@@ -308,6 +309,7 @@ mod tests {
                     physical_slot: 0,
                     width: 0,
                     height: 0,
+                    extent_domain: SceneTargetExtentDomain::PhysicalSurface,
                 },
             ],
             graph_physical_target_count: 1,

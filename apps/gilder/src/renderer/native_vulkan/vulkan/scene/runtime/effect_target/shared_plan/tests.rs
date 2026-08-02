@@ -194,6 +194,7 @@ fn allocation(
         physical_slot,
         width: 0,
         height: 0,
+        extent_domain: SceneTargetExtentDomain::PhysicalSurface,
     }
 }
 

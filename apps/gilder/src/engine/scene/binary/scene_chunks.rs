@@ -688,6 +688,7 @@ pub(super) fn encode_image_targets(targets: &[SceneImageTargetRecord]) -> Vec<u8
         put_string_id(&mut out, record.name);
         put_u32(&mut out, record.role.to_u32());
         put_string_id(&mut out, record.format);
+        put_u32(&mut out, record.extent_domain.to_u32());
         put_u32(&mut out, record.width_divisor_milli);
         put_u32(&mut out, record.height_divisor_milli);
     }
@@ -706,10 +707,16 @@ pub(super) fn decode_image_targets(
         let role = SceneRenderTargetKind::from_u32(role_raw).ok_or(
             SceneBinaryError::InvalidChunkValue("image target role", role_raw),
         )?;
+        let format = decoder.string_id()?;
+        let extent_domain_raw = decoder.u32()?;
+        let extent_domain = SceneTargetExtentDomain::from_u32(extent_domain_raw).ok_or(
+            SceneBinaryError::InvalidChunkValue("image target extent domain", extent_domain_raw),
+        )?;
         records.push(SceneImageTargetRecord {
             name,
             role,
-            format: decoder.string_id()?,
+            format,
+            extent_domain,
             width_divisor_milli: decoder.u32()?,
             height_divisor_milli: decoder.u32()?,
         });

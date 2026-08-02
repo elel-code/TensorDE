@@ -32,9 +32,11 @@ pub struct SceneRenderingDeviceTargetAllocation {
     pub first_write_pass_id: u32,
     pub last_use_pass_id: u32,
     pub physical_slot: u32,
-    /// Non-zero dimensions select a graph-local authored-texture target.
+    /// Explicit final allocation extent for an owner-authored target. Physical
+    /// surface targets resolve their extent at presentation time instead.
     pub width: u32,
     pub height: u32,
+    pub extent_domain: SceneTargetExtentDomain,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

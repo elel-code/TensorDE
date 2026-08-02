@@ -34,7 +34,7 @@ pub use run::{
 pub use state::{
     ColorWriteMask, CullMode, DepthTestMode, PassState, PipelineBlendMode, ShaderBlendMode,
 };
-pub use target::{RenderTargetRole, RenderTargetSpec};
+pub use target::{RenderTargetExtentDomain, RenderTargetRole, RenderTargetSpec};
 pub use we_image::{
     WeEffectPassContract, WeFinalEffectIntermediate, WeFinalEffectMaterial, WeFinalEffectPrepass,
     WeFinalEffectPrepassInput, WeFoliageRippleMaterial, WeFramebufferSnapshotContract,

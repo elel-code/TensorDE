@@ -9,6 +9,7 @@ use crate::engine::scene::{
     SceneRenderTargetKind, SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan,
     SceneRenderingDeviceImageAccess, SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode,
     SceneRenderingDeviceSampledBinding, SceneRenderingDeviceTargetAllocation, SceneStringId,
+    SceneTargetExtentDomain,
 };
 
 #[test]
@@ -88,6 +89,7 @@ fn external_consumer_keeps_hidden_offscreen_producer_chain_live() {
                 physical_slot: 0,
                 width: 320,
                 height: 180,
+                extent_domain: SceneTargetExtentDomain::OwnerAuthored,
             },
             SceneRenderingDeviceTargetAllocation {
                 graph_index: 2,
@@ -98,6 +100,7 @@ fn external_consumer_keeps_hidden_offscreen_producer_chain_live() {
                 physical_slot: 1,
                 width: 320,
                 height: 180,
+                extent_domain: SceneTargetExtentDomain::OwnerAuthored,
             },
             SceneRenderingDeviceTargetAllocation {
                 graph_index: 4,
@@ -108,6 +111,7 @@ fn external_consumer_keeps_hidden_offscreen_producer_chain_live() {
                 physical_slot: 2,
                 width: 64,
                 height: 64,
+                extent_domain: SceneTargetExtentDomain::OwnerAuthored,
             },
         ],
         effect_batches: Vec::new(),

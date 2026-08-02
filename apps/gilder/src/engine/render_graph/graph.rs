@@ -53,10 +53,11 @@ impl RenderGraph {
             })
             .chain(self.target_specs.iter().map(|target| {
                 format!(
-                    "target:{:?}:{}:{}:{}:{}",
+                    "target:{:?}:{}:{}:{:?}:{}:{}",
                     target.role,
                     target.name,
                     target.format,
+                    target.extent_domain,
                     target.width_divisor_milli,
                     target.height_divisor_milli
                 )

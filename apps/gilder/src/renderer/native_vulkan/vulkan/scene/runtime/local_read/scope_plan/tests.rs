@@ -5,7 +5,7 @@ use crate::engine::scene::{
     ScenePipelineBlend, SceneRenderEffectVisibilityPolicy, SceneRenderPassKind,
     SceneRenderPassRecord, SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceMeshDraw,
     SceneRenderingDeviceSampledBinding, SceneRenderingDeviceTargetAllocation,
-    SceneShaderContractRecord, SceneVec3,
+    SceneShaderContractRecord, SceneTargetExtentDomain, SceneVec3,
 };
 
 #[test]
@@ -355,6 +355,7 @@ fn target_allocation(
         physical_slot,
         width: 64,
         height: 64,
+        extent_domain: SceneTargetExtentDomain::OwnerAuthored,
     }
 }
 

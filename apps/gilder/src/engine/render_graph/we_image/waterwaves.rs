@@ -4,7 +4,8 @@ use super::{WeEffectPassContract, WeImageGraphContract};
 use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
     PassState, PipelineBlendMode, RenderGraph, RenderPassDrawPrimitive, RenderPassEffectVisibility,
-    RenderPassNode, RenderPassRole, RenderTargetRole, RenderTargetSpec, TextureBindingRole,
+    RenderPassNode, RenderPassRole, RenderTargetExtentDomain, RenderTargetRole, RenderTargetSpec,
+    TextureBindingRole,
 };
 
 const UV_FIELD_SHADER: &str = "we/waterwaves-uv-field";
@@ -113,6 +114,7 @@ pub(super) fn append_displacement_chain(graph: &mut RenderGraph, contract: &WeIm
         role: RenderTargetRole::Temporary,
         name: UV_TARGET_NAME.to_owned(),
         format: UV_TARGET_FORMAT.to_owned(),
+        extent_domain: RenderTargetExtentDomain::OwnerAuthored,
         width_divisor_milli: UV_TARGET_DIVISOR_MILLI,
         height_divisor_milli: UV_TARGET_DIVISOR_MILLI,
     });

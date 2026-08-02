@@ -178,7 +178,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --scene-pointer-position X,Y replays a normalized wallpaper-surface pointer position for deterministic scene diagnostics.\n\
 --scene-semantic-diagnostics appends final retained script deltas, resolved object state, and draw activation to --run-scene JSON.\n\
 --scene-property NAME=JSON overrides one exact, case-sensitive authored scene user property for --run-scene or --scene-backend-plan; repeat for distinct names.\n\
---surface-width/--surface-height override the automatic authored-scene extent (falling back to the Wayland buffer extent) and must be provided together.\n\
+--surface-width/--surface-height provide a deterministic physical presentation extent for offline plans or captures and must be provided together; normal Wayland scene runs use the live configured buffer extent.\n\
 --gpu-timing enables top-of-pipe to bottom-of-pipe Vulkan timestamp queries for --run-scene diagnostics.\n\
 --vulkan-device SELECTOR strictly selects index:N, name:TEXT, uuid:HEX, or pci:DOMAIN:BUS:DEVICE.FUNCTION for every Vulkan route.\n\
 --vulkan-device-preference defaults to discrete; integrated and enumeration are explicit alternatives when no selector is set.\n\

@@ -1,7 +1,7 @@
 use gilder::engine::scene::{
     INVALID_OBJECT_ID, ResolvedSemanticFrame, SceneCameraParallaxRecord,
-    SceneDynamicTextGlyphRecord, SceneDynamicTextRecord, SceneMaterialConstantRecord,
-    SceneMaterialPassRecord, SceneMaterialRecord, SceneObjectHandle,
+    SceneDynamicTextGlyphRecord, SceneDynamicTextRecord, SceneImageTargetRecord,
+    SceneMaterialConstantRecord, SceneMaterialPassRecord, SceneMaterialRecord, SceneObjectHandle,
     SceneObjectParallaxDepthRecord, SceneObjectRecord, SceneRenderPassRecord, SceneResourceRecord,
     SceneScriptProgramRecord, SceneStorage, SceneTextureRecord,
 };
@@ -12,7 +12,7 @@ use gilder::renderer::native_vulkan::{
 };
 use serde::Serialize;
 
-pub(super) const SCENE_BACKEND_PLAN_REPORT_VERSION: u32 = 11;
+pub(super) const SCENE_BACKEND_PLAN_REPORT_VERSION: u32 = 12;
 const SCENE_BACKEND_PLAN_UNIFORM_ALIGNMENT: u64 = 256;
 
 #[derive(Debug, Serialize)]
@@ -23,6 +23,7 @@ pub(super) struct SceneBackendPlanReport<'a> {
     pub scene_objects: &'a [SceneObjectRecord],
     pub scene_resources: &'a [SceneResourceRecord],
     pub scene_textures: &'a [SceneTextureRecord],
+    pub scene_image_targets: &'a [SceneImageTargetRecord],
     pub scene_render_passes: &'a [SceneRenderPassRecord],
     pub scene_materials: &'a [SceneMaterialRecord],
     pub scene_material_passes: &'a [SceneMaterialPassRecord],
@@ -105,6 +106,7 @@ pub(super) fn scene_backend_plan_report<'a>(
         scene_objects: storage.objects(),
         scene_resources: storage.resources(),
         scene_textures: storage.textures(),
+        scene_image_targets: &storage.document().image_targets,
         scene_render_passes: &storage.document().render_passes,
         scene_materials: &storage.document().materials,
         scene_material_passes: &storage.document().material_passes,

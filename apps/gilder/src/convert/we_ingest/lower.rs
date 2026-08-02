@@ -668,12 +668,19 @@ fn lower_image_targets(
             }
             WeIrImageTargetRole::Temporary => SceneRenderTargetKind::Temporary,
         };
+        let extent_domain = match target.extent_domain {
+            WeIrImageTargetExtentDomain::PhysicalSurface => {
+                SceneTargetExtentDomain::PhysicalSurface
+            }
+            WeIrImageTargetExtentDomain::OwnerAuthored => SceneTargetExtentDomain::OwnerAuthored,
+        };
         push_image_target(
             &mut targets,
             SceneImageTargetRecord {
                 name: strings.id(&target.name),
                 role,
                 format: strings.optional_id(&target.format),
+                extent_domain,
                 width_divisor_milli: target.width_divisor_milli,
                 height_divisor_milli: target.height_divisor_milli,
             },
@@ -691,6 +698,14 @@ fn lower_image_targets(
                 name: strings.id(&target.name),
                 role: lower_render_target(target.role),
                 format: strings.optional_id(&target.format),
+                extent_domain: match target.extent_domain {
+                    crate::engine::render_graph::RenderTargetExtentDomain::PhysicalSurface => {
+                        SceneTargetExtentDomain::PhysicalSurface
+                    }
+                    crate::engine::render_graph::RenderTargetExtentDomain::OwnerAuthored => {
+                        SceneTargetExtentDomain::OwnerAuthored
+                    }
+                },
                 width_divisor_milli: target.width_divisor_milli,
                 height_divisor_milli: target.height_divisor_milli,
             },

@@ -22,8 +22,57 @@ pub struct SceneImageTargetRecord {
     pub name: SceneStringId,
     pub role: SceneRenderTargetKind,
     pub format: SceneStringId,
+    pub extent_domain: SceneTargetExtentDomain,
     pub width_divisor_milli: u32,
     pub height_divisor_milli: u32,
+}
+
+/// The source of a target's allocation extent.
+///
+/// `OwnerAuthored` resolves through the graph owner and its declared source
+/// extent. `PhysicalSurface` resolves through the live physical SceneColor
+/// extent. This remains explicit in the binary ABI so native backends never
+/// infer it from target names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneTargetExtentDomain {
+    PhysicalSurface,
+    OwnerAuthored,
+}
+
+impl SceneTargetExtentDomain {
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Self::PhysicalSurface => 1,
+            Self::OwnerAuthored => 2,
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::PhysicalSurface),
+            2 => Some(Self::OwnerAuthored),
+            _ => None,
+        }
+    }
+}
+
+impl SceneImageTargetRecord {
+    /// Applies WE's target scale divisor to an owner or physical base extent.
+    pub fn scaled_extent(self, base: [u32; 2]) -> [u32; 2] {
+        [
+            scene_target_scaled_axis(base[0], self.width_divisor_milli),
+            scene_target_scaled_axis(base[1], self.height_divisor_milli),
+        ]
+    }
+}
+
+/// Matches WE source-target allocation: unsigned floor division and a 2-pixel
+/// minimum on each axis.
+pub fn scene_target_scaled_axis(value: u32, divisor_milli: u32) -> u32 {
+    let numerator = u64::from(value.max(1)).saturating_mul(1_000);
+    let divisor = u64::from(divisor_milli.max(1));
+    ((numerator / divisor).min(u64::from(u32::MAX)) as u32).max(2)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

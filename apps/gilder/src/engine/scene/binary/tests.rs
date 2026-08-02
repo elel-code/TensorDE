@@ -36,6 +36,37 @@ fn scene_binary_round_trip_preserves_typed_image_access_masks() {
 }
 
 #[test]
+fn scene_binary_round_trip_preserves_target_extent_domains() {
+    let document = SceneBinaryDocument {
+        strings: vec!["scene_snapshot".to_owned(), "quarter_owner".to_owned()],
+        image_targets: vec![
+            SceneImageTargetRecord {
+                name: SceneStringId(0),
+                role: SceneRenderTargetKind::FirstClassEffectTarget,
+                format: SceneStringId::NONE,
+                extent_domain: SceneTargetExtentDomain::PhysicalSurface,
+                width_divisor_milli: 1_000,
+                height_divisor_milli: 1_000,
+            },
+            SceneImageTargetRecord {
+                name: SceneStringId(1),
+                role: SceneRenderTargetKind::NamedFbo,
+                format: SceneStringId::NONE,
+                extent_domain: SceneTargetExtentDomain::OwnerAuthored,
+                width_divisor_milli: 4_000,
+                height_divisor_milli: 4_000,
+            },
+        ],
+        ..SceneBinaryDocument::default()
+    };
+    let mut bytes = Vec::new();
+    write_scene_binary(&document, &mut bytes).expect("write scene");
+    let decoded = read_scene_binary_bytes(&bytes).expect("read scene");
+
+    assert_eq!(decoded.image_targets, document.image_targets);
+}
+
+#[test]
 fn scene_binary_round_trip_preserves_only_spirv_and_compact_shader_abi() {
     let document = SceneBinaryDocument {
         strings: vec![

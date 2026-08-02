@@ -11,7 +11,7 @@ use crate::engine::scene::{
     SceneCompositeBlend, SceneCullMode, SceneDepthTest, SceneMaterialHandle, SceneObjectHandle,
     ScenePipelineBlend, SceneRenderEffectVisibilityPolicy, SceneRenderPassRecord,
     SceneRenderingDeviceEffectBatch, SceneRenderingDeviceEffectBatchFamily,
-    SceneRenderingDeviceGraphPlan, SceneRenderingDeviceTargetAllocation,
+    SceneRenderingDeviceGraphPlan, SceneRenderingDeviceTargetAllocation, SceneTargetExtentDomain,
 };
 
 #[test]
@@ -23,6 +23,7 @@ fn effect_target_image_plan_scales_and_aliases_physical_slots() {
                 name: SceneStringId(0),
                 role: SceneRenderTargetKind::FirstClassEffectTarget,
                 format: SceneStringId(1),
+                extent_domain: SceneTargetExtentDomain::PhysicalSurface,
                 width_divisor_milli: 2_000,
                 height_divisor_milli: 4_000,
             },
@@ -30,6 +31,7 @@ fn effect_target_image_plan_scales_and_aliases_physical_slots() {
                 name: SceneStringId(2),
                 role: SceneRenderTargetKind::NamedFbo,
                 format: SceneStringId(1),
+                extent_domain: SceneTargetExtentDomain::PhysicalSurface,
                 width_divisor_milli: 2_000,
                 height_divisor_milli: 4_000,
             },
@@ -74,6 +76,7 @@ fn effect_target_image_plan_honors_non_zero_plan_allocation_extent() {
     );
     alloc.width = 2318;
     alloc.height = 1794;
+    alloc.extent_domain = SceneTargetExtentDomain::OwnerAuthored;
     let graph = graph_with_allocations(vec![alloc]);
 
     let plans = scene_effect_target_image_plan(
@@ -89,6 +92,103 @@ fn effect_target_image_plan_honors_non_zero_plan_allocation_extent() {
 }
 
 #[test]
+fn effect_target_image_plan_keeps_4k_owner_quarter_target_on_lower_physical_surface() {
+    let target_name = SceneStringId(0);
+    let storage = SceneStorage::from_document(SceneBinaryDocument {
+        strings: vec![
+            "_rt_QuarterCompoBuffer1".to_owned(),
+            "rgba_backbuffer".to_owned(),
+        ],
+        image_targets: vec![SceneImageTargetRecord {
+            name: target_name,
+            role: SceneRenderTargetKind::FirstClassEffectTarget,
+            format: SceneStringId(1),
+            extent_domain: SceneTargetExtentDomain::OwnerAuthored,
+            width_divisor_milli: 4_000,
+            height_divisor_milli: 4_000,
+        }],
+        ..SceneBinaryDocument::default()
+    })
+    .expect("storage");
+    let mut owner_target = allocation(
+        0,
+        SceneRenderTargetKind::FirstClassEffectTarget,
+        target_name,
+    );
+    // This is resolved cold from the 3840×2160 graph owner divided by four.
+    owner_target.extent_domain = SceneTargetExtentDomain::OwnerAuthored;
+    owner_target.width = 960;
+    owner_target.height = 540;
+    let graph = graph_with_allocations(vec![owner_target]);
+
+    let plans = scene_effect_target_image_plan(
+        &storage,
+        &graph,
+        TextureFormat::Bgra8Unorm,
+        Extent2D::new(2560, 1600),
+    )
+    .expect("owner target plan");
+
+    assert_eq!(plans[0].extent, Extent2D::new(960, 540));
+}
+
+#[test]
+fn effect_target_image_plan_keeps_scene_snapshot_in_the_physical_surface_domain() {
+    let target_name = SceneStringId(0);
+    let storage = SceneStorage::from_document(SceneBinaryDocument {
+        strings: vec!["_rt_FullFrameBuffer".to_owned()],
+        image_targets: vec![SceneImageTargetRecord {
+            name: target_name,
+            role: SceneRenderTargetKind::FirstClassEffectTarget,
+            format: SceneStringId::NONE,
+            extent_domain: SceneTargetExtentDomain::PhysicalSurface,
+            width_divisor_milli: 1_000,
+            height_divisor_milli: 1_000,
+        }],
+        ..SceneBinaryDocument::default()
+    })
+    .expect("storage");
+    let graph = graph_with_allocations(vec![allocation(
+        0,
+        SceneRenderTargetKind::FirstClassEffectTarget,
+        target_name,
+    )]);
+
+    let plans = scene_effect_target_image_plan(
+        &storage,
+        &graph,
+        TextureFormat::Bgra8Unorm,
+        Extent2D::new(2560, 1600),
+    )
+    .expect("physical snapshot target plan");
+
+    assert_eq!(plans[0].extent, Extent2D::new(2560, 1600));
+}
+
+#[test]
+fn effect_target_image_plan_rejects_unresolved_owner_target_extent() {
+    let storage = SceneStorage::from_document(SceneBinaryDocument::default()).expect("storage");
+    let mut owner_target = allocation(
+        0,
+        SceneRenderTargetKind::FirstClassEffectTarget,
+        SceneStringId(9),
+    );
+    owner_target.extent_domain = SceneTargetExtentDomain::OwnerAuthored;
+    let graph = graph_with_allocations(vec![owner_target]);
+
+    let error = scene_effect_target_image_plan(
+        &storage,
+        &graph,
+        TextureFormat::Bgra8Unorm,
+        Extent2D::new(2560, 1600),
+    )
+    .expect_err("owner targets must not fall back to the physical surface");
+
+    assert!(error.contains("owner-authored scene target"));
+    assert!(error.contains("has no resolved extent"));
+}
+
+#[test]
 fn effect_batch_atlas_applies_its_declared_field_resolution_once() {
     let storage = SceneStorage::from_document(SceneBinaryDocument {
         strings: vec!["waterwaves_uv".to_owned(), "rg16f".to_owned()],
@@ -96,6 +196,7 @@ fn effect_batch_atlas_applies_its_declared_field_resolution_once() {
             name: SceneStringId(0),
             role: SceneRenderTargetKind::Temporary,
             format: SceneStringId(1),
+            extent_domain: SceneTargetExtentDomain::PhysicalSurface,
             width_divisor_milli: 4_000,
             height_divisor_milli: 4_000,
         }],
@@ -289,6 +390,7 @@ fn effect_target_image_plan_rejects_incompatible_manual_aliases() {
                 name: SceneStringId(0),
                 role: SceneRenderTargetKind::NamedFbo,
                 format: SceneStringId(1),
+                extent_domain: SceneTargetExtentDomain::PhysicalSurface,
                 width_divisor_milli: 1_000,
                 height_divisor_milli: 1_000,
             },
@@ -296,6 +398,7 @@ fn effect_target_image_plan_rejects_incompatible_manual_aliases() {
                 name: SceneStringId(2),
                 role: SceneRenderTargetKind::NamedFbo,
                 format: SceneStringId(3),
+                extent_domain: SceneTargetExtentDomain::PhysicalSurface,
                 width_divisor_milli: 2_000,
                 height_divisor_milli: 2_000,
             },
@@ -428,6 +531,7 @@ fn scene_color_consumer_keeps_copied_snapshot_image_and_command() {
             name: snapshot_name,
             role: SceneRenderTargetKind::FirstClassEffectTarget,
             format: SceneStringId(1),
+            extent_domain: SceneTargetExtentDomain::PhysicalSurface,
             width_divisor_milli: 1_000,
             height_divisor_milli: 1_000,
         }],
@@ -579,6 +683,7 @@ fn allocation(
         physical_slot,
         width: 0,
         height: 0,
+        extent_domain: SceneTargetExtentDomain::PhysicalSurface,
     }
 }
 

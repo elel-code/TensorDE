@@ -12,7 +12,8 @@ use crate::engine::scene::{
     SceneImageTargetRecord, ScenePipelineBlend, SceneRenderPassKind, SceneRenderTargetKind,
     SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan,
     SceneRenderingDeviceImageAccess, SceneRenderingDevicePassNode,
-    SceneRenderingDeviceTargetAllocation, SceneStorage, SceneStringId,
+    SceneRenderingDeviceTargetAllocation, SceneStorage, SceneStringId, SceneTargetExtentDomain,
+    scene_target_scaled_axis,
 };
 
 mod local_read_usage;

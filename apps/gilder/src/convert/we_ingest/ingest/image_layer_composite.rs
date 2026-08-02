@@ -2,10 +2,12 @@
 
 use std::collections::BTreeSet;
 
-use crate::convert::we_ingest::ir::{WeIrImageTarget, WeIrImageTargetRole};
+use crate::convert::we_ingest::ir::{
+    WeIrImageTarget, WeIrImageTargetExtentDomain, WeIrImageTargetRole,
+};
 use crate::engine::render_graph::{
     PassState, RenderGraph, RenderPassDrawPrimitive, RenderPassEffectVisibility, RenderPassNode,
-    RenderPassRole, RenderTargetRole, TextureBindingRole,
+    RenderPassRole, RenderTargetExtentDomain, RenderTargetRole, TextureBindingRole,
 };
 
 use super::WeIrBuilder;
@@ -49,7 +51,7 @@ impl WeIrBuilder {
             let Some(graph) = self.render_graphs.get_mut(graph_index) else {
                 continue;
             };
-            materialize_graph_target(graph, object_index, &target_name);
+            let extent_domain = materialize_graph_target(graph, object_index, &target_name);
             if !self.image_targets.iter().any(|target| {
                 target.name == target_name
                     && target.role == WeIrImageTargetRole::FirstClassEffectTarget
@@ -58,6 +60,14 @@ impl WeIrBuilder {
                     name: target_name,
                     format: "rgba_backbuffer".to_owned(),
                     role: WeIrImageTargetRole::FirstClassEffectTarget,
+                    extent_domain: match extent_domain {
+                        RenderTargetExtentDomain::PhysicalSurface => {
+                            WeIrImageTargetExtentDomain::PhysicalSurface
+                        }
+                        RenderTargetExtentDomain::OwnerAuthored => {
+                            WeIrImageTargetExtentDomain::OwnerAuthored
+                        }
+                    },
                     width_divisor_milli: 1_000,
                     height_divisor_milli: 1_000,
                 });
@@ -66,7 +76,11 @@ impl WeIrBuilder {
     }
 }
 
-fn materialize_graph_target(graph: &mut RenderGraph, object_index: usize, target_name: &str) {
+fn materialize_graph_target(
+    graph: &mut RenderGraph,
+    object_index: usize,
+    target_name: &str,
+) -> RenderTargetExtentDomain {
     let producer = graph.passes.iter().rposition(|pass| {
         pass.role != RenderPassRole::SceneComposite
             && matches!(
@@ -77,9 +91,16 @@ fn materialize_graph_target(graph: &mut RenderGraph, object_index: usize, target
             )
     });
     if let Some(producer) = producer {
+        let extent_domain = match graph.passes[producer].target {
+            RenderTargetRole::ImageLocalMain | RenderTargetRole::ImageLocalSub => {
+                RenderTargetExtentDomain::OwnerAuthored
+            }
+            RenderTargetRole::SceneColor => RenderTargetExtentDomain::PhysicalSurface,
+            _ => unreachable!("image-layer composite producer target is prefiltered"),
+        };
         graph.passes[producer].target = RenderTargetRole::FirstClassEffectTarget;
         graph.passes[producer].target_name = Some(target_name.to_owned());
-        return;
+        return extent_domain;
     }
     for pass in &mut graph.passes {
         pass.id = pass.id.saturating_add(1);
@@ -107,6 +128,7 @@ fn materialize_graph_target(graph: &mut RenderGraph, object_index: usize, target
             state: PassState::default(),
         },
     );
+    RenderTargetExtentDomain::PhysicalSurface
 }
 
 fn image_layer_composite_we_id(name: &str) -> Option<u32> {

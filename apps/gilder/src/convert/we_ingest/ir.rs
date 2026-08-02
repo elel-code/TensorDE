@@ -544,6 +544,7 @@ pub struct WeIrImageTarget {
     pub name: String,
     pub format: String,
     pub role: WeIrImageTargetRole,
+    pub extent_domain: WeIrImageTargetExtentDomain,
     pub width_divisor_milli: u32,
     pub height_divisor_milli: u32,
 }
@@ -554,6 +555,14 @@ pub enum WeIrImageTargetRole {
     NamedFbo,
     FirstClassEffectTarget,
     Temporary,
+}
+
+/// The extent owner recovered from the authored target route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WeIrImageTargetExtentDomain {
+    PhysicalSurface,
+    OwnerAuthored,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
