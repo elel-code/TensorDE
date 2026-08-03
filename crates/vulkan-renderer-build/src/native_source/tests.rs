@@ -195,6 +195,88 @@ void main() {
 }
 
 #[test]
+fn production_o2_compiles_explicit_generated_integer_initializer_conversion() {
+    let direct = lower_generated_stage_to_native_slang(
+        r#"layout(location = 0) out vec4 o_Color;
+uniform float g_Time;
+float roundedMask(vec2 innerSize) {
+    int isNormal = step(innerSize.x, 0.001) * step(innerSize.y, 0.001);
+    return isNormal * 0.75 + (1 - isNormal) * 0.25;
+}
+void main() {
+    o_Color = vec4(roundedMask(vec2(1.0)) + g_Time);
+}"#,
+        ShaderStage::Fragment,
+    )
+    .expect("integer initializer native Slang lowering");
+    assert!(
+        direct.contains("int isNormal = int(step(innerSize.x, 0.001) * step(innerSize.y, 0.001));")
+    );
+
+    let heap = crate::lower_slang_bindings_to_descriptor_heap(&direct, "main")
+        .expect("integer initializer descriptor-heap lowering");
+    let base = std::env::temp_dir().join(format!(
+        "vulkan-renderer-build-integer-initializer-{}",
+        std::process::id()
+    ));
+    let source_path = base.with_extension("slang");
+    let output_path = base.with_extension("spv");
+    fs::write(&source_path, heap.source).expect("write integer initializer source");
+    crate::SlangCompiler::from_environment()
+        .compile(&crate::ShaderCompileRequest {
+            source: source_path.clone(),
+            entry_point: "main".to_owned(),
+            stage: ShaderStage::Fragment,
+            output: output_path.clone(),
+            contract: crate::ShaderContract::descriptor_heap(u64::from(heap.push_constant_bytes)),
+        })
+        .expect("fixed-Slang production O2 compile for integer initializer");
+
+    let _ = fs::remove_file(source_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
+fn production_o2_preserves_an_authored_mod_function_without_macro_collision() {
+    let direct = lower_generated_stage_to_native_slang(
+        r#"layout(location = 0) out vec4 o_Color;
+uniform float g_Time;
+float mod(float x, float y) {
+    return x - y * floor(x / y);
+}
+void main() {
+    o_Color = vec4(mod(5.0 + g_Time, 2.0));
+}"#,
+        ShaderStage::Fragment,
+    )
+    .expect("authored mod function native Slang lowering");
+    assert!(direct.contains("float mod(float x, float y)"));
+    assert!(!direct.contains("#define mod"));
+
+    let heap = crate::lower_slang_bindings_to_descriptor_heap(&direct, "main")
+        .expect("authored mod descriptor-heap lowering");
+    let base = std::env::temp_dir().join(format!(
+        "vulkan-renderer-build-authored-mod-{}",
+        std::process::id()
+    ));
+    let source_path = base.with_extension("slang");
+    let output_path = base.with_extension("spv");
+    fs::write(&source_path, heap.source).expect("write authored mod source");
+    crate::SlangCompiler::from_environment()
+        .compile(&crate::ShaderCompileRequest {
+            source: source_path.clone(),
+            entry_point: "main".to_owned(),
+            stage: ShaderStage::Fragment,
+            output: output_path.clone(),
+            contract: crate::ShaderContract::descriptor_heap(u64::from(heap.push_constant_bytes)),
+        })
+        .expect("fixed-Slang production O2 compile for authored mod");
+
+    let _ = fs::remove_file(source_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
 fn lowers_we_row_vector_matrix_mul_to_uploaded_row_dot_semantics() {
     let source = r#"layout(location = 0) in vec3 a_Position;
 layout(set = 0, binding = 0) uniform mat4 g_ModelViewProjectionMatrix;
@@ -203,7 +285,9 @@ void main() {
 }"#;
     let lowered = lower_generated_stage_to_native_slang(source, ShaderStage::Vertex).unwrap();
 
-    assert!(lowered.contains("mul(g_ModelViewProjectionMatrix, vec4(a_Position, 1.0))"));
+    assert!(
+        lowered.contains("mul(gilderUniforms0.g_ModelViewProjectionMatrix, vec4(a_Position, 1.0))")
+    );
     assert!(!lowered.contains("mul(vec4(a_Position, 1.0), g_ModelViewProjectionMatrix)"));
 }
 
@@ -324,9 +408,10 @@ void main() {
     assert!(direct.contains("struct GilderUniforms0Data"));
     assert!(direct.contains("GilderUniforms0Data gilderUniforms0;"));
     assert!(direct.contains(
-        "#define g_ModelViewProjectionMatrix gilderUniforms0.g_ModelViewProjectionMatrix"
+        "gilderPosition = mul(gilderUniforms0.g_ModelViewProjectionMatrix, vec4(a_Position, 1.0));"
     ));
-    assert!(direct.contains("#define g_Time gilderUniforms0.g_Time"));
+    assert!(direct.contains("gilderPosition.x += gilderUniforms0.g_Time;"));
+    assert!(!direct.contains("#define g_Time"));
     assert!(
         lowered
             .source
@@ -335,9 +420,95 @@ void main() {
     assert!(
         lowered
             .source
-            .contains("#define g_Time gilderHeap_gilderUniforms0().g_Time")
+            .contains("gilderPosition.x += gilderHeap_gilderUniforms0().g_Time;")
     );
     assert!(!lowered.source.contains(": register("));
+}
+
+#[test]
+fn production_o2_compiles_uniform_aliases_without_self_expanding_macros() {
+    let direct = lower_generated_stage_to_native_slang(
+        r#"layout(location = 0) out vec4 o_Color;
+uniform vec4 g_Color4;
+uniform float u_Lod;
+void main() {
+    o_Color = g_Color4 * u_Lod;
+}"#,
+        ShaderStage::Fragment,
+    )
+    .expect("global uniform native Slang lowering");
+    assert!(direct.contains("gilderUniforms0.g_Color4 * gilderUniforms0.u_Lod;"));
+    assert!(!direct.contains("#define u_Lod"));
+
+    let heap = crate::lower_slang_bindings_to_descriptor_heap(&direct, "main")
+        .expect("global uniform descriptor-heap lowering");
+    assert!(
+        heap.source.contains(
+            "gilderHeap_gilderUniforms0().g_Color4 * gilderHeap_gilderUniforms0().u_Lod;"
+        )
+    );
+    let base = std::env::temp_dir().join(format!(
+        "vulkan-renderer-build-uniform-alias-{}",
+        std::process::id()
+    ));
+    let source_path = base.with_extension("slang");
+    let output_path = base.with_extension("spv");
+    fs::write(&source_path, heap.source).expect("write uniform alias source");
+    crate::SlangCompiler::from_environment()
+        .compile(&crate::ShaderCompileRequest {
+            source: source_path.clone(),
+            entry_point: "main".to_owned(),
+            stage: ShaderStage::Fragment,
+            output: output_path.clone(),
+            contract: crate::ShaderContract::descriptor_heap(u64::from(heap.push_constant_bytes)),
+        })
+        .expect("fixed-Slang production O2 compile for uniform alias");
+
+    let _ = fs::remove_file(source_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
+fn production_o2_compiles_we_typed_consumer_conversions() {
+    let direct = lower_generated_stage_to_native_slang(
+        r#"layout(location = 0) out vec4 o_Color;
+uniform vec4 g_Texture0Resolution;
+float consumeMask(in int value) {
+    return float(value);
+}
+void main() {
+    vec2 strength = vec2(1.0);
+    strength *= 500 / g_Texture0Resolution;
+    float waveMask = 1.0;
+    o_Color = vec4(strength, consumeMask(waveMask), 1.0);
+}"#,
+        ShaderStage::Fragment,
+    )
+    .expect("typed consumer native Slang lowering");
+    assert!(direct.contains("strength *= 500 / gilderUniforms0.g_Texture0Resolution.xy;"));
+    assert!(direct.contains("consumeMask(int(waveMask))"));
+
+    let heap = crate::lower_slang_bindings_to_descriptor_heap(&direct, "main")
+        .expect("typed consumer descriptor-heap lowering");
+    let base = std::env::temp_dir().join(format!(
+        "vulkan-renderer-build-typed-consumer-{}",
+        std::process::id()
+    ));
+    let source_path = base.with_extension("slang");
+    let output_path = base.with_extension("spv");
+    fs::write(&source_path, heap.source).expect("write typed consumer source");
+    crate::SlangCompiler::from_environment()
+        .compile(&crate::ShaderCompileRequest {
+            source: source_path.clone(),
+            entry_point: "main".to_owned(),
+            stage: ShaderStage::Fragment,
+            output: output_path.clone(),
+            contract: crate::ShaderContract::descriptor_heap(u64::from(heap.push_constant_bytes)),
+        })
+        .expect("fixed-Slang production O2 compile for typed consumers");
+
+    let _ = fs::remove_file(source_path);
+    let _ = fs::remove_file(output_path);
 }
 
 #[test]

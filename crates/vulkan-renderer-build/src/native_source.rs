@@ -9,12 +9,15 @@ use std::collections::BTreeMap;
 
 use crate::ShaderStage;
 
+mod compatibility_prelude;
 mod implicit_sampler;
 mod interface;
 mod intrinsics;
+mod numeric_initializer;
 mod storage;
 #[cfg(test)]
 mod tests;
+mod vector_initializer;
 
 use interface::Item as InterfaceItem;
 
@@ -61,10 +64,14 @@ pub fn lower_generated_stage_to_native_slang(
         return Err("generated compute stages must provide native Slang directly".to_owned());
     }
     let (declarations, body) = collect_declarations(source, stage)?;
+    let body =
+        vector_initializer::lower_generated_vector_initializer_conversions(body, &declarations);
+    let body = numeric_initializer::lower_generated_integer_initializers(body);
     let body = intrinsics::lower_generated_intrinsics(body, &declarations)?;
+    let body = qualify_global_uniform_uses(body, &declarations);
     let entry = lower_entry_point(&body, &declarations, stage)?;
     Ok([
-        native_prelude(),
+        compatibility_prelude::emit(&body),
         emit_resources(&declarations),
         interface::emit_statics(&declarations, stage, &entry),
         entry.source,
@@ -189,6 +196,30 @@ fn prune_unreferenced_resources(declarations: &mut Declarations, source: &str) {
         .uniforms_by_binding
         .retain(|_, uniforms| !uniforms.is_empty());
     implicit_sampler::reindex(&mut declarations.sampled_images);
+}
+
+/// Gives generated global uniforms explicit cbuffer ownership before native
+/// Slang sees the source. A macro alias such as `#define u_Lod
+/// gilderUniforms0.u_Lod` recursively expands the field token in Slang's
+/// preprocessor, so the lowered source must not rely on a same-name macro.
+///
+/// This runs after generated-dialect rewrites, which still need the original
+/// uniform identifiers to recognize their typed operands, and before entry
+/// lowering. The struct fields retain their authored names for reflection and
+/// material metadata; descriptor-heap lowering later rewrites only the typed
+/// cbuffer instance.
+fn qualify_global_uniform_uses(mut source: String, declarations: &Declarations) -> String {
+    for (binding, uniforms) in &declarations.uniforms_by_binding {
+        let instance = format!("gilderUniforms{binding}");
+        for uniform in uniforms {
+            let name = uniform
+                .declarator
+                .split_once('[')
+                .map_or(uniform.declarator.as_str(), |(name, _)| name);
+            source = replace_identifier(&source, name, &format!("{instance}.{name}"));
+        }
+    }
+    source
 }
 
 fn validate_declarations(declarations: &Declarations, stage: ShaderStage) -> Result<(), String> {
@@ -528,13 +559,6 @@ fn emit_resources(declarations: &Declarations) -> String {
         output.push_str(&format!(
             "}};\ncbuffer GilderUniforms{binding} : register(b{binding})\n{{\n    {struct_name} {instance};\n}}\n"
         ));
-        for uniform in uniforms {
-            let name = uniform
-                .declarator
-                .split_once('[')
-                .map_or(uniform.declarator.as_str(), |(name, _)| name);
-            output.push_str(&format!("#define {name} {instance}.{name}\n"));
-        }
     }
     output
 }
@@ -639,42 +663,4 @@ fn replace_void_returns(source: &str, replacement: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn native_prelude() -> String {
-    r#"#define vec2 float2
-#define vec3 float3
-#define vec4 float4
-#define ivec2 int2
-#define ivec3 int3
-#define ivec4 int4
-#define uvec2 uint2
-#define uvec3 uint3
-#define uvec4 uint4
-#define bvec2 bool2
-#define bvec3 bool3
-#define bvec4 bool4
-#define mat2 float2x2
-#define mat3 float3x3
-#define mat4 float4x4
-#define fract frac
-#define mix lerp
-#define inversesqrt rsqrt
-#define roundEven round
-#define texture2D(S, UV) S ## _texture.Sample(S ## _sampler, UV)
-#define texture3D(S, UVW) S ## _texture.Sample(S ## _sampler, UVW)
-#define texture(S, UV) S ## _texture.Sample(S ## _sampler, UV)
-#define texture2DLod(S, UV, LOD) S ## _texture.SampleLevel(S ## _sampler, UV, LOD)
-#define textureLod(S, UV, LOD) S ## _texture.SampleLevel(S ## _sampler, UV, LOD)
-#define texelFetch(S, COORD, LOD) S ## _texture.Load(int3(COORD, LOD))
-#define textureSize(S, LOD) gilderTextureSize_ ## S(LOD)
-#define greaterThan(A, B) ((A) > (B))
-#define greaterThanEqual(A, B) ((A) >= (B))
-#define lessThan(A, B) ((A) < (B))
-#define lessThanEqual(A, B) ((A) <= (B))
-#define equal(A, B) ((A) == (B))
-#define notEqual(A, B) ((A) != (B))
-#define mod(A, B) ((A) - (B) * floor((A) / (B)))
-"#
-    .to_owned()
 }
