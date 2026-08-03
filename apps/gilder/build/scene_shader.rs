@@ -6,6 +6,8 @@ mod blur;
 mod catalog;
 #[path = "scene_shader/core_material.rs"]
 mod core_material;
+#[path = "scene_shader/depth_parallax.rs"]
+mod depth_parallax;
 #[path = "scene_shader/effect_program.rs"]
 mod effect_program;
 #[path = "scene_shader/final_effect.rs"]
@@ -20,8 +22,12 @@ mod native_slang;
 mod particle;
 #[path = "scene_shader/particle_compute.rs"]
 mod particle_compute;
+#[path = "scene_shader/pulse.rs"]
+mod pulse;
 #[path = "scene_shader/scene_color_blend.rs"]
 mod scene_color_blend;
+#[path = "scene_shader/shake.rs"]
+mod shake;
 #[path = "scene_shader/shimmer.rs"]
 mod shimmer;
 #[path = "scene_shader/spin.rs"]
@@ -62,7 +68,9 @@ pub(super) use particle::generic_particle_vertex_source;
 pub(super) use particle_compute::particle_compute_source;
 pub(super) use scene_color_blend::scene_color_blend_sources;
 pub(super) use spin::spin_fragment_source;
-pub(super) use tint::tint_fragment_source;
+pub(super) use tint::{
+    tint_fragment_source, tint_masked_object_mesh_vertex_source, tint_masked_sources,
+};
 pub(crate) use vertex_primitive::scene_shader_vertex_primitive;
 pub(super) use waterflow::{waterflow_object_mesh_vertex_source, waterflow_sources};
 pub(super) use waterwaves_composite::{

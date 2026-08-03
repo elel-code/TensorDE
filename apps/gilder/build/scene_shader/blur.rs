@@ -82,6 +82,14 @@ pub(super) fn blur_combine_fragment_source(key: &str, texture_slot_mask: u32) ->
         original.a);
     o_Color = effect;"#
         }
+        (1, 2) => {
+            r#"    float opacity = effect.a * u_Effect.g_CompositeAlphaOffset.x;
+    effect.rgb = mix(original.rgb, original.rgb * effect.rgb, opacity);
+    effect.a = max(
+        effect.a * clamp(u_Effect.g_CompositeAlphaOffset.x, 0.0, 1.0),
+        original.a);
+    o_Color = effect;"#
+        }
         (1, 5) => {
             r#"    effect.rgb = min(original.rgb, effect.rgb);
     effect.a = max(

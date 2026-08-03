@@ -147,6 +147,41 @@ fn write_matrix(destination: &mut [u8], matrix: &[[f32; 4]; 4]) -> Result<(), St
     Ok(())
 }
 
+pub(super) fn inverse_affine_rows(matrix: &[[f32; 4]; 4]) -> Option<[[f32; 4]; 4]> {
+    if matrix[3] != [0.0, 0.0, 0.0, 1.0] {
+        return None;
+    }
+    let [a00, a01, a02, tx] = matrix[0];
+    let [a10, a11, a12, ty] = matrix[1];
+    let [a20, a21, a22, tz] = matrix[2];
+    let determinant = a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20)
+        + a02 * (a10 * a21 - a11 * a20);
+    if !determinant.is_finite() || determinant.abs() <= 1.0e-8 {
+        return None;
+    }
+    let reciprocal = determinant.recip();
+    let i00 = (a11 * a22 - a12 * a21) * reciprocal;
+    let i01 = (a02 * a21 - a01 * a22) * reciprocal;
+    let i02 = (a01 * a12 - a02 * a11) * reciprocal;
+    let i10 = (a12 * a20 - a10 * a22) * reciprocal;
+    let i11 = (a00 * a22 - a02 * a20) * reciprocal;
+    let i12 = (a02 * a10 - a00 * a12) * reciprocal;
+    let i20 = (a10 * a21 - a11 * a20) * reciprocal;
+    let i21 = (a01 * a20 - a00 * a21) * reciprocal;
+    let i22 = (a00 * a11 - a01 * a10) * reciprocal;
+    let inverse = [
+        [i00, i01, i02, -(i00 * tx + i01 * ty + i02 * tz)],
+        [i10, i11, i12, -(i10 * tx + i11 * ty + i12 * tz)],
+        [i20, i21, i22, -(i20 * tx + i21 * ty + i22 * tz)],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    inverse
+        .iter()
+        .flatten()
+        .all(|value| value.is_finite())
+        .then_some(inverse)
+}
+
 fn write_f32_values(destination: &mut [u8], values: &[f32]) -> Result<(), String> {
     let expected = values
         .len()

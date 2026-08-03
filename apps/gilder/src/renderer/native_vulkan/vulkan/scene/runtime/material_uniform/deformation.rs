@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) fn shake_values(
     parameters: &MaterialParameters<'_>,
+    storage: &SceneStorage,
     scene_time_seconds: f32,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
@@ -12,6 +13,7 @@ pub(super) fn shake_values(
     values[6..8].copy_from_slice(&[1.0, 1.0]);
     set_vector(&mut values, 4, &parameters.values(&["bounds"]), 2);
     set_vector(&mut values, 6, &parameters.values(&["friction"]), 2);
+    values[8..12].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 1));
     values
 }
 

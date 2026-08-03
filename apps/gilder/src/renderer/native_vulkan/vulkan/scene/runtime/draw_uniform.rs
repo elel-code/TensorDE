@@ -21,6 +21,7 @@ use super::flat_rounded_mask_coverage::{
 };
 use super::material_uniform::{draw_parameter_layout, material_parameter_values};
 use super::scene_viewport::scene_cover_clip_transform;
+use super::shader_uniform::inverse_affine_rows;
 
 pub(super) const SCENE_DRAW_UNIFORM_BYTES: u64 = 64;
 const SCENE_DRAW_UNIFORM_FLOATS: usize = SCENE_DRAW_UNIFORM_BYTES as usize / size_of::<f32>();
@@ -67,6 +68,9 @@ pub(super) fn pack_scene_draw_uniforms_into(
             match layout {
                 BuiltinSceneParameterLayout::Iris => {
                     iris_draw_values(storage, draw.material, scene_time_seconds)
+                }
+                BuiltinSceneParameterLayout::DepthParallax => {
+                    depth_parallax_draw_values(storage, draw, output_extent)
                 }
                 BuiltinSceneParameterLayout::WaterWaves
                 | BuiltinSceneParameterLayout::WaterWavesUvField => {
@@ -152,6 +156,17 @@ fn matrix_draw_values(matrix: [[f32; 4]; 4]) -> [f32; SCENE_DRAW_UNIFORM_FLOATS]
         *destination = value;
     }
     values
+}
+
+fn depth_parallax_draw_values(
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    output_extent: [u32; 2],
+) -> [f32; SCENE_DRAW_UNIFORM_FLOATS] {
+    let projection = draw_projection_matrix(storage, draw, output_extent);
+    let inverse = inverse_affine_rows(&projection)
+        .expect("validated Depth Parallax draw must have an invertible affine projection");
+    matrix_draw_values(inverse)
 }
 
 fn iris_draw_values(

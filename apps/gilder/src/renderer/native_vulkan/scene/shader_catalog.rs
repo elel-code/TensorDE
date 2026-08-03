@@ -37,11 +37,13 @@ pub enum BuiltinSceneParameterLayout {
     BlendGradient,
     BlurCombine,
     BlurGaussian,
+    DepthParallax,
     Particle,
     StandardMaterial,
     SceneColorBlend,
     Iris,
     Opacity,
+    Pulse,
     RoundedMask,
     Scroll,
     Skew,
@@ -76,9 +78,11 @@ impl BuiltinSceneParameterLayout {
             self,
             Self::Blend
                 | Self::BlendGradient
+                | Self::DepthParallax
                 | Self::FinalEffectProgram
                 | Self::Iris
                 | Self::Particle
+                | Self::Pulse
                 | Self::RoundedMask
                 | Self::Scroll
                 | Self::Spin
@@ -98,8 +102,10 @@ impl BuiltinSceneParameterLayout {
                 | Self::BlendGradient
                 | Self::BlurCombine
                 | Self::BlurGaussian
+                | Self::DepthParallax
                 | Self::Iris
                 | Self::Particle
+                | Self::Pulse
                 | Self::Caustics
                 | Self::CloudMotion
                 | Self::FoliageSway
@@ -131,6 +137,15 @@ pub fn native_vulkan_particle_compute_shader() -> &'static BuiltinParticleComput
 }
 
 pub fn native_vulkan_scene_shader_for_key(key: &str) -> Option<&'static BuiltinSceneShader> {
+    let key = if key.starts_with("effects/depthparallax__") {
+        depth_parallax_catalog_key_for_semantic_key(key)?
+    } else if key.starts_with("effects/pulse__") {
+        pulse_catalog_key_for_semantic_key(key)?
+    } else if key.starts_with("effects/shake__") {
+        shake_catalog_key_for_semantic_key(key)?
+    } else {
+        key
+    };
     BUILTIN_SCENE_SHADERS
         .iter()
         .find(|shader| shader.key == key)

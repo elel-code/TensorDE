@@ -125,6 +125,11 @@ impl SharedSceneGpuResources {
                 output_extent,
                 SceneMaterialFrameInputs {
                     average_spectrum32: average_spectrum32.as_ref(),
+                    stereo_spectrum64,
+                    parallax_position: events
+                        .pointer
+                        .normalized_position_top_left()
+                        .unwrap_or([0.5; 2]),
                     audio_material_values: &semantic_frame.audio_band_material_values,
                     material_scalar_values: &semantic_frame.material_scalar_values,
                 },

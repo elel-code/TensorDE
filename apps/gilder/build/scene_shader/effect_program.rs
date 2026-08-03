@@ -290,9 +290,6 @@ pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask:
     if shader == "effects/iris" {
         return iris_effect_fragment_source(texture_slot_mask);
     }
-    if shader == "effects/shake" {
-        return shake_effect_fragment_source(texture_slot_mask);
-    }
     if shader == "effects/scroll" {
         return scroll_effect_fragment_source();
     }

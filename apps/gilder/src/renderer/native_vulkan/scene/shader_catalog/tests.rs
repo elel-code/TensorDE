@@ -1,5 +1,7 @@
 use super::*;
 
+mod workshop_effects;
+
 const SPIRV_OP_VARIABLE: u16 = 59;
 const SPIRV_OP_DECORATE: u16 = 71;
 const SPIRV_OP_CAPABILITY: u16 = 17;
@@ -85,6 +87,41 @@ fn shader_catalog_resolves_we_material_names_without_runtime_files() {
     assert!(native_vulkan_scene_shader_for_key("genericimage4").is_none());
     assert!(native_vulkan_scene_shader_for_key("WE/genericimage4").is_none());
     assert!(native_vulkan_scene_shader_for_key(" we/genericimage4").is_none());
+}
+
+#[test]
+fn masked_tint_catalog_preserves_mask_uv_and_descriptor_heap_bindings() {
+    let shader = native_vulkan_scene_shader_for_key("effects/tint__SLOTS_3")
+        .expect("masked Tint catalog shader");
+    assert_eq!(shader.parameter_layout, BuiltinSceneParameterLayout::Tint);
+    for kind in [
+        BuiltinSceneDescriptorBindingKind::SampledImage,
+        BuiltinSceneDescriptorBindingKind::Sampler,
+    ] {
+        assert_eq!(
+            shader
+                .fragment_bindings
+                .iter()
+                .filter(|binding| binding.kind == kind)
+                .map(|binding| binding.register)
+                .collect::<Vec<_>>(),
+            [0, 1]
+        );
+    }
+    assert!(shader.vertex.bindings.iter().any(|binding| {
+        binding.kind == BuiltinSceneDescriptorBindingKind::UniformBuffer && binding.register == 3
+    }));
+    let object_vertex = native_vulkan_scene_vertex_shader_for_primitive(
+        shader,
+        crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+    )
+    .expect("masked Tint object-mesh vertex");
+    for register in [2, 3] {
+        assert!(object_vertex.bindings.iter().any(|binding| {
+            binding.kind == BuiltinSceneDescriptorBindingKind::UniformBuffer
+                && binding.register == register
+        }));
+    }
 }
 
 #[test]
@@ -562,6 +599,10 @@ fn shader_catalog_carries_typed_effect_parameter_layouts() {
     for (key, layout) in [
         (
             "effects/blur_combine__SLOTS_5__BLENDMODE_1__COMPOSITE_1",
+            BuiltinSceneParameterLayout::BlurCombine,
+        ),
+        (
+            "effects/blur_combine__SLOTS_5__BLENDMODE_2__COMPOSITE_1",
             BuiltinSceneParameterLayout::BlurCombine,
         ),
         (

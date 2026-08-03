@@ -1,13 +1,13 @@
-use super::{SceneShaderFamily, SceneShaderSpec};
+use super::SceneShaderFamily;
 
-pub(crate) fn scene_shader_vertex_primitive(spec: SceneShaderSpec) -> &'static str {
+pub(crate) fn scene_shader_vertex_primitive(family: SceneShaderFamily, key: &str) -> &'static str {
     use SceneShaderFamily::*;
 
-    match spec.family {
+    match family {
         MeshGenericParticle => "ParticleBillboard",
         MeshFlatRoundedMaskComposite => "ObjectUvSupportQuad",
-        MeshFinalEffect if spec.key == "we/flat-rounded-opacity-final" => "ObjectUvSupportQuad",
-        MeshFinalEffect if spec.key == "we/framebuffer-water-quantized-water-opacity" => {
+        MeshFinalEffect if key == "we/flat-rounded-opacity-final" => "ObjectUvSupportQuad",
+        MeshFinalEffect if key == "we/framebuffer-water-quantized-water-opacity" => {
             "FullscreenTriangle"
         }
         MeshImageEffectSource => "ObjectUvSupportQuad",
@@ -17,8 +17,11 @@ pub(crate) fn scene_shader_vertex_primitive(spec: SceneShaderSpec) -> &'static s
         | EffectImageRippleSource
         | FlatMinimalAlpha
         | FlatPassthrough
+        | DepthParallax
+        | Pulse
+        | Shake
         | Effect => "FullscreenTriangle",
-        MeshWaterWavesDirect if spec.key.starts_with("we/effect-waterwaves-direct") => {
+        MeshWaterWavesDirect if key.starts_with("we/effect-waterwaves-direct") => {
             "FullscreenTriangle"
         }
         MeshGenericImage4

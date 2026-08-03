@@ -14,6 +14,10 @@ pub(super) const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
+        key: "effects/tint__SLOTS_3",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
         key: "effects/blur_combine__SLOTS_5",
         family: SceneShaderFamily::Effect,
     },
@@ -35,6 +39,10 @@ pub(super) const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
     },
     SceneShaderSpec {
         key: "effects/blur_combine__SLOTS_5__BLENDMODE_1__COMPOSITE_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/blur_combine__SLOTS_5__BLENDMODE_2__COMPOSITE_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
@@ -114,10 +122,6 @@ pub(super) const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
-        key: "effects/shake__SLOTS_3",
-        family: SceneShaderFamily::Effect,
-    },
-    SceneShaderSpec {
         key: "effects/shimmer__SLOTS_9",
         family: SceneShaderFamily::Effect,
     },
@@ -155,6 +159,10 @@ pub(super) const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
     },
     SceneShaderSpec {
         key: "effects/waterwaves__SLOTS_3__DUALWAVES_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/waterwaves__SLOTS_7",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {

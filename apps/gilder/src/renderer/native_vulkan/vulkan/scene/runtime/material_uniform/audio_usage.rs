@@ -59,9 +59,22 @@ pub(super) fn material_uses_audio_spectrum(
 
 fn shader_uses_audio_spectrum(shader_key: &str) -> bool {
     native_vulkan_scene_shader_for_key(shader_key).is_some_and(|shader| {
-        shader.parameter_layout == BuiltinSceneParameterLayout::FinalEffectProgram
-            && shader_key.eq_ignore_ascii_case("we/audio-bars-final")
+        match shader.parameter_layout {
+            BuiltinSceneParameterLayout::FinalEffectProgram => {
+                shader_key.eq_ignore_ascii_case("we/audio-bars-final")
+            }
+            BuiltinSceneParameterLayout::Pulse => pulse_audio_processing(shader_key) != 0,
+            _ => false,
+        }
     })
+}
+
+fn pulse_audio_processing(shader_key: &str) -> u8 {
+    shader_key
+        .split("__")
+        .find_map(|part| part.strip_prefix("AUDIOPROCESSING_"))
+        .and_then(|value| value.parse::<u8>().ok())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -83,6 +96,19 @@ mod tests {
             SceneStringId(0)
         ));
         assert!(native_vulkan_scene_shader_for_key("package/effects/audioline__SLOTS_1").is_none());
+    }
+
+    #[test]
+    fn pulse_requests_audio_only_for_valid_nonzero_processing_modes() {
+        assert!(shader_uses_audio_spectrum(
+            "effects/pulse__SLOTS_3__AUDIOPROCESSING_3__BLENDMODE_2"
+        ));
+        assert!(!shader_uses_audio_spectrum(
+            "effects/pulse__SLOTS_3__BLENDMODE_9"
+        ));
+        assert!(!shader_uses_audio_spectrum(
+            "effects/pulse__SLOTS_3__AUDIOPROCESSING_4__BLENDMODE_2"
+        ));
     }
 
     fn scene_owned_audio_document() -> SceneBinaryDocument {

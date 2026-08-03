@@ -58,7 +58,16 @@ pub(crate) enum SceneShaderFamily {
     EffectImageRippleSource,
     FlatMinimalAlpha,
     FlatPassthrough,
+    DepthParallax,
+    Pulse,
+    Shake,
     Effect,
+}
+
+#[derive(Debug, Clone)]
+struct SceneShaderCatalogSpec {
+    key: String,
+    family: SceneShaderFamily,
 }
 
 use specs::BUILTIN_SCENE_SHADER_SPECS;
@@ -113,20 +122,56 @@ pub(crate) fn build_scene_shader_catalog() {
     generated.push_str("    pub local_read_shader: Option<BuiltinSceneLocalReadShader>,\n    pub fragment_coordinate_fetch_slot_mask: u32,\n");
     generated.push_str("    pub parameter_layout: BuiltinSceneParameterLayout,\n");
     generated.push_str("}\n\n");
-    let expected_entry_count =
-        BUILTIN_SCENE_SHADER_SPECS.len() + super::FINAL_EFFECT_SHADER_SPECS.len();
-    let mut actual_entry_count = 0usize;
-    let mut entries = String::new();
-    for spec in BUILTIN_SCENE_SHADER_SPECS
+    let depth_parallax_variants = super::depth_parallax::catalog_variants().collect::<Vec<_>>();
+    let pulse_variants = super::pulse::catalog_variants().collect::<Vec<_>>();
+    let shake_variants = super::shake::catalog_variants().collect::<Vec<_>>();
+    let mut specs = BUILTIN_SCENE_SHADER_SPECS
         .iter()
         .chain(super::FINAL_EFFECT_SHADER_SPECS)
-    {
+        .map(|spec| SceneShaderCatalogSpec {
+            key: spec.key.to_owned(),
+            family: spec.family,
+        })
+        .collect::<Vec<_>>();
+    specs.extend(
+        depth_parallax_variants
+            .iter()
+            .copied()
+            .map(|variant| SceneShaderCatalogSpec {
+                key: super::depth_parallax::catalog_key(variant),
+                family: SceneShaderFamily::DepthParallax,
+            }),
+    );
+    specs.extend(
+        pulse_variants
+            .iter()
+            .copied()
+            .map(|variant| SceneShaderCatalogSpec {
+                key: super::pulse::catalog_key(variant),
+                family: SceneShaderFamily::Pulse,
+            }),
+    );
+    specs.extend(
+        shake_variants
+            .iter()
+            .copied()
+            .map(|variant| SceneShaderCatalogSpec {
+                key: super::shake::catalog_key(variant),
+                family: SceneShaderFamily::Shake,
+            }),
+    );
+    let expected_entry_count = specs.len();
+    let mut actual_entry_count = 0usize;
+    let mut entries = String::new();
+    for spec in &specs {
         actual_entry_count += 1;
-        let (vertex_source, fragment_source) = scene_shader_sources(*spec);
-        let fragment = compile_scene_fragment(&shader_dir, *spec, &fragment_source);
+        let (vertex_source, fragment_source) = scene_shader_sources(spec.family, &spec.key);
+        let fragment =
+            compile_scene_fragment(&shader_dir, spec.family, &spec.key, &fragment_source);
         let vertex = compile_scene_vertex(
             &shader_dir,
-            *spec,
+            spec.family,
+            &spec.key,
             &vertex_source,
             fragment.push_constant_bytes,
         );
@@ -138,9 +183,16 @@ pub(crate) fn build_scene_shader_catalog() {
                 fragment.push_constant_bytes,
             )),
             SceneShaderFamily::Effect => {
-                let shader = effect_shader_name_for_key(spec.key);
-                let texture_slot_mask = effect_texture_slot_mask_for_key(spec.key);
-                if shader == "effects/waterflow" {
+                let shader = effect_shader_name_for_key(&spec.key);
+                let texture_slot_mask = effect_texture_slot_mask_for_key(&spec.key);
+                if shader == "effects/tint" && texture_slot_mask == 0x03 {
+                    Some(compile_native_slang_scene_vertex(
+                        &shader_dir,
+                        &format!("{}__OBJECT_MESH", spec.key),
+                        &super::tint_masked_object_mesh_vertex_source(),
+                        fragment.push_constant_bytes,
+                    ))
+                } else if shader == "effects/waterflow" {
                     let source = super::waterflow_object_mesh_vertex_source();
                     Some(compile_native_slang_scene_vertex(
                         &shader_dir,
@@ -156,7 +208,7 @@ pub(crate) fn build_scene_shader_catalog() {
                         fragment.push_constant_bytes,
                     ))
                 } else {
-                    super::effect_object_mesh_vertex_source(spec.key, shader, texture_slot_mask)
+                    super::effect_object_mesh_vertex_source(&spec.key, shader, texture_slot_mask)
                         .map(|source| {
                             compile_generated_scene_vertex(
                                 &shader_dir,
@@ -166,6 +218,17 @@ pub(crate) fn build_scene_shader_catalog() {
                             )
                         })
                 }
+            }
+            SceneShaderFamily::Pulse => {
+                let variant = super::pulse::variant_from_catalog_key(&spec.key)
+                    .expect("generated Pulse catalog key must have a typed variant");
+                let source = super::pulse::object_mesh_vertex_source(variant);
+                Some(compile_native_slang_scene_vertex(
+                    &shader_dir,
+                    &format!("{}__OBJECT_MESH", spec.key),
+                    &source,
+                    fragment.push_constant_bytes,
+                ))
             }
             _ => None,
         };
@@ -218,8 +281,8 @@ pub(crate) fn build_scene_shader_catalog() {
                 )
             },
         );
-        let vertex_primitive = super::scene_shader_vertex_primitive(*spec);
-        let parameter_layout = scene_shader_parameter_layout(*spec);
+        let vertex_primitive = super::scene_shader_vertex_primitive(spec.family, &spec.key);
+        let parameter_layout = scene_shader_parameter_layout(spec.family, &spec.key);
         let vertex_bindings = builtin_binding_expressions(&vertex.bindings);
         let fragment_bindings = builtin_binding_expressions(&fragment.bindings);
         let fragment_coordinate_fetch_slot_mask =
@@ -243,6 +306,11 @@ pub(crate) fn build_scene_shader_catalog() {
     generated.push_str("pub static BUILTIN_SCENE_SHADERS: &[BuiltinSceneShader] = &[\n");
     generated.push_str(&entries);
     generated.push_str("];\n");
+    generated.push_str(&super::depth_parallax::resolver_source(
+        &depth_parallax_variants,
+    ));
+    generated.push_str(&super::pulse::resolver_source(&pulse_variants));
+    generated.push_str(&super::shake::resolver_source(&shake_variants));
 
     let compute = compile_native_particle_compute(
         &shader_dir,
@@ -273,31 +341,33 @@ pub(crate) fn build_scene_shader_catalog() {
 
 fn compile_scene_fragment(
     shader_dir: &Path,
-    spec: SceneShaderSpec,
+    family: SceneShaderFamily,
+    key: &str,
     source: &str,
 ) -> native_stage::NativeSceneStage {
-    if has_version_controlled_native_slang_source(spec) {
-        compile_native_slang_scene_fragment(shader_dir, spec.key, source)
+    if has_version_controlled_native_slang_source(family, key) {
+        compile_native_slang_scene_fragment(shader_dir, key, source)
     } else {
-        compile_generated_scene_fragment(shader_dir, spec.key, source)
+        compile_generated_scene_fragment(shader_dir, key, source)
     }
 }
 
 fn compile_scene_vertex(
     shader_dir: &Path,
-    spec: SceneShaderSpec,
+    family: SceneShaderFamily,
+    key: &str,
     source: &str,
     push_base_bytes: u32,
 ) -> native_stage::NativeSceneStage {
-    if has_version_controlled_native_slang_source(spec) {
-        compile_native_slang_scene_vertex(shader_dir, spec.key, source, push_base_bytes)
+    if has_version_controlled_native_slang_source(family, key) {
+        compile_native_slang_scene_vertex(shader_dir, key, source, push_base_bytes)
     } else {
-        compile_generated_scene_vertex(shader_dir, spec.key, source, push_base_bytes)
+        compile_generated_scene_vertex(shader_dir, key, source, push_base_bytes)
     }
 }
 
-fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
-    match spec.family {
+fn scene_shader_parameter_layout(family: SceneShaderFamily, key: &str) -> &'static str {
+    match family {
         SceneShaderFamily::MeshGenericImage4
         | SceneShaderFamily::MeshDynamicText
         | SceneShaderFamily::MeshGenericImage4PuppetSkinning
@@ -316,11 +386,14 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
         SceneShaderFamily::MeshImageFoliageRippleComposite
         | SceneShaderFamily::MeshImageFoliageRippleScreenComposite => "FoliageRippleComposite",
         SceneShaderFamily::MeshImageRippleFlowComposite => "RippleFlowComposite",
-        SceneShaderFamily::MeshFinalEffect => super::final_effect_parameter_layout(spec.key),
+        SceneShaderFamily::MeshFinalEffect => super::final_effect_parameter_layout(key),
         SceneShaderFamily::MeshFlatRoundedMaskComposite => "RoundedMask",
         SceneShaderFamily::EffectWaterWavesUvField => "WaterWavesUvField",
         SceneShaderFamily::EffectImageRippleSource => "WaterRipple",
-        SceneShaderFamily::Effect => match effect_shader_name_for_key(spec.key) {
+        SceneShaderFamily::DepthParallax => "DepthParallax",
+        SceneShaderFamily::Pulse => "Pulse",
+        SceneShaderFamily::Shake => "Shake",
+        SceneShaderFamily::Effect => match effect_shader_name_for_key(key) {
             "effects/blend" => "Blend",
             "effects/blendgradient" => "BlendGradient",
             "effects/blur_combine" => "BlurCombine",
@@ -348,13 +421,13 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
     }
 }
 
-fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
-    match spec.family {
-        SceneShaderFamily::MeshGenericImage4 if spec.key == "we/genericimage4" => {
+fn scene_shader_sources(family: SceneShaderFamily, key: &str) -> (String, String) {
+    match family {
+        SceneShaderFamily::MeshGenericImage4 if key == "we/genericimage4" => {
             super::generic_image_sources()
         }
         SceneShaderFamily::MeshGenericImage4 => {
-            let fragment = if spec.key == "we/genericimage4-multiply-composite" {
+            let fragment = if key == "we/genericimage4-multiply-composite" {
                 super::generic_image_multiply_fragment_source()
             } else {
                 super::generic_image_fragment_source()
@@ -404,7 +477,7 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
         ),
         SceneShaderFamily::MeshComposelayer => super::composelayer_sources(),
         SceneShaderFamily::MeshObjectComposite => {
-            if spec.key == "we/objectcomposite-screen-group" {
+            if key == "we/objectcomposite-screen-group" {
                 super::screen_group_composite_sources()
             } else {
                 super::object_composite_sources()
@@ -412,19 +485,19 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
         }
         SceneShaderFamily::MeshImageEffectSource => super::image_effect_source_sources(),
         SceneShaderFamily::MeshImageEffectComposite => {
-            if spec.key == "we/image-effect-modulate-composite" {
+            if key == "we/image-effect-modulate-composite" {
                 super::image_effect_modulate_composite_sources()
             } else {
                 super::image_effect_composite_sources()
             }
         }
-        SceneShaderFamily::MeshFlatRoundedMaskComposite => match spec.key {
+        SceneShaderFamily::MeshFlatRoundedMaskComposite => match key {
             "we/flat-rounded-hsl-source" => super::flat_rounded_hsl_source_sources(),
             _ => super::flat_rounded_mask_composite_sources(),
         },
         SceneShaderFamily::MeshPuppetEffectComposite => super::puppet_effect_composite_sources(),
         SceneShaderFamily::MeshImageWaterWavesComposite => {
-            if spec.key == "we/image-waterwaves-multiply-composite" {
+            if key == "we/image-waterwaves-multiply-composite" {
                 super::image_waterwaves_multiply_composite_sources()
             } else {
                 super::image_waterwaves_composite_sources()
@@ -432,31 +505,31 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
         }
         SceneShaderFamily::MeshImageFoliageRippleComposite => {
             super::image_foliage_ripple_composite_sources(
-                spec.key.contains("__GILDER_FOLIAGE_POWER_TWO_1"),
+                key.contains("__GILDER_FOLIAGE_POWER_TWO_1"),
             )
         }
         SceneShaderFamily::MeshImageFoliageRippleScreenComposite => {
             super::image_foliage_ripple_screen_composite_sources(
-                spec.key.contains("__GILDER_FOLIAGE_POWER_TWO_1"),
+                key.contains("__GILDER_FOLIAGE_POWER_TWO_1"),
             )
         }
         SceneShaderFamily::MeshImageRippleFlowComposite => {
-            if spec.key == "we/image-ripple-flow-multiply-composite" {
+            if key == "we/image-ripple-flow-multiply-composite" {
                 super::image_ripple_flow_multiply_composite_sources()
             } else {
                 super::image_ripple_flow_composite_sources()
             }
         }
-        SceneShaderFamily::MeshFinalEffect => super::final_effect_sources(spec.key),
+        SceneShaderFamily::MeshFinalEffect => super::final_effect_sources(key),
         SceneShaderFamily::MeshPuppetWaterWavesComposite => {
             super::puppet_waterwaves_composite_sources()
         }
         SceneShaderFamily::MeshWaterWavesDirect => super::waterwaves_direct_sources(
-            spec.key.starts_with("we/puppet-waterwaves-direct"),
-            spec.key.starts_with("we/effect-waterwaves-direct"),
-            spec.key.starts_with("we/image-waterwaves-multiply-direct"),
-            super::waterwaves_direct::stage_count_from_shader_key(spec.key),
-            super::waterwaves_direct::static_black_output_from_shader_key(spec.key),
+            key.starts_with("we/puppet-waterwaves-direct"),
+            key.starts_with("we/effect-waterwaves-direct"),
+            key.starts_with("we/image-waterwaves-multiply-direct"),
+            super::waterwaves_direct::stage_count_from_shader_key(key),
+            super::waterwaves_direct::static_black_output_from_shader_key(key),
         ),
         SceneShaderFamily::MeshUtilityComposite => (
             flattexture_vertex_source(),
@@ -472,41 +545,72 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
             flattexture_vertex_source(),
             super::passthrough_fragment_source(),
         ),
-        SceneShaderFamily::Effect
-            if effect_shader_name_for_key(spec.key) == "effects/waterflow" =>
-        {
+        SceneShaderFamily::Effect if effect_shader_name_for_key(key) == "effects/waterflow" => {
             super::waterflow_sources()
         }
         SceneShaderFamily::Effect
-            if effect_shader_name_for_key(spec.key) == "effects/waterripple"
-                && effect_texture_slot_mask_for_key(spec.key) == 0x05 =>
+            if effect_shader_name_for_key(key) == "effects/tint"
+                && effect_texture_slot_mask_for_key(key) == 0x03 =>
+        {
+            super::tint_masked_sources(key)
+        }
+        SceneShaderFamily::Effect
+            if effect_shader_name_for_key(key) == "effects/waterripple"
+                && effect_texture_slot_mask_for_key(key) == 0x05 =>
         {
             super::waterripple_slots_5_sources()
         }
         SceneShaderFamily::Effect => {
-            let shader = effect_shader_name_for_key(spec.key);
-            let texture_slot_mask = effect_texture_slot_mask_for_key(spec.key);
+            let shader = effect_shader_name_for_key(key);
+            let texture_slot_mask = effect_texture_slot_mask_for_key(key);
             (
-                effect_vertex_source(spec.key, shader, texture_slot_mask),
-                effect_fragment_source(spec.key, shader, texture_slot_mask),
+                effect_vertex_source(key, shader, texture_slot_mask),
+                effect_fragment_source(key, shader, texture_slot_mask),
+            )
+        }
+        SceneShaderFamily::DepthParallax => {
+            let variant = super::depth_parallax::variant_from_catalog_key(key)
+                .expect("generated Depth Parallax catalog key must have a typed variant");
+            (
+                super::depth_parallax::vertex_source(variant),
+                super::depth_parallax::fragment_source(variant),
+            )
+        }
+        SceneShaderFamily::Pulse => {
+            let variant = super::pulse::variant_from_catalog_key(key)
+                .expect("generated Pulse catalog key must have a typed variant");
+            (
+                super::pulse::fullscreen_vertex_source(variant),
+                super::pulse::fragment_source(variant),
+            )
+        }
+        SceneShaderFamily::Shake => {
+            let variant = super::shake::variant_from_catalog_key(key)
+                .expect("generated Shake catalog key must have a typed variant");
+            (
+                super::shake::vertex_source(),
+                super::shake::fragment_source(variant),
             )
         }
     }
 }
 
-fn has_version_controlled_native_slang_source(spec: SceneShaderSpec) -> bool {
+fn has_version_controlled_native_slang_source(family: SceneShaderFamily, key: &str) -> bool {
     matches!(
-        spec.family,
+        family,
         SceneShaderFamily::MeshSceneColorBlend
             | SceneShaderFamily::MeshComposelayer
             | SceneShaderFamily::MeshImageEffectSource
-    ) || spec.key == "we/genericimage4"
-        || matches!(spec.family, SceneShaderFamily::Effect)
+            | SceneShaderFamily::DepthParallax
+            | SceneShaderFamily::Pulse
+            | SceneShaderFamily::Shake
+    ) || key == "we/genericimage4"
+        || matches!(family, SceneShaderFamily::Effect)
             && matches!(
                 (
-                    effect_shader_name_for_key(spec.key),
-                    effect_texture_slot_mask_for_key(spec.key)
+                    effect_shader_name_for_key(key),
+                    effect_texture_slot_mask_for_key(key)
                 ),
-                ("effects/waterflow", _) | ("effects/waterripple", 0x05)
+                ("effects/tint", 0x03) | ("effects/waterflow", _) | ("effects/waterripple", 0x05)
             )
 }

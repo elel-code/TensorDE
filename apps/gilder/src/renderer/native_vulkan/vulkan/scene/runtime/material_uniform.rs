@@ -10,9 +10,11 @@ use std::mem::size_of;
 
 mod audio_usage;
 mod color_effect;
+mod depth_parallax;
 mod deformation;
 mod final_effect;
 mod particle;
+mod pulse;
 mod shader_key;
 mod source_extent;
 mod value_writer;
@@ -22,10 +24,12 @@ mod weather_effect;
 use audio_usage::material_uses_audio_spectrum;
 pub(super) use audio_usage::scene_uses_audio_spectrum;
 use color_effect::{blend_gradient_values, blend_values, shimmer_values, tint_values};
+use depth_parallax::depth_parallax_values;
 use deformation::{
     draw_effect_enabled, foliage_ripple_composite_values, foliage_sway_values, shake_values,
     waterripple_values, waterwaves_direct_values, waterwaves_uv_field_values, waterwaves_values,
 };
+use pulse::pulse_values;
 use shader_key::{shader_combo_enabled, shader_combo_value, shader_texture_slot_enabled};
 use source_extent::draw_source_aspect_ratio;
 pub(super) use value_writer::parse_constant_values;
@@ -44,7 +48,7 @@ use crate::engine::scene::semantic_world::{
 use crate::engine::scene::{
     INVALID_MATERIAL_ID, SceneAudioBandMaterialTarget, SceneMaterialConstantRecord,
     SceneMaterialHandle, SceneMaterialPassRecord, SceneRenderingDeviceMeshDraw, SceneStorage,
-    SceneTextureRecord,
+    SceneTextureRecord, StereoSpectrum64,
 };
 use crate::renderer::native_vulkan::scene::{
     BuiltinSceneParameterLayout, native_vulkan_scene_shader_for_key,
@@ -58,6 +62,8 @@ pub(super) const AUTHORED_CLOUDMOTION_DEFAULT_DIRECTION: f32 = f32::from_bits(0x
 #[derive(Clone, Copy)]
 pub(super) struct SceneMaterialFrameInputs<'a> {
     pub average_spectrum32: Option<&'a [f32; 32]>,
+    pub stereo_spectrum64: Option<&'a StereoSpectrum64>,
+    pub parallax_position: [f32; 2],
     pub audio_material_values: &'a [ResolvedAudioBandMaterialValue],
     pub material_scalar_values: &'a [ResolvedMaterialScalarValue],
 }
@@ -91,6 +97,8 @@ fn pack_scene_material_uniforms_with_spectrum(
         output_extent,
         SceneMaterialFrameInputs {
             average_spectrum32,
+            stereo_spectrum64: None,
+            parallax_position: [0.5; 2],
             audio_material_values: &[],
             material_scalar_values: &[],
         },
@@ -178,6 +186,11 @@ fn material_uniform_values(
         }
         BuiltinSceneParameterLayout::BlurCombine => blur_combine_values(&parameters),
         BuiltinSceneParameterLayout::BlurGaussian => blur_gaussian_values(&parameters),
+        BuiltinSceneParameterLayout::DepthParallax => depth_parallax_values(
+            &parameters,
+            storage,
+            frame_inputs.parallax_position,
+        ),
         BuiltinSceneParameterLayout::StandardMaterial => {
             if draw.apply_resolved_visual
                 && draw.primitive
@@ -210,6 +223,13 @@ fn material_uniform_values(
         BuiltinSceneParameterLayout::ColorKey => colorkey_values(&parameters, shader_key),
         BuiltinSceneParameterLayout::Iris => iris_fragment_values(&parameters, shader_key),
         BuiltinSceneParameterLayout::Opacity => opacity_values(&parameters),
+        BuiltinSceneParameterLayout::Pulse => pulse_values(
+            &parameters,
+            storage,
+            shader_key,
+            scene_time_seconds,
+            frame_inputs.stereo_spectrum64,
+        ),
         BuiltinSceneParameterLayout::RoundedMask => {
             rounded_mask_values(&parameters, draw, draw_effect_enabled(draw, 0))
         }
@@ -220,7 +240,7 @@ fn material_uniform_values(
         BuiltinSceneParameterLayout::Swing => {
             weather_effect::swing_values(&parameters, storage, scene_time_seconds)
         }
-        BuiltinSceneParameterLayout::Tint => tint_values(&parameters),
+        BuiltinSceneParameterLayout::Tint => tint_values(&parameters, storage),
         BuiltinSceneParameterLayout::FoliageSway => {
             foliage_sway_values(&parameters, storage, draw, scene_time_seconds)
         }
@@ -245,7 +265,9 @@ fn material_uniform_values(
         BuiltinSceneParameterLayout::RippleFlowComposite => {
             ripple_flow_composite_values(&parameters, storage, draw, scene_time_seconds)
         }
-        BuiltinSceneParameterLayout::Shake => shake_values(&parameters, scene_time_seconds),
+        BuiltinSceneParameterLayout::Shake => {
+            shake_values(&parameters, storage, scene_time_seconds)
+        }
         BuiltinSceneParameterLayout::WaterWaves => {
             waterwaves_values(&parameters, storage, shader_key, scene_time_seconds)
         }

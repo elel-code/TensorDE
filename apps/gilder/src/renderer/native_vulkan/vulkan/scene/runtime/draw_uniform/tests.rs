@@ -68,6 +68,29 @@ fn authored_texture_ordinary_draw_uniform_bypasses_output_cover_scale() {
     assert_eq!(payload_f32(&payload, 12), 0.0);
     assert_eq!(payload_f32(&payload, 20), -2.0 / 405.0);
 }
+
+#[test]
+fn depth_parallax_draw_uniform_packs_inverse_effect_texture_projection() {
+    let mut document = audio_bars_storage().document().clone();
+    document.strings[0] = "effects/depthparallax__SLOTS_3__QUALITY_2".to_owned();
+    let storage = SceneStorage::from_document(document).expect("Depth Parallax storage");
+    let mut draw = draw_with_material(SceneMaterialHandle(0));
+    draw.clip_transform = [
+        [2.0, 0.25, 0.0, 0.5],
+        [0.0, -4.0, 0.0, -0.25],
+        [0.0, 0.0, 0.5, 0.125],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    let projection = draw_projection_matrix(&storage, &draw, [1, 1]);
+    let expected = inverse_affine_rows(&projection).expect("invertible projection");
+
+    let payload = pack_scene_draw_uniforms(&storage, &[draw], 0.0, [1, 1]);
+
+    for (lane, expected) in expected.into_iter().flatten().enumerate() {
+        assert_close(payload_f32(&payload, lane * size_of::<f32>()), expected);
+    }
+}
+
 #[test]
 fn iris_draw_uniform_maps_named_constants_and_time() {
     let storage = iris_storage();

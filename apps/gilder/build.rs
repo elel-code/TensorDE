@@ -363,45 +363,6 @@ void main() {{
     )
 }
 
-fn shake_effect_fragment_source(texture_slot_mask: u32) -> String {
-    let flow_sampler = if texture_slot_mask & (1 << 1) != 0 {
-        "layout(set = 0, binding = 1) uniform sampler2D g_Texture1;"
-    } else {
-        ""
-    };
-    let flow_sample = if texture_slot_mask & (1 << 1) != 0 {
-        "texture(g_Texture1, v_TexCoord).rg * 2.0 - 1.0"
-    } else {
-        "vec2(1.0, 0.0)"
-    };
-    format!(
-        r#"#version 450
-layout(location = 0) in vec2 v_TexCoord;
-layout(location = 0) out vec4 o_Color;
-layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
-{flow_sampler}
-layout(set = 0, binding = 3) uniform ShakeUniform {{
-    vec4 g_TimeSpeedStrengthUnused;
-    vec4 g_BoundsFriction;
-    vec4 g_Unused0;
-    vec4 g_Unused1;
-}} u_Effect;
-void main() {{
-    float phase = u_Effect.g_TimeSpeedStrengthUnused.x
-        * u_Effect.g_TimeSpeedStrengthUnused.y;
-    float wave = sin(phase);
-    float lower = u_Effect.g_BoundsFriction.x;
-    float range = max(u_Effect.g_BoundsFriction.y - lower, 0.0001);
-    wave = clamp((wave * 0.5 + 0.5 - lower) / range, 0.0, 1.0) * 2.0 - 1.0;
-    vec2 flow = {flow_sample};
-    float strength = u_Effect.g_TimeSpeedStrengthUnused.z;
-    vec2 offset = flow * wave * strength * strength;
-    o_Color = texture(g_Texture0, clamp(v_TexCoord + offset, vec2(0.001), vec2(0.999)));
-}}
-"#
-    )
-}
-
 fn iris_effect_vertex_source(texture_slot_mask: u32) -> String {
     let mask_uv = if texture_slot_mask & (1 << 1) != 0 {
         "if (u_IrisVertex.g_ScalePhaseMask.w > 0.5 && u_IrisVertex.g_Texture1Resolution.x > 0.0 && u_IrisVertex.g_Texture1Resolution.y > 0.0) {\n        v_TexCoord.zw = vec2(uv.x * u_IrisVertex.g_Texture1Resolution.z / u_IrisVertex.g_Texture1Resolution.x,\n                             uv.y * u_IrisVertex.g_Texture1Resolution.w / u_IrisVertex.g_Texture1Resolution.y);\n    }"
@@ -569,7 +530,14 @@ void main() {{
 }
 
 fn waterwaves_fragment_source(texture_slot_mask: u32) -> String {
-    let samplers = effect_sampler_declarations(texture_slot_mask);
+    // Texture2 has an authored util/black default and remains part of the
+    // semantic SLOTS identity, but this catalog subset has TIMEOFFSET=0.
+    // Do not expose an O2-dead descriptor access for that default.
+    let samplers = if texture_slot_mask & (1 << 1) != 0 {
+        "layout(set = 0, binding = 0) uniform sampler2D g_Texture0;\nlayout(set = 0, binding = 1) uniform sampler2D g_Texture1;\n"
+    } else {
+        "layout(set = 0, binding = 0) uniform sampler2D g_Texture0;\n"
+    };
     let mask_sample = if texture_slot_mask & (1 << 1) != 0 {
         "vec2 mask_uv = v_ObjectTexCoord * u_Effect.g_Texture1Resolution.zw / u_Effect.g_Texture1Resolution.xy;\n    float mask = texture(g_Texture1, mask_uv).r;"
     } else {
