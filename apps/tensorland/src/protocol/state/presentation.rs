@@ -35,6 +35,12 @@ struct PresentationKey {
     timeline_value: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SubmittedSurface {
+    view_id: ViewId,
+    bounds: Rect,
+}
+
 #[derive(Debug)]
 pub(super) struct CapturedPresentation {
     feedback: OutputPresentationFeedback,
@@ -162,8 +168,7 @@ impl RuntimeState {
         self.capture_presentation(
             output_id,
             output,
-            scene,
-            submitted_scene_surfaces(scene),
+            scene_submission_index(scene),
             cursor_surfaces,
         )
     }
@@ -228,20 +233,19 @@ impl RuntimeState {
         &self,
         output_id: BackendOutputId,
         output: &Output,
-        scene: &SceneSnapshot,
-        mut submitted: HashMap<SurfaceId, ViewId>,
+        mut submitted: HashMap<SurfaceId, SubmittedSurface>,
         cursor_surfaces: CursorSurfaces,
     ) -> CapturedPresentation {
         let output_regions = self.output_regions();
-        let bounds = scene_surface_bounds(scene);
-        submitted.retain(|surface_id, _| {
-            bounds
-                .get(surface_id)
-                .and_then(|bounds| primary_output(*bounds, &output_regions))
-                == Some(output_id)
+        submitted.retain(|_, surface| {
+            primary_output(surface.bounds, &output_regions) == Some(output_id)
         });
-        let submitted_surfaces = submitted.keys().copied().collect::<HashSet<_>>();
-        let submitted_views = submitted.values().copied().collect::<HashSet<_>>();
+        let mut submitted_surfaces = HashSet::with_capacity(submitted.len());
+        let mut submitted_views = HashSet::with_capacity(submitted.len());
+        for (surface_id, surface) in submitted {
+            submitted_surfaces.insert(surface_id);
+            submitted_views.insert(surface.view_id);
+        }
         let surface_buffers = &self.surface_buffers;
         let fifo_barriers = self
             .protocol_globals
@@ -388,23 +392,9 @@ impl RuntimeState {
     }
 }
 
-fn submitted_scene_surfaces(scene: &SceneSnapshot) -> HashMap<SurfaceId, ViewId> {
-    let mut submitted = HashMap::new();
-    for node in scene.draw_order() {
-        if scene.visual_bounds(node).is_none() {
-            continue;
-        }
-        for content in scene.contents_for(node) {
-            if submitted_content_bounds(scene, node, content).is_some() {
-                submitted.insert(content.surface_id, node.view_id);
-            }
-        }
-    }
-    submitted
-}
-
-fn scene_surface_bounds(scene: &SceneSnapshot) -> HashMap<SurfaceId, Rect> {
-    let mut bounds = HashMap::<SurfaceId, Rect>::new();
+fn scene_submission_index(scene: &SceneSnapshot) -> HashMap<SurfaceId, SubmittedSurface> {
+    let mut submitted =
+        HashMap::<SurfaceId, SubmittedSurface>::with_capacity(scene.contents().len());
     for node in scene.draw_order() {
         if scene.visual_bounds(node).is_none() {
             continue;
@@ -413,13 +403,19 @@ fn scene_surface_bounds(scene: &SceneSnapshot) -> HashMap<SurfaceId, Rect> {
             let Some(content_bounds) = submitted_content_bounds(scene, node, content) else {
                 continue;
             };
-            bounds
+            submitted
                 .entry(content.surface_id)
-                .and_modify(|current| *current = current.union(content_bounds))
-                .or_insert(content_bounds);
+                .and_modify(|surface| {
+                    surface.view_id = node.view_id;
+                    surface.bounds = surface.bounds.union(content_bounds);
+                })
+                .or_insert(SubmittedSurface {
+                    view_id: node.view_id,
+                    bounds: content_bounds,
+                });
         }
     }
-    bounds
+    submitted
 }
 
 fn submitted_content_bounds(
@@ -581,6 +577,7 @@ mod tests {
         let contents = vec![
             content(1, SurfaceLayer::View, Rect::new(-50, 0, 200, 100)),
             content(2, SurfaceLayer::Popup, Rect::new(120, 0, 80, 100)),
+            content(2, SurfaceLayer::Popup, Rect::new(100, 0, 10, 100)),
             content(3, SurfaceLayer::View, Rect::new(200, 0, 20, 20)),
         ];
         let node = SceneNode::new(view_id, 0, placement, EffectStyle::default())
@@ -592,15 +589,22 @@ mod tests {
             contents,
         );
 
-        let submitted = submitted_scene_surfaces(&scene);
-        assert_eq!(submitted.get(&SurfaceId::new(1)), Some(&view_id));
-        assert_eq!(submitted.get(&SurfaceId::new(2)), Some(&view_id));
+        let submitted = scene_submission_index(&scene);
+        assert_eq!(
+            submitted.get(&SurfaceId::new(1)),
+            Some(&SubmittedSurface {
+                view_id,
+                bounds: Rect::new(100, 0, 50, 100),
+            })
+        );
+        assert_eq!(
+            submitted.get(&SurfaceId::new(2)),
+            Some(&SubmittedSurface {
+                view_id,
+                bounds: Rect::new(150, 0, 50, 100),
+            })
+        );
         assert!(!submitted.contains_key(&SurfaceId::new(3)));
-
-        let bounds = scene_surface_bounds(&scene);
-        assert_eq!(bounds[&SurfaceId::new(1)], Rect::new(100, 0, 50, 100));
-        assert_eq!(bounds[&SurfaceId::new(2)], Rect::new(170, 0, 30, 100));
-        assert!(!bounds.contains_key(&SurfaceId::new(3)));
     }
 
     #[test]

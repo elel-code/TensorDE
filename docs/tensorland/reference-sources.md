@@ -44,7 +44,9 @@ profiling evidence, not as renderer code to copy:
   queries. Tensorland imports client acquire points directly into Vulkan and
   uses one submitted io_uring poll only for exported frame-completion
   sync-files, so the eventfd optimization is not transplanted into the wrong
-  ownership model. Repeated geometry/policy queries remain profiling targets.
+  ownership model. Presentation capture does adopt the repeated-query lesson:
+  one scene traversal now computes surface membership, owning view, and unioned
+  visible bounds instead of building two maps from two equivalent traversals.
 - `1ea103b5` enables FP16 targets when supported. Tensorland already selects a
   typed `R16G16B16A16` linear working target for managed color and keeps HDR
   advertisement completion-gated on format plus KMS metadata support; support
