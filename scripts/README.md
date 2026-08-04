@@ -4,7 +4,7 @@ Run repository automation from the workspace root. Product-specific tools have
 one canonical location:
 
 - [Tensor Files scripts](tensor-files/README.md)
-- [Gilder scripts](gilder/README.md)
+- [Tensor Wallpaper scripts](tensor-wallpaper/README.md)
 - [Tensorland scripts](tensorland/README.md)
 
 The monorepo-wide Rust line gate is

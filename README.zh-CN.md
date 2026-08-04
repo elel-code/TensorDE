@@ -9,7 +9,7 @@ TensorDE 以一个统一系统的形式开发原生、GPU-first 的桌面环境�
 - `apps/tensor-shell`：Tensor Shell，包括顶栏、启动器、通知与 OSD、控制中心、
   概览和锁屏 surface。
 - `apps/tensor-files`：Tensor Files 文件管理器。
-- `apps/gilder`：Gilder 场景与壁纸引擎。
+- `apps/tensor-wallpaper`：Tensor Wallpaper 场景与壁纸引擎。
 
 ## 共享基础设施
 

@@ -1,0 +1,73 @@
+[package]
+name = "tensor-wallpaper"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+repository = "https://github.com/elel-code/TensorDE"
+homepage = "https://github.com/elel-code/TensorDE"
+build = "build.rs"
+exclude = [
+    ".claude/**",
+]
+
+[features]
+default = []
+wayland-renderer = [
+    "dep:wayland-client-runtime",
+]
+rendering-device = [
+    "wayland-renderer",
+    "dep:vulkan-renderer",
+]
+video = [
+    "rendering-device",
+    "vulkan-renderer/ffmpeg-vulkan-decode",
+]
+
+[[bin]]
+name = "tensor-wallpaperd"
+path = "src/bin/tensor-wallpaperd.rs"
+
+[[bin]]
+name = "tensor-wallpaperctl"
+path = "src/bin/tensor-wallpaperctl.rs"
+
+[[bin]]
+name = "tensor-wallpaper-convert"
+path = "src/bin/tensor-wallpaper-convert.rs"
+
+[[bin]]
+name = "tensor-wallpaper"
+path = "src/bin/tensor-wallpaper.rs"
+required-features = ["rendering-device"]
+
+[dependencies]
+ab_glyph = "0.2.32"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+intel_tex_2 = "0.5.0"
+jiff = "0.2"
+oxc_allocator = "0"
+oxc_ast = "0"
+oxc_ast_visit = "0"
+oxc_parser = "0"
+oxc_span = "0"
+rquickjs = { version = "0", features = ["loader"] }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+toml = "1"
+vulkan-renderer = { path = "../../crates/vulkan-renderer", optional = true }
+vulkan-renderer-build = { path = "../../crates/vulkan-renderer-build" }
+wayland-client-runtime = { path = "../../crates/wayland-client-runtime", default-features = false, optional = true }
+zip = { version = "4", default-features = false, features = ["deflate"] }
+
+[build-dependencies]
+vulkan-renderer-build = { path = "../../crates/vulkan-renderer-build" }
+
+# [profile.release]
+# codegen-units = 1
+# lto = "thin"
+# panic = "abort"
+# strip = "symbols"
+
+[lints.rust]
+unsafe_code = "warn"

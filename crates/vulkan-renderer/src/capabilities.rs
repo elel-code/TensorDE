@@ -226,7 +226,7 @@ impl Features {
             | Self::PIPELINE_BINARIES.0,
     );
 
-    /// Complete graphics/presentation capability set consumed by Gilder's
+    /// Complete graphics/presentation capability set consumed by Tensor Wallpaper's
     /// authored scene executor. Optional product choices such as 4x MSAA are
     /// requested separately and never enabled by environment inspection in
     /// the shared renderer.

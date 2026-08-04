@@ -1,0 +1,13 @@
+/target/
+/artifacts/video-sources/
+/artifacts/video-real-source-matrix/
+/artifacts/tools/
+/artifacts/vulkanalia-smoke/
+/artifacts/tensor-wallpaper/wallpaper-engine-workshop/
+**/*.rs.bk
+*.gwp
+*.gwp.tmp
+.DS_Store
+/.claude/
+**/__pycache__/
+*.py[cod]

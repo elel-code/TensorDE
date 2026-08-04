@@ -2,7 +2,7 @@
 members = [
     "apps/tensor-shell",
     "apps/tensor-files",
-    "apps/gilder",
+    "apps/tensor-wallpaper",
     "apps/tensorland",
     "crates/tensor-drm",
     "crates/tensor-event",

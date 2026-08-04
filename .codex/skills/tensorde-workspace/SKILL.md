@@ -1,6 +1,6 @@
 ---
 name: tensorde-workspace
-description: Evolve and validate the native GPU-first TensorDE monorepo containing Tensor Files, Gilder, Tensorland, Tensor Shell, shared tensor crates, vulkan-renderer, and wayland-client-runtime. Use when changing TensorDE repository structure, shared Vulkan or client-runtime standards, compositor and DE shell surfaces or services, cross-product APIs, Gilder VM/evidence infrastructure, Tensor Files or Tensorland integration, dependency ownership, performance paths, or monorepo-wide policy and validation.
+description: Evolve and validate the GPU-first TensorDE monorepo containing Tensor Files, Tensor Wallpaper, Tensorland, Tensor Shell, shared tensor crates, vulkan-renderer, and wayland-client-runtime. Use when changing TensorDE repository structure, shared Vulkan or client-runtime standards, compositor and DE shell surfaces or services, cross-product APIs, Tensor Wallpaper VM/evidence infrastructure, Tensor Files or Tensorland integration, dependency ownership, performance paths, or monorepo-wide policy and validation.
 ---
 
 # TensorDE Workspace
@@ -10,7 +10,7 @@ description: Evolve and validate the native GPU-first TensorDE monorepo containi
 1. Read the root `AGENTS.md` completely, then read the nearest nested
    `AGENTS.md` for every path to be changed.
 2. Inspect `git status --short`, staged diff, and unstaged diff separately.
-   Preserve user changes and identify imported Gilder dirty files before
+   Preserve user changes and identify imported Tensor Wallpaper dirty files before
    staging or formatting.
 3. Classify the task as product-local, shared-standard, repository migration,
    or durable-infrastructure work. Put reusable capabilities in `crates/` and
@@ -18,9 +18,9 @@ description: Evolve and validate the native GPU-first TensorDE monorepo containi
 
 ## Route domain work
 
-- For Gilder scene semantics, conversion, rendering graphs, shaders, or
-  performance, also use `.codex/skills/gilder-scene-engine/` and read the
-  relevant section of `docs/gilder/gilder-scene-engine-architecture.md`.
+- For Tensor Wallpaper scene semantics, conversion, rendering graphs, shaders, or
+  performance, also use `.codex/skills/tensor-wallpaper-scene-engine/` and read the
+  relevant section of `docs/tensor-wallpaper/tensor-wallpaper-scene-engine-architecture.md`.
 - For Tensor Files behavior, follow the Dolphin source call chain in
   `references/fika/dolphin`; use screenshots only as diagnostics, never as
   the correctness source.
@@ -48,8 +48,8 @@ description: Evolve and validate the native GPU-first TensorDE monorepo containi
 
 ## Handle durable local infrastructure
 
-- Treat `docs/gilder`, `reverse-engineered/gilder`, `references/gilder`,
-  `artifacts/gilder`, `references/tensor`, and `artifacts/tensor` as durable
+- Treat `docs/tensor-wallpaper`, `reverse-engineered/tensor-wallpaper`, `references/tensor-wallpaper`,
+  `artifacts/tensor-wallpaper`, `references/tensor`, and `artifacts/tensor` as durable
   local state. Inventory and verify these paths before moving or deleting an
   old checkout. Tensorland's tracked design records remain under `docs/tensorland`.
 - Before moving the Windows VM, confirm no QEMU/swtpm process or mount uses it.
@@ -65,9 +65,9 @@ description: Evolve and validate the native GPU-first TensorDE monorepo containi
    absolute paths in tracked files.
 2. Run focused tests first. Establish semantic correctness before measuring
    performance.
-3. Run the complete validation matrix from root `AGENTS.md`. For Gilder
+3. Run the complete validation matrix from root `AGENTS.md`. For Tensor Wallpaper
    structural work also run
-   `uv run python scripts/gilder/scene_engine_constraints.py` from the
+   `uv run python scripts/tensor-wallpaper/scene_engine_constraints.py` from the
    workspace root.
 4. Recheck staged and unstaged diffs. Exclude preserved user work from
    structural commits and keep ignored evidence ignored.

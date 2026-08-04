@@ -1,0 +1,14 @@
+[Unit]
+Description=Tensor Wallpaper Wayland wallpaper daemon
+Documentation=man:tensor-wallpaperd(1)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=tensor-wallpaperd
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=graphical-session.target

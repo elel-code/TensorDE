@@ -4,7 +4,7 @@ Product documentation has one canonical location:
 
 - [Tensor Files](tensor-files/README.md) — file-manager behavior, Dolphin call-chain notes,
   performance alignment, and refactor records.
-- [Gilder](gilder/README.md) — scene-engine semantics, reverse-engineering
+- [Tensor Wallpaper](tensor-wallpaper/README.md) — scene-engine semantics, reverse-engineering
   conclusions, and performance evidence policy.
 - [Tensorland](tensorland/README.md) — compositor architecture, protocols, rendering,
   startup, configuration, and testing.
@@ -15,7 +15,7 @@ Product documentation has one canonical location:
   typed decoding, diagnostics, and Tensorland's shipped configuration format).
 
 Third-party source trees belong under `references/<product>/`; generated or
-machine-local evidence belongs under `artifacts/<product>/`; Gilder's durable
-disassembly and reconstructed semantics belong under `reverse-engineered/gilder/`.
+machine-local evidence belongs under `artifacts/<product>/`; Tensor Wallpaper's durable
+disassembly and reconstructed semantics belong under `reverse-engineered/tensor-wallpaper/`.
 Do not duplicate those trees under an application directory or retain links to
 an old checkout.

@@ -10,7 +10,7 @@ standards live under `crates/`.
 - `apps/tensor-shell` — Tensor Shell: panels, launcher, notifications and
   OSD, control center, overview, and lock surfaces.
 - `apps/tensor-files` — the Tensor Files file manager.
-- `apps/gilder` — the Gilder scene and wallpaper engine.
+- `apps/tensor-wallpaper` — the Tensor Wallpaper scene and wallpaper engine.
 
 ## Shared foundations
 

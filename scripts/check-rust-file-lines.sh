@@ -28,7 +28,7 @@ done < <(
         -path "$repo_root/.git" -prune -o \
         -path "$repo_root/target" -prune -o \
         -path "$repo_root/artifacts" -prune -o \
-        -path "$repo_root/docs/gilder" -prune -o \
+        -path "$repo_root/docs/tensor-wallpaper" -prune -o \
         -path "$repo_root/references" -prune -o \
         -path "$repo_root/reverse-engineered" -prune -o \
         -type f -name '*.rs' -print0

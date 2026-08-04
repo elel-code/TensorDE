@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tensor Wallpaper Scene Engine"
+  short_description: "Validate authored Vulkan 2026 scene semantics"
+  default_prompt: "Use $tensor-wallpaper-scene-engine to evolve a Tensor Wallpaper scene-engine change with authored command-stream correctness and release performance evidence."

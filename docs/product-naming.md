@@ -10,10 +10,13 @@ the `Tensor` prefix plus their role.
 | Wayland compositor | Tensorland | `tensorland` | `apps/tensorland` |
 | Desktop shell | Tensor Shell | `tensor-shell` | `apps/tensor-shell` |
 | File manager | Tensor Files | `tensor-files` | `apps/tensor-files` |
-| Scene wallpaper engine | Gilder | `gilder` | `apps/gilder` |
+| Scene wallpaper engine | Tensor Wallpaper | `tensor-wallpaper` | `apps/tensor-wallpaper` |
 
 The compositor companion commands are `tensorctl`, `tensorland-session`, and
-`tensorland-dmabuf-smoke`. Gilder keeps its existing product identity and path.
+`tensorland-dmabuf-smoke`. The wallpaper product made a coordinated hard cutover from
+Gilder to Tensor Wallpaper. Its only active commands are `tensor-wallpaper`,
+`tensor-wallpaper-convert`, `tensor-wallpaperd`, and `tensor-wallpaperctl`; its only active
+application path is `apps/tensor-wallpaper`.
 
 ## Stable family interfaces
 

@@ -1,4 +1,4 @@
-//! Strict SPIR-V legalization for native descriptor-heap input attachments.
+//! Strict SPIR-V legalization for descriptor-heap input attachments.
 
 use crate::{Error, Result};
 
@@ -16,7 +16,7 @@ const CAPABILITY_STORAGE_IMAGE_WRITE_WITHOUT_FORMAT: u32 = 56;
 const DIM_2D: u32 = 1;
 const DIM_SUBPASS_DATA: u32 = 6;
 
-pub(crate) fn legalize_native_input_attachment(bytes: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn legalize_descriptor_heap_input_attachment(bytes: &[u8]) -> Result<Vec<u8>> {
     let mut words = decode_words(bytes)?;
     let mut proxy_capabilities = 0;
     let mut image_types = 0;
@@ -54,11 +54,11 @@ pub(crate) fn legalize_native_input_attachment(bytes: &[u8]) -> Result<Vec<u8>> 
     require_exactly_one(image_types, "storage-image proxy type")?;
     require_exactly_one(image_reads, "exact-pixel image read")?;
     let bytes = encode_words(&words);
-    validate_native_input_attachment(&bytes)?;
+    validate_descriptor_heap_input_attachment(&bytes)?;
     Ok(bytes)
 }
 
-pub(crate) fn validate_native_input_attachment(bytes: &[u8]) -> Result<()> {
+pub(crate) fn validate_descriptor_heap_input_attachment(bytes: &[u8]) -> Result<()> {
     let words = decode_words(bytes)?;
     let mut input_capabilities = 0;
     let mut proxy_capabilities = 0;
@@ -82,12 +82,12 @@ pub(crate) fn validate_native_input_attachment(bytes: &[u8]) -> Result<()> {
                 if opcode != OP_IMAGE_READ =>
             {
                 return Err(Error::SpirvContract(format!(
-                    "native input attachment contains forbidden image opcode {opcode}"
+                    "descriptor-heap input attachment contains forbidden image opcode {opcode}"
                 )));
             }
             OP_ATOMIC_FIRST..=OP_ATOMIC_LAST => {
                 return Err(Error::SpirvContract(format!(
-                    "native input attachment contains forbidden atomic opcode {opcode}"
+                    "descriptor-heap input attachment contains forbidden atomic opcode {opcode}"
                 )));
             }
             _ => {}
@@ -99,7 +99,7 @@ pub(crate) fn validate_native_input_attachment(bytes: &[u8]) -> Result<()> {
     require_exactly_one(image_reads, "exact-pixel image read")?;
     if proxy_capabilities != 0 || proxy_types != 0 {
         return Err(Error::SpirvContract(
-            "native input attachment retains its storage-image proxy".to_owned(),
+            "descriptor-heap input attachment retains its storage-image proxy".to_owned(),
         ));
     }
     Ok(())
@@ -128,7 +128,7 @@ fn require_exactly_one(count: usize, label: &str) -> Result<()> {
         Ok(())
     } else {
         Err(Error::SpirvContract(format!(
-            "native input attachment requires exactly one {label}, found {count}"
+            "descriptor-heap input attachment requires exactly one {label}, found {count}"
         )))
     }
 }
@@ -208,8 +208,8 @@ mod tests {
             instruction(OP_TYPE_IMAGE, &[7, 6, DIM_2D, 2, 0, 0, 2, 0]),
             instruction(OP_IMAGE_READ, &[9, 10, 11, 12]),
         ]);
-        let lowered = legalize_native_input_attachment(&proxy).unwrap();
-        validate_native_input_attachment(&lowered).unwrap();
+        let lowered = legalize_descriptor_heap_input_attachment(&proxy).unwrap();
+        validate_descriptor_heap_input_attachment(&lowered).unwrap();
     }
 
     #[test]
@@ -222,7 +222,7 @@ mod tests {
             instruction(OP_TYPE_IMAGE, &[7, 6, DIM_2D, 2, 0, 0, 2, 0]),
             instruction(OP_IMAGE_SAMPLE_FIRST, &[9, 10, 11, 12]),
         ]);
-        assert!(legalize_native_input_attachment(&sampled).is_err());
+        assert!(legalize_descriptor_heap_input_attachment(&sampled).is_err());
 
         let duplicate = module(&[
             instruction(
@@ -233,7 +233,7 @@ mod tests {
             instruction(OP_TYPE_IMAGE, &[8, 6, DIM_2D, 2, 0, 0, 2, 0]),
             instruction(OP_IMAGE_READ, &[9, 10, 11, 12]),
         ]);
-        assert!(legalize_native_input_attachment(&duplicate).is_err());
+        assert!(legalize_descriptor_heap_input_attachment(&duplicate).is_err());
     }
 
     fn module(instructions: &[Vec<u32>]) -> Vec<u8> {

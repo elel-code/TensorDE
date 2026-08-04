@@ -8,8 +8,8 @@ mod contract;
 mod error;
 mod heap_lowering;
 mod input_attachment;
-mod native_source;
 mod reflection;
+mod slang_source;
 mod stage;
 
 pub use compiler::{CompileReport, ShaderCompileRequest, SlangCompiler};
@@ -20,11 +20,11 @@ pub use heap_lowering::{
     lower_slang_bindings_to_descriptor_heap, lower_slang_bindings_to_descriptor_heap_at_offset,
     lower_slang_input_attachment_to_descriptor_heap_at_offset,
 };
-pub use native_source::lower_generated_stage_to_native_slang;
 pub use reflection::{
     ShaderInterface, ShaderIoDirection, ShaderScalarType, ShaderStageIo, ShaderUniformBuffer,
     ShaderUniformMember, reflect_shader_interface,
 };
+pub use slang_source::lower_generated_stage_to_slang;
 pub use stage::ShaderStage;
 
 /// Exact compiler release used to produce checked-in TensorDE shader assets.

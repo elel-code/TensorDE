@@ -57,11 +57,11 @@ impl SlangCompiler {
         self.compile_with_legalization(request, false)
     }
 
-    /// Reflects a directly-authored native Slang stage before descriptor-heap
+    /// Reflects a directly-authored Slang stage before descriptor-heap
     /// lowering. The temporary SPIR-V is validated and discarded; it exists
-    /// only to preserve typed uniform layout metadata for a later native-heap
+    /// only to preserve typed uniform layout metadata for a later descriptor-heap
     /// production compile.
-    pub fn reflect_native_source(
+    pub fn reflect_slang_source(
         &self,
         source: &Path,
         entry_point: &str,
@@ -70,22 +70,20 @@ impl SlangCompiler {
     ) -> Result<Value> {
         self.check_tools()?;
         let temporary = TemporaryOutputs::new(output);
-        self.run_native_slang(source, entry_point, stage, &temporary, false, true)?;
+        self.invoke_slangc(source, entry_point, stage, &temporary, false, true)?;
         self.validate_spirv(&temporary.spirv)?;
         read_reflection(&temporary.reflection)
     }
 
-    /// Compiles a native resource-heap storage-image proxy and legalizes it to
+    /// Compiles a descriptor-heap storage-image proxy and legalizes it to
     /// a strictly validated Vulkan input attachment.
     pub fn compile_input_attachment(
         &self,
         request: &ShaderCompileRequest,
     ) -> Result<CompileReport> {
-        if request.stage != ShaderStage::Fragment
-            || !request.contract.emits_native_descriptor_heap()
-        {
+        if request.stage != ShaderStage::Fragment || !request.contract.uses_descriptor_heap() {
             return Err(Error::SpirvContract(
-                "native input attachments require a fragment-stage descriptor-heap contract"
+                "descriptor-heap input attachments require a fragment-stage descriptor-heap contract"
                     .to_owned(),
             ));
         }
@@ -103,7 +101,7 @@ impl SlangCompiler {
                 .map_err(|error| Error::io("create shader output directory", parent, error))?;
         }
         let temporary = TemporaryOutputs::new(&request.output);
-        self.run_slang(request, &temporary)?;
+        self.compile_slang(request, &temporary)?;
         let reflection = read_reflection(&temporary.reflection)?;
         request
             .contract
@@ -116,7 +114,7 @@ impl SlangCompiler {
                     error,
                 )
             })?;
-            let lowered = input_attachment::legalize_native_input_attachment(&proxy)?;
+            let lowered = input_attachment::legalize_descriptor_heap_input_attachment(&proxy)?;
             fs::write(&temporary.spirv, lowered).map_err(|error| {
                 Error::io(
                     "write legalized input-attachment SPIR-V",
@@ -131,7 +129,7 @@ impl SlangCompiler {
         validate_word_length(&bytes)?;
         validate_descriptor_contract(&bytes, request.contract)?;
         if input_attachment {
-            input_attachment::validate_native_input_attachment(&bytes)?;
+            input_attachment::validate_descriptor_heap_input_attachment(&bytes)?;
         }
         fs::rename(&temporary.spirv, &request.output)
             .map_err(|error| Error::io("install generated SPIR-V", &request.output, error))?;
@@ -191,22 +189,22 @@ impl SlangCompiler {
         Ok(())
     }
 
-    fn run_slang(
+    fn compile_slang(
         &self,
         request: &ShaderCompileRequest,
         temporary: &TemporaryOutputs,
     ) -> Result<()> {
-        self.run_native_slang(
+        self.invoke_slangc(
             &request.source,
             &request.entry_point,
             request.stage,
             temporary,
-            request.contract.emits_native_descriptor_heap(),
+            request.contract.uses_descriptor_heap(),
             false,
         )
     }
 
-    fn run_native_slang(
+    fn invoke_slangc(
         &self,
         source: &Path,
         entry_point: &str,
@@ -242,13 +240,13 @@ impl SlangCompiler {
             let output_position = arguments.len() - 2;
             arguments.splice(
                 output_position..output_position,
-                native_descriptor_heap_arguments(),
+                descriptor_heap_arguments(),
             );
         } else if direct_reflection_bindings {
             let output_position = arguments.len() - 2;
             arguments.splice(
                 output_position..output_position,
-                native_direct_reflection_binding_arguments(),
+                direct_reflection_binding_arguments(),
             );
         }
         run(&self.slangc, arguments).map(|_| ())
@@ -267,7 +265,7 @@ impl SlangCompiler {
     }
 }
 
-fn native_descriptor_heap_arguments() -> [OsString; 3] {
+fn descriptor_heap_arguments() -> [OsString; 3] {
     [
         OsString::from("-capability"),
         OsString::from("spvDescriptorHeapEXT"),
@@ -275,11 +273,11 @@ fn native_descriptor_heap_arguments() -> [OsString; 3] {
     ]
 }
 
-/// Direct native reflection retains authored registers solely to recover typed
+/// Direct Slang reflection retains authored registers solely to recover typed
 /// uniform layout on the cold path. Vulkan requires those registers to map to
 /// distinct bindings even though the production source immediately replaces
 /// them with descriptor-heap handles.
-fn native_direct_reflection_binding_arguments() -> [OsString; 12] {
+fn direct_reflection_binding_arguments() -> [OsString; 12] {
     [
         OsString::from("-fvk-b-shift"),
         OsString::from("0"),
@@ -381,16 +379,14 @@ fn validate_descriptor_contract(bytes: &[u8], contract: ShaderContract) -> Resul
             "SPIR-V contains forbidden Binding or DescriptorSet decorations".to_owned(),
         ));
     }
-    if contract.emits_native_descriptor_heap()
-        && !(descriptor_heap_capability && descriptor_heap_extension)
+    if contract.uses_descriptor_heap() && !(descriptor_heap_capability && descriptor_heap_extension)
     {
         return Err(Error::SpirvContract(
             "descriptor-heap shader lacks DescriptorHeapEXT capability or SPV_EXT_descriptor_heap"
                 .to_owned(),
         ));
     }
-    if !contract.emits_native_descriptor_heap()
-        && (descriptor_heap_capability || descriptor_heap_extension)
+    if !contract.uses_descriptor_heap() && (descriptor_heap_capability || descriptor_heap_extension)
     {
         return Err(Error::SpirvContract(
             "descriptor-free shader unexpectedly uses SPV_EXT_descriptor_heap".to_owned(),
@@ -458,9 +454,9 @@ mod tests {
     }
 
     #[test]
-    fn native_descriptor_heap_uses_one_resource_array_stride() {
+    fn descriptor_heap_uses_one_resource_array_stride() {
         assert_eq!(
-            native_descriptor_heap_arguments(),
+            descriptor_heap_arguments(),
             [
                 OsString::from("-capability"),
                 OsString::from("spvDescriptorHeapEXT"),
@@ -470,9 +466,9 @@ mod tests {
     }
 
     #[test]
-    fn direct_native_reflection_partitions_legacy_register_classes() {
+    fn direct_slang_reflection_partitions_legacy_register_classes() {
         assert_eq!(
-            native_direct_reflection_binding_arguments(),
+            direct_reflection_binding_arguments(),
             [
                 OsString::from("-fvk-b-shift"),
                 OsString::from("0"),
@@ -491,7 +487,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_native_reflection_compiles_authored_registers_without_a_frontend() {
+    fn direct_slang_reflection_compiles_authored_registers_without_a_frontend() {
         let base = std::env::temp_dir().join(format!(
             "vulkan-renderer-build-direct-reflection-{}",
             std::process::id()
@@ -499,7 +495,7 @@ mod tests {
         let source_path = base.with_extension("slang");
         let heap_source_path = base.with_extension("heap.slang");
         let output_path = base.with_extension("spv");
-        let direct = crate::lower_generated_stage_to_native_slang(
+        let direct = crate::lower_generated_stage_to_slang(
             r#"layout(location = 0) in vec2 v_TexCoord;
 layout(location = 0) out vec4 o_Color;
 uniform mat4 g_ModelViewProjectionMatrix;
@@ -517,7 +513,7 @@ void main()
 
         let compiler = SlangCompiler::from_environment();
         let reflection = compiler
-            .reflect_native_source(&source_path, "main", ShaderStage::Fragment, &output_path)
+            .reflect_slang_source(&source_path, "main", ShaderStage::Fragment, &output_path)
             .unwrap();
 
         assert!(
@@ -525,7 +521,7 @@ void main()
                 .as_array()
                 .is_some_and(|parameters| {
                     parameters.iter().any(|parameter| {
-                        parameter["name"] == "GilderUniforms0"
+                        parameter["name"] == "VulkanRendererUniforms0"
                             && parameter["binding"]["kind"] == "constantBuffer"
                             && parameter["binding"]["index"] == 0
                     })

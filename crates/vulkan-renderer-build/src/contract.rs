@@ -11,7 +11,7 @@ pub struct ShaderContract {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DescriptorMode {
     Free,
-    NativeHeap,
+    DescriptorHeap,
 }
 
 impl ShaderContract {
@@ -25,12 +25,12 @@ impl ShaderContract {
     pub const fn descriptor_heap(push_constant_bytes: u64) -> Self {
         Self {
             push_constant_bytes: Some(push_constant_bytes),
-            descriptor_mode: DescriptorMode::NativeHeap,
+            descriptor_mode: DescriptorMode::DescriptorHeap,
         }
     }
 
-    pub(crate) const fn emits_native_descriptor_heap(self) -> bool {
-        matches!(self.descriptor_mode, DescriptorMode::NativeHeap)
+    pub(crate) const fn uses_descriptor_heap(self) -> bool {
+        matches!(self.descriptor_mode, DescriptorMode::DescriptorHeap)
     }
 
     pub(crate) fn validate(
@@ -55,7 +55,7 @@ impl ShaderContract {
             })?;
             if kind != "pushConstantBuffer" {
                 return Err(Error::Reflection(format!(
-                    "shader contract exposes non-native binding kind `{kind}`"
+                    "shader contract exposes non-non-push-constant binding kind `{kind}`"
                 )));
             }
         }

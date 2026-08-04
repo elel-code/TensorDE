@@ -5,7 +5,7 @@ product-specific constraints and takes precedence within its directory.
 
 ## Repository boundaries
 
-- Keep product applications under `apps/`: `tensor-files`, `gilder`, `tensorland`, and
+- Keep product applications under `apps/`: `tensor-files`, `tensor-wallpaper`, `tensorland`, and
   `tensor-shell`.
 - Keep reusable protocol, GPU, resource, and scheduling standards under
   `crates/`. Do not make a shared crate depend on an application.
@@ -34,12 +34,12 @@ product-specific constraints and takes precedence within its directory.
 
 - For Tensor Files behavior, trace the relevant Dolphin call chain under
   `references/fika/dolphin`. Do not infer correctness from screenshots.
-- For Gilder scene behavior, read `apps/gilder/AGENTS.md` and use
-  `$gilder-scene-engine`. Treat `reverse-engineered/gilder/` as the first
+- For Tensor Wallpaper scene behavior, read `apps/tensor-wallpaper/AGENTS.md` and use
+  `$tensor-wallpaper-scene-engine`. Treat `reverse-engineered/tensor-wallpaper/` as the first
   semantic source and the authored project plus verified command stream as the
   correctness evidence.
-- Preserve Gilder's ignored knowledge and evidence under `docs/gilder/`,
-  `reverse-engineered/gilder/`, `references/gilder/`, and `artifacts/gilder/`.
+- Preserve Tensor Wallpaper's ignored knowledge and evidence under `docs/tensor-wallpaper/`,
+  `reverse-engineered/tensor-wallpaper/`, `references/tensor-wallpaper/`, and `artifacts/tensor-wallpaper/`.
   Never force add them. The Windows VM, qcow2 images, TPM state, Podman store,
   workshop corpus, and traces are durable development infrastructure, not
   disposable build output.
@@ -53,7 +53,7 @@ product-specific constraints and takes precedence within its directory.
 ## Worktree and structure discipline
 
 - Inspect staged and unstaged changes separately before editing. Preserve user
-  work, especially Gilder scene-engine changes imported during migration.
+  work, especially Tensor Wallpaper scene-engine changes imported during migration.
 - Keep changes semantic and reviewable. Separate repository migration, engine
   behavior, renderer standard changes, evidence maintenance, and line-limit
   refactors when their validation differs.
@@ -73,7 +73,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo doc -p vulkan-renderer --no-deps
 scripts/check-rust-file-lines.sh
 git diff --check
-uv run python scripts/gilder/scene_engine_constraints.py
+uv run python scripts/tensor-wallpaper/scene_engine_constraints.py
 ```
 
 When a command is inapplicable to a documentation-only or ignored-evidence

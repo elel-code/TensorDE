@@ -732,7 +732,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gilder_texture_formats_have_exact_vulkan_mappings() {
+    fn vulkan_renderer_texture_formats_have_exact_vulkan_mappings() {
         for format in [
             TextureFormat::R8Unorm,
             TextureFormat::Rgba8Unorm,

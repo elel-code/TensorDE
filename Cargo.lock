@@ -1676,7 +1676,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gilder"
+name = "tensor-wallpaper"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",

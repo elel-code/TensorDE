@@ -14,7 +14,7 @@ pub enum DescriptorHeapBindingKind {
     StorageBuffer,
 }
 
-/// Lowers one exact-pixel fragment input into a native resource-heap proxy.
+/// Lowers one exact-pixel fragment input into a descriptor-heap proxy.
 ///
 /// Slang 2026.14 does not allow `SubpassInput<T>` as a `DescriptorHandle<T>`
 /// argument. The returned source therefore uses a storage-image proxy with
@@ -39,7 +39,8 @@ pub fn lower_slang_input_attachment_to_descriptor_heap_at_offset(
         {
             if input.is_some() {
                 return Err(Error::SourceLowering(
-                    "native input-attachment shader exposes more than one input".to_owned(),
+                    "descriptor-heap input-attachment shader exposes more than one input"
+                        .to_owned(),
                 ));
             }
             let register = register.strip_suffix(");").ok_or_else(|| {
@@ -61,7 +62,7 @@ pub fn lower_slang_input_attachment_to_descriptor_heap_at_offset(
             let source_name = declaration[split..].trim();
             if source_type != "SubpassInput<float4>" || source_name.is_empty() {
                 return Err(Error::SourceLowering(format!(
-                    "unsupported native input-attachment declaration `{trimmed}`"
+                    "unsupported descriptor-heap input-attachment declaration `{trimmed}`"
                 )));
             }
             input = Some((register, source_name.to_owned(), source_type.to_owned()));
@@ -69,14 +70,14 @@ pub fn lower_slang_input_attachment_to_descriptor_heap_at_offset(
         }
         if trimmed.starts_with("SubpassInput") || trimmed.contains(": register(") {
             return Err(Error::SourceLowering(format!(
-                "native input-attachment shader exposes an unsupported resource `{trimmed}`"
+                "descriptor-heap input-attachment shader exposes an unsupported resource `{trimmed}`"
             )));
         }
         retained.push(line.to_owned());
     }
     let Some((register, source_name, source_type)) = input else {
         return Err(Error::SourceLowering(
-            "native input-attachment shader exposes no SubpassInput<float4>".to_owned(),
+            "descriptor-heap input-attachment shader exposes no SubpassInput<float4>".to_owned(),
         ));
     };
     let load = format!("{source_name}.SubpassLoad()");
@@ -86,15 +87,16 @@ pub fn lower_slang_input_attachment_to_descriptor_heap_at_offset(
         .sum::<usize>();
     if load_count != 1 {
         return Err(Error::SourceLowering(format!(
-            "native input attachment `{source_name}` must have exactly one SubpassLoad, found {load_count}"
+            "descriptor-heap input attachment `{source_name}` must have exactly one SubpassLoad, found {load_count}"
         )));
     }
-    let mut body = retained
-        .join("\n")
-        .replace(&load, &format!("gilderHeap_{source_name}()[int2(0, 0)]"));
+    let mut body = retained.join("\n").replace(
+        &load,
+        &format!("vulkanRendererHeap_{source_name}()[int2(0, 0)]"),
+    );
     if body.contains("SubpassInput") || body.contains("SubpassLoad") {
         return Err(Error::SourceLowering(
-            "native input-attachment lowering left an opaque subpass operation".to_owned(),
+            "descriptor-heap input-attachment lowering left an opaque subpass operation".to_owned(),
         ));
     }
     let entry_offset = entry_definition_offset(&body, entry_point)?;
@@ -102,7 +104,7 @@ pub fn lower_slang_input_attachment_to_descriptor_heap_at_offset(
     let push_constant_bytes = push_base_bytes
         .checked_add(4)
         .ok_or_else(|| Error::SourceLowering("push layout exceeds u32".to_owned()))?;
-    let mut prelude = String::from("struct GilderDescriptorHeapPush\n{\n");
+    let mut prelude = String::from("struct VulkanRendererDescriptorHeapPush\n{\n");
     if push_base_bytes != 0 {
         prelude.push_str(&format!(
             "    uint reservedPipelineWords[{}];\n",
@@ -111,10 +113,10 @@ pub fn lower_slang_input_attachment_to_descriptor_heap_at_offset(
     }
     prelude.push_str("    uint binding0Index;\n};\n");
     prelude.push_str(
-        "[[vk::push_constant]] ConstantBuffer<GilderDescriptorHeapPush> gilderHeapPush;\n\n",
+        "[[vk::push_constant]] ConstantBuffer<VulkanRendererDescriptorHeapPush> vulkanRendererHeapPush;\n\n",
     );
     prelude.push_str(&format!(
-        "RWTexture2D<float4> gilderHeap_{source_name}()\n{{\n    return DescriptorHandle<RWTexture2D<float4>>(gilderHeapPush.binding0Index);\n}}\n\n"
+        "RWTexture2D<float4> vulkanRendererHeap_{source_name}()\n{{\n    return DescriptorHandle<RWTexture2D<float4>>(vulkanRendererHeapPush.binding0Index);\n}}\n\n"
     ));
     body.insert_str(entry_offset, &prelude);
     Ok(DescriptorHeapSlang {
@@ -218,12 +220,12 @@ pub fn lower_slang_bindings_to_descriptor_heap_at_offset(
         body = replace_identifier(
             &body,
             &binding.source_name,
-            &format!("gilderHeap_{}()", binding.source_name),
+            &format!("vulkanRendererHeap_{}()", binding.source_name),
         );
     }
     let entry_offset = entry_definition_offset(&body, entry_point)?;
     let mut prelude = String::new();
-    prelude.push_str("struct GilderDescriptorHeapPush\n{\n");
+    prelude.push_str("struct VulkanRendererDescriptorHeapPush\n{\n");
     if push_base_bytes != 0 {
         prelude.push_str(&format!(
             "    uint reservedPipelineWords[{}];\n",
@@ -253,11 +255,11 @@ pub fn lower_slang_bindings_to_descriptor_heap_at_offset(
         .collect::<Result<Vec<_>>>()?;
     prelude.push_str("};\n");
     prelude.push_str(
-        "[[vk::push_constant]] ConstantBuffer<GilderDescriptorHeapPush> gilderHeapPush;\n\n",
+        "[[vk::push_constant]] ConstantBuffer<VulkanRendererDescriptorHeapPush> vulkanRendererHeapPush;\n\n",
     );
     for (index, binding) in bindings.iter().enumerate() {
         prelude.push_str(&format!(
-            "{} gilderHeap_{}()\n{{\n    return DescriptorHandle<{}>(gilderHeapPush.binding{}Index);\n}}\n\n",
+            "{} vulkanRendererHeap_{}()\n{{\n    return DescriptorHandle<{}>(vulkanRendererHeapPush.binding{}Index);\n}}\n\n",
             binding.source_type, binding.source_name, binding.source_type, index
         ));
     }
@@ -432,27 +434,27 @@ fn lower_generated_texture_macros(source: String) -> String {
     source
         .replace(
             "#define texture2D(S, UV) S ## _texture.Sample(S ## _sampler, UV)",
-            "#define texture2D(S, UV) gilderHeap_ ## S ## _texture().Sample(gilderHeap_ ## S ## _sampler(), UV)",
+            "#define texture2D(S, UV) vulkanRendererHeap_ ## S ## _texture().Sample(vulkanRendererHeap_ ## S ## _sampler(), UV)",
         )
         .replace(
             "#define texture3D(S, UVW) S ## _texture.Sample(S ## _sampler, UVW)",
-            "#define texture3D(S, UVW) gilderHeap_ ## S ## _texture().Sample(gilderHeap_ ## S ## _sampler(), UVW)",
+            "#define texture3D(S, UVW) vulkanRendererHeap_ ## S ## _texture().Sample(vulkanRendererHeap_ ## S ## _sampler(), UVW)",
         )
         .replace(
             "#define texture(S, UV) S ## _texture.Sample(S ## _sampler, UV)",
-            "#define texture(S, UV) gilderHeap_ ## S ## _texture().Sample(gilderHeap_ ## S ## _sampler(), UV)",
+            "#define texture(S, UV) vulkanRendererHeap_ ## S ## _texture().Sample(vulkanRendererHeap_ ## S ## _sampler(), UV)",
         )
         .replace(
             "#define texture2DLod(S, UV, LOD) S ## _texture.SampleLevel(S ## _sampler, UV, LOD)",
-            "#define texture2DLod(S, UV, LOD) gilderHeap_ ## S ## _texture().SampleLevel(gilderHeap_ ## S ## _sampler(), UV, LOD)",
+            "#define texture2DLod(S, UV, LOD) vulkanRendererHeap_ ## S ## _texture().SampleLevel(vulkanRendererHeap_ ## S ## _sampler(), UV, LOD)",
         )
         .replace(
             "#define textureLod(S, UV, LOD) S ## _texture.SampleLevel(S ## _sampler, UV, LOD)",
-            "#define textureLod(S, UV, LOD) gilderHeap_ ## S ## _texture().SampleLevel(gilderHeap_ ## S ## _sampler(), UV, LOD)",
+            "#define textureLod(S, UV, LOD) vulkanRendererHeap_ ## S ## _texture().SampleLevel(vulkanRendererHeap_ ## S ## _sampler(), UV, LOD)",
         )
         .replace(
             "#define texelFetch(S, COORD, LOD) S ## _texture.Load(int3(COORD, LOD))",
-            "#define texelFetch(S, COORD, LOD) gilderHeap_ ## S ## _texture().Load(int3(COORD, LOD))",
+            "#define texelFetch(S, COORD, LOD) vulkanRendererHeap_ ## S ## _texture().Load(int3(COORD, LOD))",
         )
 }
 
@@ -461,7 +463,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lowers_direct_native_resources_to_typed_heap_accessors() {
+    fn lowers_direct_slang_resources_to_typed_heap_accessors() {
         let source = r#"Texture2D<float4 > image_0 : register(t0);
 SamplerState imageSampler_0 : register(s0);
 struct GlobalParams_0
@@ -499,13 +501,11 @@ FragmentOutput main(float2 uv : COLOR0)
                 .contains("DescriptorHandle<Texture2D<float4 >>")
         );
         assert!(lowered.source.contains(
-            "DescriptorHandle<ConstantBuffer<GlobalParams_0>>(gilderHeapPush.binding2Index)"
+            "DescriptorHandle<ConstantBuffer<GlobalParams_0>>(vulkanRendererHeapPush.binding2Index)"
         ));
-        assert!(
-            lowered
-                .source
-                .contains("gilderHeap_image_0().Sample(gilderHeap_imageSampler_0(), uv)")
-        );
+        assert!(lowered.source.contains(
+            "vulkanRendererHeap_image_0().Sample(vulkanRendererHeap_imageSampler_0(), uv)"
+        ));
         assert!(!lowered.source.contains("register(t0)"));
         assert!(!lowered.source.contains("register(s0)"));
         assert!(!lowered.source.contains("register(b0)"));
@@ -560,7 +560,7 @@ void main(uint3 id : SV_DispatchThreadID)
 
         let prelude = lowered
             .source
-            .find("struct GilderDescriptorHeapPush")
+            .find("struct VulkanRendererDescriptorHeapPush")
             .unwrap();
         let shader_attribute = lowered.source.find("[[shader(\"compute\")]]").unwrap();
         let entry = lowered.source.find("void main(").unwrap();

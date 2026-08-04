@@ -4,14 +4,14 @@ Cold-path Slang compiler for TensorDE's Vulkan rendering standard. Runtime
 applications embed its validated SPIR-V output and do not link or distribute
 Slang, LLVM, or SPIR-V Tools.
 
-Native Slang sources use a two-stage cold path:
+Slang sources use a two-stage cold path:
 `lower_slang_bindings_to_descriptor_heap` replaces direct register resources
 with typed `DescriptorHandle<T>` accessors and a compact push-index ABI. The
 normal compiler validates and optimizes that source into the only artifact
-consumed by a runtime: native descriptor-heap SPIR-V. This crate deliberately
+consumed by a runtime: descriptor-heap SPIR-V. This crate deliberately
 does not provide a GLSL or HLSL frontend route.
 
-The tool exposes explicit descriptor-free and native descriptor-heap
+The tool exposes explicit descriptor-free and descriptor-heap
 contracts. Descriptor resources must be lowered to typed `DescriptorHandle<T>`
 accesses before compilation; mapped set/binding SPIR-V is rejected.
 
@@ -23,7 +23,7 @@ cargo run -p vulkan-renderer-build -- \
 cargo run -p vulkan-renderer-build -- \
   verify source.slang entryPoint fragment output.spv 64 descriptor-free
 cargo run -p vulkan-renderer-build -- \
-  lower-heap normalized.slang entryPoint native-heap.slang
+  lower-heap normalized.slang entryPoint descriptor-heap.slang
 ```
 
 `SLANGC` and `SPIRV_VAL` may name non-default tool paths. The compiler must be
@@ -49,7 +49,7 @@ decoration. It also enables `-spirv-unified-descriptor-heap-stride`, so every
 resource handle uses one image/buffer stride; runtimes must pack resource heaps
 with that same maximum stride. Sampler heaps keep their independent stride.
 The `descriptor-free` contract rejects those decorations and the heap extension
-alike. Both contracts reject reflected descriptor-table slots; the native heap
+alike. Both contracts reject reflected descriptor-table slots; the descriptor heap
 contract accepts only push data plus direct resource-heap access.
 
 The pinned Slang release must preserve source-level buffer kinds. A mixed
