@@ -175,7 +175,11 @@ pub(super) fn depth_parallax_inverse_values(
     draw: &SceneRenderingDeviceMeshDraw,
     output_extent: [u32; 2],
 ) -> [f32; SCENE_DRAW_UNIFORM_FLOATS] {
-    let projection = draw_projection_matrix(storage, draw, output_extent);
+    let projection = scene_cover_clip_transform(
+        storage.project(),
+        output_extent,
+        draw.effect_texture_projection_matrix,
+    );
     let inverse = inverse_affine_rows(&projection)
         .expect("validated Depth Parallax draw must have an invertible affine projection");
     matrix_draw_values(inverse)

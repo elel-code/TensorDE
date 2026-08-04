@@ -29,6 +29,7 @@ pub use effect_batch::{
     SceneRenderingDeviceEffectBatch, SceneRenderingDeviceEffectBatchFamily,
     SceneRenderingDeviceEffectBatchInstance,
 };
+pub(crate) use projection::effect_texture_projection_matrix;
 use projection::pass_projection_domain;
 #[cfg(test)]
 use projection::{authored_texture_clip_transform, scene_clip_transform};
@@ -120,6 +121,8 @@ impl SceneRenderingDeviceGraphPlan {
                                 semantic_frame,
                                 pass_object_state.render_world_matrix,
                             );
+                            let authored_source_extent =
+                                authored_source_extent(storage, pass.object);
                             mesh_draws.push(SceneRenderingDeviceMeshDraw {
                                 primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
                                 particle_index: INVALID_PARTICLE_INDEX,
@@ -132,10 +135,13 @@ impl SceneRenderingDeviceGraphPlan {
                                 ),
                                 clip_transform,
                                 effect_model_view_projection_matrix: clip_transform,
-                                authored_source_extent: authored_source_extent(
+                                effect_texture_projection_matrix: effect_texture_projection_matrix(
                                     storage,
-                                    pass.object,
+                                    semantic_frame,
+                                    pass_object_state.render_world_matrix,
+                                    authored_source_extent,
                                 ),
+                                authored_source_extent,
                                 uv_inset_texels: if pass.draw_primitive
                                     == SceneRenderPassDrawPrimitive::ObjectCompositeMesh
                                 {
@@ -366,6 +372,16 @@ fn utility_primitive_draw(
     let clip_transform = pass_object_state.map_or_else(identity_clip_transform, |object| {
         projection_domain.clip_transform(storage, semantic_frame, object.render_world_matrix)
     });
+    let authored_source_extent = authored_source_extent(storage, pass.object);
+    let effect_texture_projection_matrix =
+        pass_object_state.map_or_else(identity_clip_transform, |object| {
+            effect_texture_projection_matrix(
+                storage,
+                semantic_frame,
+                object.render_world_matrix,
+                authored_source_extent,
+            )
+        });
     SceneRenderingDeviceMeshDraw {
         primitive,
         particle_index: if primitive == SceneRenderingDeviceDrawPrimitive::ParticleBillboard {
@@ -384,7 +400,8 @@ fn utility_primitive_draw(
         }),
         clip_transform,
         effect_model_view_projection_matrix: clip_transform,
-        authored_source_extent: authored_source_extent(storage, pass.object),
+        effect_texture_projection_matrix,
+        authored_source_extent,
         uv_inset_texels: 0.0,
         skinning_palette_start: INVALID_OBJECT_ID,
         skinning_palette_count: 0,
@@ -471,7 +488,8 @@ fn pass_applies_resolved_visual(pass: &SceneRenderPassRecord) -> bool {
     matches!(
         pass.target,
         SceneRenderTargetKind::SceneColor | SceneRenderTargetKind::Swapchain
-    )
+    ) || (pass.target == SceneRenderTargetKind::FirstClassEffectTarget
+        && pass.role == SceneRenderPassKind::BaseMaterial)
 }
 
 fn authored_source_extent(storage: &SceneStorage, object: SceneObjectHandle) -> [f32; 2] {

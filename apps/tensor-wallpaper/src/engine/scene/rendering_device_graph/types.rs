@@ -100,6 +100,10 @@ pub struct SceneRenderingDeviceMeshDraw {
     pub clip_transform: [[f32; 4]; 4],
     /// Effect-local MVP after adapting WE's unit quad to Tensor Wallpaper's pixel-local mesh.
     pub effect_model_view_projection_matrix: [[f32; 4]; 4],
+    /// Authored object texture coordinates projected into scene clip space. This remains
+    /// independent from the pass target's local projection because package effects use its
+    /// inverse to rotate pointer-driven deformation into object texture space.
+    pub effect_texture_projection_matrix: [[f32; 4]; 4],
     pub authored_source_extent: [f32; 2],
     /// Per-edge inset applied to the retained secondary composite mesh during cold upload.
     pub uv_inset_texels: f32,

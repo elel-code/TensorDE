@@ -315,7 +315,7 @@ fn retained_payload_writes_the_inverse_effect_texture_projection() {
         scene_cover_clip_scale: [1.0, 1.0],
     };
     let mut draw = draw();
-    draw.clip_transform = [
+    draw.effect_texture_projection_matrix = [
         [2.0, 0.0, 0.0, 8.0],
         [0.0, -4.0, 0.0, 12.0],
         [0.0, 0.0, 1.0, 3.0],
@@ -596,6 +596,7 @@ fn draw() -> SceneRenderingDeviceMeshDraw {
         render_world_matrix: [[0.0; 4]; 4],
         clip_transform: [[0.0; 4]; 4],
         effect_model_view_projection_matrix: [[0.0; 4]; 4],
+        effect_texture_projection_matrix: [[0.0; 4]; 4],
         authored_source_extent: [1.0; 2],
         uv_inset_texels: 0.0,
         skinning_palette_start: 0,

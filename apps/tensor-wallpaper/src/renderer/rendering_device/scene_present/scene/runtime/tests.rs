@@ -198,6 +198,7 @@ fn object_mesh_draw() -> SceneRenderingDeviceMeshDraw {
         render_world_matrix: [[0.0; 4]; 4],
         clip_transform: [[0.0; 4]; 4],
         effect_model_view_projection_matrix: [[0.0; 4]; 4],
+        effect_texture_projection_matrix: [[0.0; 4]; 4],
         authored_source_extent: [0.0; 2],
         uv_inset_texels: 0.0,
         skinning_palette_start: 2,

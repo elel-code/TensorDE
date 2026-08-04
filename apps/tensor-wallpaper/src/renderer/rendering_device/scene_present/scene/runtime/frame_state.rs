@@ -158,6 +158,13 @@ impl SceneFrameTopology {
                 object.render_world_matrix,
             );
             draw.effect_model_view_projection_matrix = draw.clip_transform;
+            draw.effect_texture_projection_matrix =
+                crate::engine::scene::rendering_device_graph::effect_texture_projection_matrix(
+                    storage,
+                    semantic_frame,
+                    object.render_world_matrix,
+                    draw.authored_source_extent,
+                );
             draw.resolved_color = object.resolved_color;
             draw.resolved_alpha = object.resolved_alpha;
             draw.resolved_effect_visibility_mask =

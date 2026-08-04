@@ -138,6 +138,34 @@ fn image_layer_composite_base_target_uses_authored_texture_projection() {
         producer.clip_transform,
         authored_texture_clip_transform(1_188, 403)
     );
+    let expected = [
+        [1.188, 0.0, 0.0, -1.0],
+        [0.0, 0.806, 0.0, 1.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    for (actual, expected) in producer
+        .effect_texture_projection_matrix
+        .into_iter()
+        .flatten()
+        .zip(expected.into_iter().flatten())
+    {
+        assert!((actual - expected).abs() <= 1.0e-6);
+    }
+}
+
+#[test]
+fn image_layer_base_target_applies_object_visual_at_its_external_output_boundary() {
+    let mut document = projection_storage_with_first_class_source(668, 339)
+        .document()
+        .clone();
+    document.objects[0].alpha = 0.37;
+    let storage = SceneStorage::from_document(document).expect("image-layer alpha storage");
+    let graph = RenderingServer::new(&storage).rendering_device_graph_plan();
+    let producer = &graph.mesh_draws[0];
+
+    assert_eq!(producer.resolved_alpha, 0.37);
+    assert!(producer.apply_resolved_visual);
 }
 
 #[test]

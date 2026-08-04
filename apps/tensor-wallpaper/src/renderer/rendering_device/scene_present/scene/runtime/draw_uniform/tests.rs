@@ -82,7 +82,17 @@ fn depth_parallax_draw_uniform_packs_inverse_effect_texture_projection() {
         [0.0, 0.0, 0.5, 0.125],
         [0.0, 0.0, 0.0, 1.0],
     ];
-    let projection = draw_projection_matrix(&storage, &draw, [1, 1]);
+    draw.effect_texture_projection_matrix = [
+        [0.5, -0.125, 0.0, 0.25],
+        [0.25, 0.75, 0.0, -0.5],
+        [0.0, 0.0, 0.5, 0.125],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    let projection = scene_cover_clip_transform(
+        storage.project(),
+        [1, 1],
+        draw.effect_texture_projection_matrix,
+    );
     let expected = inverse_affine_rows(&projection).expect("invertible projection");
 
     let payload = pack_scene_draw_uniforms(&storage, &[draw], 0.0, [1, 1]);
@@ -414,6 +424,7 @@ fn draw_with_material(material: SceneMaterialHandle) -> SceneRenderingDeviceMesh
         render_world_matrix: [[0.0; 4]; 4],
         clip_transform: [[0.0; 4]; 4],
         effect_model_view_projection_matrix: [[0.0; 4]; 4],
+        effect_texture_projection_matrix: [[0.0; 4]; 4],
         authored_source_extent: [0.0; 2],
         uv_inset_texels: 0.0,
         skinning_palette_start: crate::engine::scene::INVALID_OBJECT_ID,

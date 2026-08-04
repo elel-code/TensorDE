@@ -53,7 +53,7 @@ impl<'a> SceneOwnedUniformPayloadInputs<'a> {
             audio_spectrum: &StereoSpectrum64::ZERO,
             model_view_projection_matrix: &draw.clip_transform,
             effect_model_view_projection_matrix: &draw.effect_model_view_projection_matrix,
-            effect_texture_projection_matrix: &draw.clip_transform,
+            effect_texture_projection_matrix: &draw.effect_texture_projection_matrix,
             layer_model_matrix: &draw.render_world_matrix,
             object_color4,
             object_alpha,

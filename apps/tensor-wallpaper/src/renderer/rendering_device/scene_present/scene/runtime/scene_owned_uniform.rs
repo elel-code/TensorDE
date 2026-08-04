@@ -496,9 +496,8 @@ impl SceneOwnedUniformArenaPlan {
                         write_matrix(destination, &matrix)?;
                     }
                     SceneOwnedRetainedSource::EffectTextureProjectionMatrixInverse => {
-                        let matrix = scene_owned_projection_matrix(
-                            draw.projection_domain,
-                            draw.clip_transform,
+                        let matrix = apply_scene_cover_clip_scale(
+                            draw.effect_texture_projection_matrix,
                             self.scene_cover_clip_scale,
                         );
                         let inverse = inverse_affine_rows(&matrix).ok_or_else(|| {

@@ -443,6 +443,7 @@ mod tests {
                         render_world_matrix: identity_clip_transform(),
                         clip_transform: identity_clip_transform(),
                         effect_model_view_projection_matrix: identity_clip_transform(),
+                        effect_texture_projection_matrix: identity_clip_transform(),
                         authored_source_extent: [0.0; 2],
                         uv_inset_texels: 0.0,
                         skinning_palette_start: INVALID_OBJECT_ID,

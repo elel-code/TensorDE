@@ -94,6 +94,22 @@ pub(crate) fn scene_clip_transform_for_frame(
     clip
 }
 
+pub(crate) fn effect_texture_projection_matrix(
+    storage: &SceneStorage,
+    semantic_frame: &ResolvedSemanticFrame,
+    world_matrix: [f32; 16],
+    authored_source_extent: [f32; 2],
+) -> [[f32; 4]; 4] {
+    let mut projection = scene_clip_transform_for_frame(storage, semantic_frame, world_matrix);
+    let half_width = authored_source_extent[0] * 0.5;
+    let negative_half_height = authored_source_extent[1] * -0.5;
+    for row in &mut projection {
+        row[0] *= half_width;
+        row[1] *= negative_half_height;
+    }
+    projection
+}
+
 impl SceneRenderingDeviceProjectionDomain {
     pub(crate) fn clip_transform(
         self,
