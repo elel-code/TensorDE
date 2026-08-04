@@ -6,6 +6,7 @@ use crate::{
         MAX_OVERVIEW_VIEWS, OverviewGeometrySnapshot, OverviewSnapshot, OverviewViewKindSnapshot,
         OverviewViewSnapshot, OverviewWorkspaceSnapshot,
     },
+    overview::{OverviewPlan, OverviewWorkspaceSource},
 };
 
 use super::RuntimeState;
@@ -83,56 +84,92 @@ impl RuntimeState {
 
         let mut emitted = 0;
         let mut truncated = false;
-        let mut workspaces = Vec::with_capacity(topology.len());
+        let mut inventory = Vec::with_capacity(topology.len());
         for (id, name, hidden, minimize_target) in topology {
-            let mut inventory = self.world.overview_views(id);
-            let view_count = inventory.len();
+            let mut views = self.world.overview_views(id);
+            let view_count = views.len();
             let available = MAX_OVERVIEW_VIEWS.saturating_sub(emitted);
-            if inventory.len() > available {
-                inventory.truncate(available);
+            if views.len() > available {
+                views.truncate(available);
                 truncated = true;
             }
-            emitted += inventory.len();
-            let views = inventory
-                .into_iter()
-                .map(|view| {
-                    let foreign_toplevel_identifier = self
-                        .retained_window_for_view(view.id)
-                        .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()))
-                        .and_then(|surface| self.foreign_toplevel_identifier(&surface));
-                    OverviewViewSnapshot {
-                        id: view.id.get(),
-                        root: view.root.get(),
-                        foreign_toplevel_identifier,
-                        geometry: view.geometry.map(|geometry| OverviewGeometrySnapshot {
-                            x: geometry.x,
-                            y: geometry.y,
-                            width: geometry.width,
-                            height: geometry.height,
-                        }),
-                        focused: view.focused,
-                        kind: match view.kind {
-                            OverviewViewKind::Tiled => OverviewViewKindSnapshot::Tiled,
-                            OverviewViewKind::Floating => OverviewViewKindSnapshot::Floating,
-                            OverviewViewKind::Attached => OverviewViewKindSnapshot::Attached,
-                        },
-                        stacking_order: view.stacking_order,
-                    }
-                })
-                .collect();
-            workspaces.push(OverviewWorkspaceSnapshot {
-                index: id.get(),
-                name,
-                hidden,
-                minimize_target,
-                view_count,
-                views,
-            });
+            emitted += views.len();
+            inventory.push((id, name, hidden, minimize_target, view_count, views));
         }
+        let sources = inventory
+            .iter()
+            .map(|(id, _, _, _, _, views)| OverviewWorkspaceSource::new(*id, views.as_slice()))
+            .collect::<Vec<_>>();
+        let plan = self.default_workspace_area().and_then(|area| {
+            OverviewPlan::compile(area, self.overview_options, sources.as_slice())
+        });
+        let workspaces = inventory
+            .into_iter()
+            .map(|(id, name, hidden, minimize_target, view_count, views)| {
+                let workspace_plan = plan.as_ref().and_then(|plan| plan.workspace(id));
+                let planned_views = workspace_plan
+                    .map(|workspace| workspace.views.as_slice())
+                    .unwrap_or_default();
+                let mut planned_views = planned_views.iter().peekable();
+                let views = views
+                    .into_iter()
+                    .map(|view| {
+                        let transformed = if planned_views
+                            .peek()
+                            .is_some_and(|planned| planned.id == view.id)
+                        {
+                            planned_views.next()
+                        } else {
+                            None
+                        };
+                        let foreign_toplevel_identifier = self
+                            .retained_window_for_view(view.id)
+                            .and_then(|window| {
+                                window.wl_surface().map(|surface| surface.into_owned())
+                            })
+                            .and_then(|surface| self.foreign_toplevel_identifier(&surface));
+                        OverviewViewSnapshot {
+                            id: view.id.get(),
+                            root: view.root.get(),
+                            foreign_toplevel_identifier,
+                            source_geometry: view.geometry.map(geometry_snapshot),
+                            geometry: transformed.map(|view| geometry_snapshot(view.geometry)),
+                            clip: transformed.map(|view| geometry_snapshot(view.clip)),
+                            focused: view.focused,
+                            kind: match view.kind {
+                                OverviewViewKind::Tiled => OverviewViewKindSnapshot::Tiled,
+                                OverviewViewKind::Floating => OverviewViewKindSnapshot::Floating,
+                                OverviewViewKind::Attached => OverviewViewKindSnapshot::Attached,
+                            },
+                            stacking_order: view.stacking_order,
+                        }
+                    })
+                    .collect();
+                OverviewWorkspaceSnapshot {
+                    index: id.get(),
+                    name,
+                    hidden,
+                    minimize_target,
+                    geometry: workspace_plan.map(|workspace| geometry_snapshot(workspace.geometry)),
+                    view_count,
+                    views,
+                }
+            })
+            .collect();
         OverviewSnapshot {
             active_workspace,
+            area: plan.as_ref().map(|plan| geometry_snapshot(plan.area)),
             truncated,
             workspaces,
         }
+    }
+}
+
+fn geometry_snapshot(geometry: crate::layout::Rect) -> OverviewGeometrySnapshot {
+    OverviewGeometrySnapshot {
+        x: geometry.x,
+        y: geometry.y,
+        width: geometry.width,
+        height: geometry.height,
     }
 }

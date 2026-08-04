@@ -11,6 +11,9 @@ workspaces default-count=1 {
     // hidden "communication" show-in-overview=#true
 }
 
+// Integer logical-pixel spacing for the compositor-owned overview plan.
+overview outer-gap=24 workspace-gap=16
+
 ipc-socket "/run/user/1000/tensor.sock"
 // discrete is the default; integrated and any are also valid.
 gpu "discrete"

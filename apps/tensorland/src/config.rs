@@ -8,11 +8,11 @@ use std::{
 };
 
 use tensor_kdl::{CtxResult, Decode, ErrorCode, ErrorCtx, Flag, Located};
-use tensor_util::OutputScale;
 use thiserror::Error;
 
 use crate::{
     layout::{LayoutKind, LayoutLength, LayoutOptions},
+    overview::OverviewOptions,
     render::{GpuPreference, ParseGpuPreferenceError},
     scene::SceneAppearance,
     service::{ParseSystemdModeError, SystemdMode},
@@ -21,6 +21,7 @@ use crate::{
 
 mod appearance;
 mod diagnostic;
+mod output;
 mod reload;
 mod scalar;
 mod watcher;
@@ -31,10 +32,11 @@ pub use diagnostic::{
     ConfigDiagnostic, ConfigDiagnosticCategory, ConfigDiagnosticMetadata,
     MAX_DIAGNOSTIC_PATH_BYTES, MAX_DIAGNOSTIC_SUMMARY_BYTES, MAX_VALIDATION_COMMAND_BYTES,
 };
+pub use output::{OutputMode, OutputRule};
 pub use reload::{ConfigReloadFailure, ConfigReloadResult, ConfigTransaction};
 use scalar::{
-    LimitedLayoutGap, ParsedLayoutProportion, ParsedOutputMode, ParsedOutputScale,
-    PositiveLayoutFixed, PositiveRefreshCap,
+    LimitedLayoutGap, LimitedOverviewGap, ParsedLayoutProportion, ParsedOutputMode,
+    ParsedOutputScale, PositiveLayoutFixed, PositiveRefreshCap,
 };
 pub(crate) use watcher::ConfigWatcher;
 pub(crate) use worker::{
@@ -48,6 +50,7 @@ pub use workspaces::WorkspaceConfigError;
 pub struct Config {
     pub(crate) initial_layout: LayoutKind,
     pub(crate) layout_options: LayoutOptions,
+    pub(crate) overview_options: OverviewOptions,
     pub(crate) workspaces: WorkspaceConfig,
     pub(crate) ipc_socket: PathBuf,
     pub(crate) gpu_preference: GpuPreference,
@@ -65,62 +68,6 @@ pub struct Config {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartupCommand {
     pub argv: Vec<String>,
-}
-
-/// Per-connector policy resolved at the configuration boundary.
-///
-/// The DRM backend remains responsible for discovering the supported mode
-/// list. This value only expresses the user's stable intent, so a hotplug or
-/// a new EDID never leaks parser-specific state into the output policy.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OutputRule {
-    pub scale: Option<OutputScale>,
-    pub mode: Option<OutputMode>,
-    /// Logical origin of this output when set; otherwise automatic placement.
-    pub position: Option<(i32, i32)>,
-    /// When false the connector is ignored for scanout (still discovered).
-    pub enabled: bool,
-    /// Cap automatic mode selection to this refresh (millihertz). Explicit
-    /// `mode` with `@refresh` still wins when that exact mode exists.
-    pub max_refresh_millihertz: Option<u32>,
-}
-
-impl Default for OutputRule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl OutputRule {
-    pub const fn new() -> Self {
-        Self {
-            scale: None,
-            mode: None,
-            position: None,
-            enabled: true,
-            max_refresh_millihertz: None,
-        }
-    }
-}
-
-/// A DRM mode requested by its visible dimensions and optional exact refresh.
-/// Refresh is stored in millihertz, the same unit as [`tensor_host::PhysicalMode`],
-/// which prevents a floating-point comparison at the configuration-to-DRM boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct OutputMode {
-    pub width: u32,
-    pub height: u32,
-    pub refresh_millihertz: Option<u32>,
-}
-
-impl OutputMode {
-    pub const fn new(width: u32, height: u32, refresh_millihertz: Option<u32>) -> Self {
-        Self {
-            width,
-            height,
-            refresh_millihertz,
-        }
-    }
 }
 
 impl Config {
@@ -256,6 +203,7 @@ impl Default for Config {
         Self {
             initial_layout: LayoutKind::default(),
             layout_options: LayoutOptions::default(),
+            overview_options: OverviewOptions::default(),
             workspaces: WorkspaceConfig::default(),
             ipc_socket: env::var_os("XDG_RUNTIME_DIR")
                 .map(|path| PathBuf::from(path).join("tensor.sock"))
@@ -280,6 +228,8 @@ struct FileConfig {
     layout: Option<LayoutFileConfig>,
     #[kdl(child)]
     workspaces: Option<WorkspaceFileConfig>,
+    #[kdl(child)]
+    overview: Option<OverviewFileConfig>,
     #[kdl(child(name = "ipc-socket"), unwrap(argument))]
     ipc_socket: Option<String>,
     #[kdl(child, unwrap(argument))]
@@ -302,6 +252,25 @@ struct FileConfig {
     cursor: Option<CursorFileConfig>,
     #[kdl(child)]
     debug: Option<DebugFileConfig>,
+}
+
+#[derive(Debug, Default, Decode)]
+struct OverviewFileConfig {
+    #[kdl(property(name = "outer-gap"))]
+    outer_gap: Option<LimitedOverviewGap>,
+    #[kdl(property(name = "workspace-gap"))]
+    workspace_gap: Option<LimitedOverviewGap>,
+}
+
+impl OverviewFileConfig {
+    fn resolve(self) -> OverviewOptions {
+        let defaults = OverviewOptions::default();
+        OverviewOptions::new(
+            self.outer_gap.map_or(defaults.outer_gap, |value| value.0),
+            self.workspace_gap
+                .map_or(defaults.workspace_gap, |value| value.0),
+        )
+    }
 }
 
 #[derive(Debug, Default, Decode)]
@@ -394,6 +363,10 @@ impl FileConfig {
             .map(WorkspaceFileConfig::resolve)
             .transpose()?
             .unwrap_or_default();
+        let overview_options = self
+            .overview
+            .map(OverviewFileConfig::resolve)
+            .unwrap_or_default();
         let gpu_preference = self
             .gpu
             .as_deref()
@@ -433,6 +406,7 @@ impl FileConfig {
         Ok(Config {
             initial_layout,
             layout_options,
+            overview_options,
             workspaces,
             ipc_socket,
             gpu_preference,

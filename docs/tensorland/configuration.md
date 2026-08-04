@@ -44,6 +44,8 @@ workspaces default-count=1 {
     // hidden "communication" show-in-overview=#true
 }
 
+overview outer-gap=24 workspace-gap=16
+
 ipc-socket "/run/user/1000/tensor.sock"
 gpu "discrete"
 // Optional DRM primary or render node. Without this, Tensorland capability ranking selects the pair.
@@ -120,6 +122,14 @@ the configured hidden target and records its regular origin. Restore moves the s
 surface/GPU resources back, optionally activating the origin workspace. Workspace topology is a
 startup identity policy, so changing this KDL node through hot reload reports
 `reload_requires_restart`; runtime minimize, restore, and navigation use versioned IPC.
+
+`overview.outer-gap` and `overview.workspace-gap` are non-negative logical-pixel distances and
+default to 24 and 16. Each is capped at 100000 with a source-labeled KDL error. Both values hot
+reload as value-only planning policy. Tensorland saturates them for unusually small work areas,
+then chooses the deterministic integer grid that gives workspace cards the largest area while
+preserving the primary work area's aspect ratio. These values control geometry, not Shell chrome;
+Tensor Shell may draw labels and controls inside the published cards but must use the compositor's
+published destination and clip rectangles for window content and pointer targets.
 
 Each `output` node matches the connector name in its first argument. Its optional `scale` property is
 constrained to `0.1..=10.0` and quantized to the nearest `1/120`; this is the same representation

@@ -45,6 +45,40 @@ fn output_geometry(state: &RuntimeState, name: &str) -> tensor_util::LogicalRect
 }
 
 #[test]
+fn overview_snapshot_uses_primary_work_area_plan() {
+    let display = Display::<RuntimeState>::new().unwrap();
+    let mut state = RuntimeState::with_appearance(
+        display,
+        LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
+        SceneAppearance::default(),
+    );
+    state
+        .apply_backend_output_events([BackendOutputEvent::Connected(descriptor(1, "DP-1", 1920))])
+        .unwrap();
+    let view = ViewId::new(77);
+    state.world.spawn_view(view, WorkspaceId::new(0)).unwrap();
+    state
+        .world
+        .set_view_placement(
+            view,
+            crate::ecs::ViewPlacement::Floating {
+                geometry: tensor_util::Rect::new(100, 80, 800, 600),
+            },
+        )
+        .unwrap();
+
+    let overview = state.ipc_overview_snapshot();
+    let workspace = &overview.workspaces[0];
+    let view = &workspace.views[0];
+
+    assert_eq!(overview.area.unwrap().width, 1920);
+    assert!(workspace.geometry.is_some());
+    assert!(view.source_geometry.is_some());
+    assert!(view.geometry.is_some());
+    assert!(view.clip.is_some());
+}
+
+#[test]
 fn output_events_keep_tensor_window_space_stable_across_hotplug() {
     let display = Display::<RuntimeState>::new().unwrap();
     let mut state = RuntimeState::with_appearance(

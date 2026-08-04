@@ -1,4 +1,5 @@
 use super::*;
+use tensor_util::OutputScale;
 
 fn parse(document: &str) -> Result<Config, ConfigError> {
     Config::from_kdl(Path::new("test.kdl"), document)
@@ -22,6 +23,7 @@ fn parses_kdl_layout_and_ipc_socket() {
 
     assert_eq!(config.initial_layout, LayoutKind::Spatial2D);
     assert_eq!(config.layout_options, LayoutOptions::default());
+    assert_eq!(config.overview_options, OverviewOptions::default());
     assert_eq!(
         config.ipc_socket,
         PathBuf::from("/run/user/1000/tensor.sock")
@@ -49,6 +51,18 @@ fn parses_kdl_layout_and_ipc_socket() {
 #[test]
 fn checked_in_kdl_example_matches_the_typed_schema() {
     parse(include_str!("../../examples/config.kdl")).unwrap();
+}
+
+#[test]
+fn parses_bounded_overview_geometry_policy() {
+    let config = parse(r#"overview outer-gap=32 workspace-gap=20"#).unwrap();
+
+    assert_eq!(config.overview_options, OverviewOptions::new(32, 20));
+    assert!(matches!(
+        parse(r#"overview outer-gap=100001"#),
+        Err(ConfigError::Parse(ref diagnostic))
+            if diagnostic.error_context().code == tensor_kdl::ErrorCode::ExceededLimit
+    ));
 }
 
 #[test]

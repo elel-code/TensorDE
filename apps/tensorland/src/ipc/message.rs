@@ -3,8 +3,11 @@ use serde::{Deserialize, Serialize};
 use crate::config::ConfigDiagnosticMetadata;
 use crate::layout::LayoutKind;
 
-pub const IPC_PROTOCOL_VERSION: u16 = 3;
-pub const MAX_OVERVIEW_VIEWS: usize = 4_096;
+#[cfg(test)]
+mod tests;
+
+pub const IPC_PROTOCOL_VERSION: u16 = 4;
+pub const MAX_OVERVIEW_VIEWS: usize = 2_048;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Request {
@@ -165,6 +168,8 @@ pub struct WorkspaceSnapshot {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct OverviewSnapshot {
     pub active_workspace: u32,
+    /// Primary output work area used by the compositor-owned plan.
+    pub area: Option<OverviewGeometrySnapshot>,
     /// True when the stable prefix reached [`MAX_OVERVIEW_VIEWS`].
     pub truncated: bool,
     pub workspaces: Vec<OverviewWorkspaceSnapshot>,
@@ -176,6 +181,8 @@ pub struct OverviewWorkspaceSnapshot {
     pub name: String,
     pub hidden: bool,
     pub minimize_target: bool,
+    /// Workspace card in overview logical coordinates.
+    pub geometry: Option<OverviewGeometrySnapshot>,
     /// Total inventory size before the global bounded-prefix limit.
     pub view_count: usize,
     pub views: Vec<OverviewViewSnapshot>,
@@ -187,9 +194,12 @@ pub struct OverviewViewSnapshot {
     pub root: u64,
     /// Joins this record to `ext-foreign-toplevel-list-v1` metadata.
     pub foreign_toplevel_identifier: Option<String>,
-    /// Current or last valid arranged geometry; overview transforms are a
-    /// separate compositor-owned planning step.
+    /// Current or last valid arranged geometry before overview scaling.
+    pub source_geometry: Option<OverviewGeometrySnapshot>,
+    /// Transformed geometry in the overview plan.
     pub geometry: Option<OverviewGeometrySnapshot>,
+    /// Visible input/render region after clipping to the workspace card.
+    pub clip: Option<OverviewGeometrySnapshot>,
     pub focused: bool,
     pub kind: OverviewViewKindSnapshot,
     /// Back-to-front order within the compositor scene.

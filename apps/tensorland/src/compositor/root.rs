@@ -100,6 +100,7 @@ impl Compositor {
         let Config {
             initial_layout,
             layout_options,
+            overview_options,
             workspaces,
             ipc_socket,
             gpu_preference,
@@ -118,6 +119,7 @@ impl Compositor {
             appearance,
         )?;
         protocol.state_mut().configure_workspaces(&workspaces);
+        protocol.state_mut().overview_options = overview_options;
         protocol
             .state_mut()
             .apply_runtime_policy(cursor.clone(), debug);

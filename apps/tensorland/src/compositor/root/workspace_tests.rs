@@ -126,7 +126,10 @@ fn overview_inventory_is_a_bounded_stable_prefix() {
     let overview = state.ipc_overview_snapshot();
 
     assert!(overview.truncated);
-    assert_eq!(overview.workspaces[0].view_count, 4_097);
+    assert_eq!(
+        overview.workspaces[0].view_count,
+        crate::ipc::MAX_OVERVIEW_VIEWS + 1
+    );
     assert_eq!(
         overview.workspaces[0].views.len(),
         crate::ipc::MAX_OVERVIEW_VIEWS

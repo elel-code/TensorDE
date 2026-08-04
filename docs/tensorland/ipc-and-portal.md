@@ -27,13 +27,16 @@ indices and `ext-workspace-v1` remain limited to the regular pool.
 `--stay` restores without switching away from the current workspace. These operations reuse the
 retained protocol window and renderer resource identity rather than asking the client to remap.
 
-`get-overview` returns a deterministic back-to-front value inventory for every regular workspace
-and each hidden workspace whose KDL policy permits overview display. Each view names its root family,
-placement kind, focus state, current-or-last-valid geometry, stacking order, and the stable
-`ext-foreign-toplevel-list-v1` identifier used to join title/app-id metadata without duplicating an
-unbounded client string in IPC. The response is capped at 4,096 view records across the topology and
-sets `truncated` when it returns only the stable prefix. This inventory is the compositor-to-Shell
-data boundary; it does not claim that the transformed overview scene or its hit testing is complete.
+Version 4 `get-overview` returns a deterministic back-to-front plan for every regular workspace and
+each hidden workspace whose KDL policy permits overview display. The response names the primary
+work area, every workspace-card rectangle, and each view's current-or-last-valid source rectangle,
+transformed destination, and clip. Each view also names its root family, placement kind, focus state,
+stacking order, and stable `ext-foreign-toplevel-list-v1` identifier used to join title/app-id
+metadata without duplicating an unbounded client string in IPC. The response is capped at 2,048 view
+records across the topology and sets `truncated` when it returns only the stable prefix. If no output
+work area exists yet, inventory and source rectangles remain available while plan area/card/view
+destinations are `null`. Tensor Shell consumes these values for presentation; Tensorland's hit
+tester consumes the same internal plan front-to-back.
 
 `get-outputs` returns the current output topology as sorted value-only records (name, logical
 geometry, fractional scale, mode size/refresh, and whether the head hosts the default workspace
@@ -60,7 +63,7 @@ the last source-free bounded failure metadata. Filesystem changes reach that sam
 configuration watcher, and completed candidates commit on the compositor thread before the turn's
 IPC requests are answered.
 
-The current version-1 transport is still request/reply only. The next protocol slice is an explicit,
+The current version-4 transport is still request/reply only. The next protocol slice is an explicit,
 versioned subscription/event extension rather than unsolicited frames to existing clients. A failed
 reload event is bounded to diagnostic category, path, error code, line, column, short summary, and a
 config-validation command; the full KDL source remains in Tensorland's retained diagnostic and logs.

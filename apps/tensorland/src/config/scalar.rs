@@ -25,6 +25,19 @@ impl<'a> DecodeScalar<'a> for LimitedLayoutGap {
 }
 
 #[derive(Debug)]
+pub(super) struct LimitedOverviewGap(pub(super) u32);
+
+impl<'a> DecodeScalar<'a> for LimitedOverviewGap {
+    fn decode_scalar(value: &Value<'a>) -> CtxResult<Self> {
+        let value = u32::decode_scalar(value)?;
+        (value <= 100_000).then_some(Self(value)).ok_or_else(|| {
+            ErrorCtx::new(ErrorCode::ExceededLimit, 0)
+                .with_message("overview gaps must be at most 100000 logical pixels")
+        })
+    }
+}
+
+#[derive(Debug)]
 pub(super) struct ParsedLayoutProportion(pub(super) LayoutLength);
 
 impl<'a> DecodeScalar<'a> for ParsedLayoutProportion {

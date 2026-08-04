@@ -54,7 +54,8 @@ pub(super) fn assert_workspace_visibility_retains_window(
     let overview_view = &overview.workspaces[0].views[0];
     assert_eq!(overview_view.id, view_id.unwrap().get());
     assert_eq!(overview_view.root, overview_view.id);
-    assert!(overview_view.geometry.is_some());
+    assert!(overview_view.source_geometry.is_some());
+    assert_eq!(overview_view.geometry.is_some(), overview.area.is_some());
     assert!(
         overview_view
             .foreign_toplevel_identifier

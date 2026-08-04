@@ -11,6 +11,7 @@ pub use config::{
 pub mod ecs;
 pub mod ipc;
 pub mod layout;
+pub mod overview;
 mod protocol;
 mod render;
 pub mod scene;

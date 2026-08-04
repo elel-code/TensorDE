@@ -79,15 +79,23 @@ retains its regular origin as value-only state; restore reverses that move rathe
 Wayland surface, imported image, descriptor, or scene identity. This makes minimized windows a
 workspace policy instead of a parallel lifecycle state.
 
-The overview boundary is defined to consume the same regular/hidden metadata and retained workspace
-snapshots. Tensorland will own overview geometry, hit testing, focus, and cross-workspace moves;
-Tensor Shell will own its visual chrome and accessible controls. The current compositor slice
-publishes the required workspace metadata, minimize/restore operations, and a bounded back-to-front
-view inventory. Inventory records retain last valid geometry across workspace moves and join window
-metadata through the stable `ext-foreign-toplevel-list-v1` identifier. It does not yet claim the
-transformed overview scene or overview hit testing. Hidden workspaces marked
-`show-in-overview=#false` remain available to explicit IPC actions without entering that future
-scene.
+The overview boundary consumes the same regular/hidden metadata and retained workspace snapshots.
+Tensorland owns overview geometry and hit testing; Tensor Shell owns visual chrome and accessible
+controls. The compositor compiles the primary output's exclusive-zone-adjusted work area into a
+bounded integer plan: workspace cards preserve that area's aspect ratio, source window rectangles
+become destination rectangles plus clips, and the plan retains the existing back-to-front order.
+The hit tester walks those exact clips front-to-back, so rendering and input cannot drift. An
+attached dialog is hit by its own stable view ID while retaining its root family ID. Inventory
+records retain last valid geometry across workspace moves and join window metadata through the
+stable `ext-foreign-toplevel-list-v1` identifier.
+
+The plan contains no client pixels and creates no descriptor identity. Overview entry, exit, and
+whole-workspace rearrangement therefore reuse imported images and descriptor-heap bindings; a later
+scene integration only changes per-view transform/clip values. Hidden workspaces marked
+`show-in-overview=#false` are filtered before planning and hit testing but remain available to
+explicit IPC actions. Focus activation, cross-workspace drag/drop, animation state, and Tensor
+Shell's rendered overview surface remain later integration slices; the geometry/hit-test semantic
+kernel and IPC representation are complete.
 
 Configuration diagnostics follow the product boundary rather than becoming compositor UI.
 `tensor-kdl` produces parser/typed-decode context and an optional named-source miette report;

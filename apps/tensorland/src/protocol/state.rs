@@ -68,6 +68,7 @@ use crate::protocol::seat::InputSeat;
 use crate::{
     ecs::{CompositorWorld, ViewId, WorkspaceId},
     layout::{LayoutEngine, SizeConstraints},
+    overview::OverviewOptions,
     render::VulkanRenderer,
     scene::SceneAppearance,
 };
@@ -140,6 +141,7 @@ pub(crate) struct RuntimeState {
     layer_maps: LayerMaps,
     pub(crate) world: CompositorWorld,
     pub(crate) layout: LayoutEngine,
+    pub(crate) overview_options: OverviewOptions,
     pub(crate) renderer: Option<VulkanRenderer>,
     pub(super) security_context_submitter: Option<SecurityContextSubmitter>,
     #[cfg(feature = "tty")]
@@ -227,6 +229,7 @@ impl RuntimeState {
             layer_maps: LayerMaps::default(),
             world: CompositorWorld::with_appearance(appearance),
             layout,
+            overview_options: OverviewOptions::default(),
             renderer: None,
             security_context_submitter: None,
             #[cfg(feature = "tty")]
@@ -619,7 +622,7 @@ impl RuntimeState {
             .unwrap_or((OutputScale::ONE, SurfaceTransform::Normal))
     }
 
-    fn default_workspace_area(&self) -> Option<tensor_util::Rect> {
+    pub(crate) fn default_workspace_area(&self) -> Option<tensor_util::Rect> {
         self.space
             .outputs()
             .filter_map(|output| {

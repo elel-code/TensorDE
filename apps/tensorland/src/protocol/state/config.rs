@@ -18,6 +18,7 @@ impl RuntimeState {
             self.world.reset_layout_states();
             self.reflow_default_workspace();
         }
+        self.overview_options = config.overview_options;
 
         let appearance_changed = self.world.set_appearance(config.appearance);
         self.apply_runtime_policy(config.cursor.clone(), config.debug);
@@ -64,6 +65,7 @@ mod tests {
 
         assert_eq!(state.layout.kind(), LayoutKind::Spatial2D);
         assert_eq!(state.layout.options().gap, 23);
+        assert_eq!(state.overview_options, config.overview_options);
         assert_eq!(state.world.appearance(), config.appearance);
     }
 }
