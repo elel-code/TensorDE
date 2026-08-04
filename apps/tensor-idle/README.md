@@ -12,8 +12,18 @@ the configuration and compiles a deterministic, bounded action plan through
 `tensor-idle --check` (or `--check --battery`). `--check-wayland` performs a
 real connection, registers every deadline, and rolls the objects back on exit;
 `--observe` continuously reports deduplicated transitions ordered by policy
-rather than wire arrival order. Normal service startup still fails explicitly
-until action execution is vertically complete. `ext-session-lock-v1`, output
-power control, power-source observation, and logind suspend remain. Those
-capabilities are implemented directly rather than routed through Tensor Shell
-or `tensor-msg`.
+rather than wire arrival order. `--run-output-power` runs the same event loop
+and executes only the completed monitor-power stage; lock and suspend remain
+reported with `executed=false`.
+
+When monitor-off policy is enabled, the runtime requires
+`zwlr_output_power_manager_v1`, retains one control per live output, and exposes
+an action boundary that turns every output off on idle and back on on resume.
+Hotplug inherits the current policy, repeated events do not repeat requests,
+and a failed control restores the remaining outputs before returning an explicit
+error. DPMS does not remove or disable outputs in the compositor topology.
+
+Normal service startup still fails explicitly until all action execution is
+vertically complete. `ext-session-lock-v1`, power-source observation, and
+logind suspend remain. Those capabilities are implemented directly rather than
+routed through Tensor Shell or `tensor-msg`.

@@ -20,6 +20,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|argument| argument == "--check-wayland");
     let observe = arguments.iter().any(|argument| argument == "--observe");
+    let run_output_power = arguments
+        .iter()
+        .any(|argument| argument == "--run-output-power");
     let battery = arguments.iter().any(|argument| argument == "--battery");
     let source = if battery {
         PowerSource::Battery
@@ -27,7 +30,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         PowerSource::Ac
     };
     let plan = IdlePlan::compile(&config, source);
-    if check && !check_wayland && !observe {
+    if check && !check_wayland && !observe && !run_output_power {
         println!(
             "tensor-idle: source={source:?}, enabled={}, inhibitors={}, stages={}",
             plan.enabled,
@@ -39,27 +42,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if check_wayland {
         let runtime = IdleMonitorRuntime::connect(&plan)?;
         println!(
-            "tensor-idle: registered {} {source:?} Wayland idle monitors",
-            runtime.monitor_count()
+            "tensor-idle: registered {} {source:?} idle notifications and {} output-power controls",
+            runtime.monitor_count(),
+            runtime.output_power_count()
         );
         return Ok(());
     }
-    if observe {
+    if observe || run_output_power {
         let mut runtime = IdleMonitorRuntime::connect(&plan)?;
         let mut transitions = Vec::with_capacity(plan.stages.len());
         loop {
             transitions.clear();
             runtime.dispatch_into(None, &mut transitions)?;
-            for transition in &transitions {
+            for &transition in &transitions {
+                let executed =
+                    run_output_power && runtime.apply_monitor_power_transition(transition)?;
                 println!(
-                    "tensor-idle: action={:?} idle={} after_ms={}",
-                    transition.action, transition.idle, transition.after_ms
+                    "tensor-idle: action={:?} idle={} after_ms={} executed={executed}",
+                    transition.action, transition.idle, transition.after_ms,
                 );
             }
         }
     }
     Err(io::Error::other(
-        "idle action execution is not complete; use `tensor-idle --check`, `--check-wayland`, or `--observe`",
+        "idle action execution is not complete; use `tensor-idle --check`, `--check-wayland`, `--observe`, or `--run-output-power`",
     )
     .into())
 }

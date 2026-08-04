@@ -4,6 +4,10 @@ use wayland_client_runtime::{Event, IdleNotifyEvent, IdleNotifyKind, Runtime, Ru
 
 use crate::{IdleAction, IdlePlan, IdleStage};
 
+mod output_power;
+
+use output_power::OutputPowerSet;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IdleTransition {
     pub after_ms: u32,
@@ -14,27 +18,41 @@ pub struct IdleTransition {
 pub struct IdleMonitorRuntime {
     wayland: Runtime,
     monitors: IdleMonitorSet,
+    output_power: OutputPowerSet,
     events: Vec<Event>,
 }
 
 impl IdleMonitorRuntime {
     pub fn connect(plan: &IdlePlan) -> Result<Self, IdleRuntimeError> {
         let mut wayland = Runtime::connect()?;
-        let monitors = IdleMonitorSet::register(&mut wayland, plan)?;
+        let mut monitors = IdleMonitorSet::register(&mut wayland, plan)?;
+        let output_power = match OutputPowerSet::register(&mut wayland, plan) {
+            Ok(output_power) => output_power,
+            Err(error) => {
+                monitors.unregister(&mut wayland);
+                return Err(error);
+            }
+        };
         if let Err(error) = wayland.flush() {
-            let mut monitors = monitors;
+            let mut output_power = output_power;
+            output_power.unregister(&mut wayland);
             monitors.unregister(&mut wayland);
             return Err(error.into());
         }
         Ok(Self {
             wayland,
             monitors,
+            output_power,
             events: Vec::with_capacity(32),
         })
     }
 
     pub fn monitor_count(&self) -> usize {
         self.monitors.bindings.len()
+    }
+
+    pub fn output_power_count(&self) -> usize {
+        self.output_power.len()
     }
 
     pub fn dispatch_into(
@@ -45,6 +63,8 @@ impl IdleMonitorRuntime {
         self.wayland.dispatch(timeout)?;
         self.events.clear();
         self.wayland.drain_events_into(&mut self.events);
+        self.output_power
+            .apply_batch(&mut self.wayland, self.events.iter())?;
         self.monitors.apply_batch(
             self.events.iter().filter_map(|event| match event {
                 Event::IdleNotify(event) => Some(*event),
@@ -54,11 +74,26 @@ impl IdleMonitorRuntime {
         );
         Ok(())
     }
+
+    /// Apply only monitor-power transitions; lock and suspend remain owned by
+    /// their dedicated integrations.
+    pub fn apply_monitor_power_transition(
+        &mut self,
+        transition: IdleTransition,
+    ) -> Result<bool, IdleRuntimeError> {
+        if transition.action != IdleAction::MonitorOff {
+            return Ok(false);
+        }
+        self.output_power
+            .set_idle(&mut self.wayland, transition.idle)?;
+        Ok(true)
+    }
 }
 
 impl Drop for IdleMonitorRuntime {
     fn drop(&mut self) {
         self.monitors.unregister(&mut self.wayland);
+        self.output_power.unregister(&mut self.wayland);
         let _ = self.wayland.flush();
     }
 }
@@ -192,6 +227,23 @@ pub enum IdleRuntimeError {
         action: IdleAction,
         after_ms: u32,
         source: RuntimeError,
+    },
+    #[error("required output-power protocol is unavailable: {0}")]
+    MissingOutputPower(&'static str),
+    #[error("failed to create output power control for {output:?}: {source}")]
+    RegisterOutputPower {
+        output: wayland_client_runtime::OutputId,
+        source: RuntimeError,
+    },
+    #[error("failed to set {output:?} power mode to {mode:?}: {source}")]
+    SetOutputPower {
+        output: wayland_client_runtime::OutputId,
+        mode: wayland_client_runtime::OutputPowerMode,
+        source: RuntimeError,
+    },
+    #[error("output power control failed for {output:?}")]
+    OutputPowerFailed {
+        output: wayland_client_runtime::OutputId,
     },
 }
 
