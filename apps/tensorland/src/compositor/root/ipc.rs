@@ -13,7 +13,7 @@ use crate::{
         Response, ResultBody,
     },
     layout::LayoutEngine,
-    protocol::{RuntimeState, ViewWorkspaceError},
+    protocol::{RuntimeState, ViewCloseError, ViewWorkspaceError},
     spawn::{LaunchRequest, LaunchSubmitError, LaunchSubmitter},
 };
 
@@ -247,6 +247,12 @@ pub(super) fn handle_ipc_request_with_config(
             }
             ResultBody::Accepted
         }
+        IpcCommand::CloseView { view } => {
+            if let Err(error) = state.request_view_close(crate::ecs::ViewId::new(view)) {
+                return view_close_error_reply(request_id, error);
+            }
+            ResultBody::Accepted
+        }
         IpcCommand::MinimizeFocused => {
             if state.minimize_focused_view().is_none() {
                 return IpcReply::new(Response::error(
@@ -272,6 +278,15 @@ pub(super) fn handle_ipc_request_with_config(
         }
     };
     IpcReply::new(Response::new(request_id, result))
+}
+
+fn view_close_error_reply(request_id: u64, error: ViewCloseError) -> IpcReply {
+    let code = match &error {
+        ViewCloseError::UnknownView(_) => "unknown_view",
+        ViewCloseError::UnmappedView(_) => "unmapped_view",
+        ViewCloseError::Protocol { .. } => "view_lifecycle",
+    };
+    IpcReply::new(Response::error(request_id, code, error.to_string()))
 }
 
 fn view_workspace_error_reply(request_id: u64, error: ViewWorkspaceError) -> IpcReply {

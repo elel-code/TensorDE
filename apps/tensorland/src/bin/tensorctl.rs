@@ -66,6 +66,10 @@ enum CliCommand {
         #[arg(long, default_value_t = false)]
         follow: bool,
     },
+    /// Request that one exact stable view close.
+    CloseView {
+        view: u64,
+    },
     /// Move the focused window into the configured hidden minimize workspace.
     MinimizeFocused,
     /// Restore a minimized window by stable Tensorland view ID.
@@ -120,6 +124,7 @@ impl From<CliCommand> for Command {
                 index,
                 follow,
             },
+            CliCommand::CloseView { view } => Self::CloseView { view },
             CliCommand::MinimizeFocused => Self::MinimizeFocused,
             CliCommand::RestoreMinimized { view, stay } => Self::RestoreMinimized {
                 view,
@@ -279,6 +284,10 @@ mod tests {
                 index: 2,
                 follow: true,
             }
+        ));
+        assert!(matches!(
+            Command::from(CliCommand::CloseView { view: 12 }),
+            Command::CloseView { view: 12 }
         ));
         assert!(matches!(
             Command::from(CliCommand::RestoreMinimized {

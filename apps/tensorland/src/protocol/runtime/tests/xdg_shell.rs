@@ -24,6 +24,7 @@ use super::*;
 struct XdgClient {
     configures: Vec<u32>,
     preferred_scales: Vec<u32>,
+    close_requested: bool,
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for XdgClient {
@@ -45,8 +46,22 @@ delegate_noop!(XdgClient: ignore wl_shm::WlShm);
 delegate_noop!(XdgClient: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(XdgClient: ignore xdg_positioner::XdgPositioner);
 delegate_noop!(XdgClient: ignore xdg_popup::XdgPopup);
-delegate_noop!(XdgClient: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(XdgClient: ignore wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
+
+impl Dispatch<xdg_toplevel::XdgToplevel, ()> for XdgClient {
+    fn event(
+        state: &mut Self,
+        _: &xdg_toplevel::XdgToplevel,
+        event: xdg_toplevel::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if matches!(event, xdg_toplevel::Event::Close) {
+            state.close_requested = true;
+        }
+    }
+}
 
 impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for XdgClient {
     fn event(
@@ -132,6 +147,74 @@ fn assert_xdg_protocol_error(violation: XdgViolation, expected_code: u32) {
         assert_eq!(object_id, expected_object_id);
     }
     assert_eq!(code, expected_code);
+}
+
+#[test]
+fn stable_view_close_sends_xdg_toplevel_close() {
+    let mut runtime = test_runtime();
+    let socket_path = runtime_socket(&runtime);
+    let _socket_completions = runtime.prepare_for_test(false).unwrap();
+    let (ready_tx, ready_rx) = mpsc::sync_channel(0);
+    let (release_tx, release_rx) = mpsc::sync_channel(0);
+    let (closed_tx, closed_rx) = mpsc::sync_channel(0);
+
+    let client = std::thread::spawn(move || {
+        let connection =
+            Connection::from_socket(UnixStream::connect(socket_path).unwrap()).unwrap();
+        let (globals, mut queue) = registry_queue_init::<XdgClient>(&connection).unwrap();
+        let handle = queue.handle();
+        let compositor = globals
+            .bind::<wl_compositor::WlCompositor, _, _>(&handle, 1..=6, ())
+            .unwrap();
+        let base = globals
+            .bind::<xdg_wm_base::XdgWmBase, _, _>(&handle, 1..=7, ())
+            .unwrap();
+        let surface = compositor.create_surface(&handle, ());
+        let xdg_surface = base.get_xdg_surface(&surface, &handle, ());
+        let toplevel = xdg_surface.get_toplevel(&handle, ());
+        surface.commit();
+
+        let mut state = XdgClient::default();
+        dispatch_until_configures(&mut queue, &mut state, 1);
+        ready_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+        while !state.close_requested {
+            queue.blocking_dispatch(&mut state).unwrap();
+        }
+        closed_tx.send(()).unwrap();
+        toplevel.destroy();
+        xdg_surface.destroy();
+        surface.destroy();
+    });
+
+    dispatch_until_result(&mut runtime, &ready_rx);
+    let surface = runtime
+        .state
+        .space
+        .retained_elements()
+        .next()
+        .unwrap()
+        .wl_surface()
+        .unwrap()
+        .into_owned();
+    let view = runtime.state.view_for_surface(&surface).unwrap();
+    runtime.state.request_view_close(view).unwrap();
+    assert_eq!(runtime.state.view_count(), 1);
+    runtime.state.flush_wayland_clients();
+    release_tx.send(()).unwrap();
+    dispatch_until_result(&mut runtime, &closed_rx);
+    client.join().unwrap();
+
+    for _ in 0..16 {
+        runtime
+            .event_loop
+            .dispatch(Duration::from_millis(2), &mut runtime.state)
+            .unwrap();
+        if runtime.state.view_count() == 0 {
+            break;
+        }
+    }
+    assert_eq!(runtime.state.view_count(), 0);
 }
 
 fn xdg_protocol_error(violation: XdgViolation) -> (u32, u32, u32) {

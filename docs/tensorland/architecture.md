@@ -100,10 +100,13 @@ cross-workspace movement. Tensorland resolves an attached ID to its root for fam
 retaining the exact requested member for focus; selecting a minimized member restores its retained
 origin first, whereas an unrelated hidden-workspace member is rejected rather than implicitly
 exposing hidden policy. Moving a focused family without following it reconciles the source
-workspace and seat focus before the old surface becomes invisible. Tensor Shell therefore needs no
-ECS, Wayland, workspace-family, or renderer ownership. Pointer-to-command wiring, animation state,
-and Tensor Shell's rendered overview surface remain later integration slices; the geometry,
-hit-test, stable-view command, and IPC representation kernels are complete.
+workspace and seat focus before the old surface becomes invisible. Closing targets the exact stable
+view rather than its attachment root: Wayland clients receive `xdg_toplevel.close`, while XWayland
+uses `WM_DELETE_WINDOW` when supported and otherwise terminates the owning X11 client. Client-owned
+protocol teardown remains asynchronous. Tensor Shell therefore needs no ECS, Wayland,
+workspace-family, or renderer ownership. Pointer-to-command wiring, animation state, and Tensor
+Shell's rendered overview surface remain later integration slices; the geometry, hit-test,
+stable-view command, and IPC representation kernels are complete.
 
 Configuration diagnostics follow the product boundary rather than becoming compositor UI.
 `tensor-kdl` produces parser/typed-decode context and an optional named-source miette report;

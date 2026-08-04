@@ -139,6 +139,14 @@ impl Toplevel {
         !self.0.destroyed.get() && self.0.wl_surface.is_alive() && self.0.resource.is_alive()
     }
 
+    pub(in crate::protocol) fn request_close(&self) -> bool {
+        if !self.alive() {
+            return false;
+        }
+        self.0.resource.close();
+        true
+    }
+
     pub(super) fn mark_destroyed(&self) {
         self.0.destroyed.set(true);
     }

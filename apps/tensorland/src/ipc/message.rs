@@ -6,7 +6,7 @@ use crate::layout::LayoutKind;
 #[cfg(test)]
 mod tests;
 
-pub const IPC_PROTOCOL_VERSION: u16 = 5;
+pub const IPC_PROTOCOL_VERSION: u16 = 6;
 pub const MAX_OVERVIEW_VIEWS: usize = 2_048;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -91,6 +91,10 @@ pub enum Command {
         index: u32,
         #[serde(default)]
         follow: bool,
+    },
+    /// Request that one exact stable view close through its native protocol.
+    CloseView {
+        view: u64,
     },
     /// Move the focused view family into the configured hidden minimize target.
     MinimizeFocused,

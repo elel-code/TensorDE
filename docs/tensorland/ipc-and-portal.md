@@ -14,7 +14,7 @@ dispatch or grow compositor memory without limit. Runtime failure and graceful-s
 use a reserved control slot that cannot be consumed by request load.
 `tensorctl` exposes `ping`, `get-state`, `get-outputs`, `get-workspaces`, `get-overview`,
 `get-config-status`, `reload-config`, layout/workspace/output controls, `minimize-focused`,
-`restore-minimized`, stable-view activation/movement, `spawn`, and `quit` using the same codec.
+`restore-minimized`, stable-view activation/movement/close, `spawn`, and `quit` using the same codec.
 
 `get-state` returns a value-only snapshot: active layout kind, view count on the active regular
 workspace, mapped output count, focused view ID, regular/hidden workspace counts, and minimized-view
@@ -27,7 +27,7 @@ indices and `ext-workspace-v1` remain limited to the regular pool.
 `--stay` restores without switching away from the current workspace. These operations reuse the
 retained protocol window and renderer resource identity rather than asking the client to remap.
 
-Version 5 `get-overview` returns a deterministic back-to-front plan for every regular workspace and
+Version 6 `get-overview` returns a deterministic back-to-front plan for every regular workspace and
 each hidden workspace whose KDL policy permits overview display. The response names the primary
 work area, every workspace-card rectangle, and each view's current-or-last-valid source rectangle,
 transformed destination, and clip. Each view also names its root family, placement kind, focus state,
@@ -39,14 +39,17 @@ destinations are `null`. Tensor Shell consumes these values for presentation; Te
 tester consumes the same internal plan front-to-back.
 
 Overview interaction returns those stable IDs through `activate-view <view-id>` and
-`move-view-to-workspace <view-id> <regular-index> [--follow]`. Tensor Shell never receives a Bevy
-entity, Wayland object, or Vulkan handle. Activating an attached dialog switches to its root
-family's regular workspace but focuses the requested dialog. Activating a minimized member restores
-the complete retained family to its recorded origin before applying that same focus rule. Moving any
-member moves the root and every attachment; `--follow` then selects the destination and requested
-member. Unknown IDs, non-minimize hidden workspaces, invalid regular indices, active popup grabs, and
-lifecycle failures remain distinct structured errors. A move without `--follow` transfers or clears
-seat focus before the family becomes invisible, so keyboard focus never remains on a hidden surface.
+`move-view-to-workspace <view-id> <regular-index> [--follow]`, and `close-view <view-id>`. Tensor
+Shell never receives a Bevy entity, Wayland object, or Vulkan handle. Activating an attached dialog
+switches to its root family's regular workspace but focuses the requested dialog. Activating a
+minimized member restores the complete retained family to its recorded origin before applying that
+same focus rule. Moving any member moves the root and every attachment; `--follow` then selects the
+destination and requested member. Close deliberately targets the requested member, sends
+`xdg_toplevel.close` or the X11 close request, and waits for normal client-owned teardown instead of
+removing ECS state eagerly. Unknown IDs, unmapped views, non-minimize hidden workspaces, invalid
+regular indices, active popup grabs, and lifecycle failures remain distinct structured errors. A
+move without `--follow` transfers or clears seat focus before the family becomes invisible, so
+keyboard focus never remains on a hidden surface.
 
 `get-outputs` returns the current output topology as sorted value-only records (name, logical
 geometry, fractional scale, mode size/refresh, and whether the head hosts the default workspace

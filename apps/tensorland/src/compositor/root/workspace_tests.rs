@@ -265,6 +265,29 @@ fn ipc_move_view_moves_the_family_and_follow_focuses_the_requested_dialog() {
 }
 
 #[test]
+fn ipc_close_view_reports_unknown_and_unmapped_stable_ids() {
+    let mut state = runtime_state();
+    let ghost = ViewId::new(91);
+    state.world.spawn_view(ghost, WorkspaceId::new(0)).unwrap();
+    let (worker, _) = live_worker();
+    let submitter = worker.submitter();
+
+    let unknown = handle_ipc_request(
+        Request::new(36, Command::CloseView { view: 999 }),
+        &mut state,
+        &submitter,
+    );
+    assert_error_code(unknown.response.result, "unknown_view");
+
+    let unmapped = handle_ipc_request(
+        Request::new(37, Command::CloseView { view: ghost.get() }),
+        &mut state,
+        &submitter,
+    );
+    assert_error_code(unmapped.response.result, "unmapped_view");
+}
+
+#[test]
 fn overview_inventory_filters_hidden_workspace_policy() {
     let mut state = runtime_state();
     let mut config = crate::config::WorkspaceConfig::default();

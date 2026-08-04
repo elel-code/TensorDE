@@ -37,5 +37,5 @@ pub(crate) use runtime::{
     XWaylandStartupEvent, drain_xwayland_events,
 };
 pub use runtime::{ProtocolError, WaylandRuntime};
-pub(crate) use state::{RuntimeState, ViewWorkspaceError};
+pub(crate) use state::{RuntimeState, ViewCloseError, ViewWorkspaceError};
 pub(crate) use tensor_protocol::{PROTOCOL_CATALOG, ProtocolTier};

@@ -11,6 +11,7 @@ use std::{
 };
 
 use tensor_util::{LogicalPoint, LogicalRect};
+use thiserror::Error;
 use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use wayland_server::protocol::wl_surface::WlSurface;
 
@@ -25,6 +26,7 @@ use super::{
     },
     surfaces::surface_view,
 };
+use crate::ecs::ViewId;
 use crate::protocol::globals::compositor::{
     SurfaceAttributes, SurfaceData, TraversalAction, with_surface_tree_downward,
 };
@@ -49,6 +51,16 @@ struct ProtocolWindowInner {
 /// A compositor-thread window with stable identity and cached surface geometry.
 #[derive(Clone, Debug)]
 pub(crate) struct ProtocolWindow(Rc<ProtocolWindowInner>);
+
+#[derive(Debug, Error)]
+pub(crate) enum ViewCloseError {
+    #[error("view {0:?} does not exist")]
+    UnknownView(ViewId),
+    #[error("view {0:?} has no retained protocol window")]
+    UnmappedView(ViewId),
+    #[error("view {view:?} close request failed: {message}")]
+    Protocol { view: ViewId, message: String },
+}
 
 impl PartialEq for ProtocolWindow {
     #[inline]
@@ -146,6 +158,19 @@ impl ProtocolWindow {
                 } else {
                     false
                 }
+            }
+        }
+    }
+
+    fn request_close(&self) -> Result<(), String> {
+        match &self.0.surface {
+            ProtocolWindowSurface::Wayland(surface) => surface
+                .request_close()
+                .then_some(())
+                .ok_or_else(|| "xdg_toplevel is no longer alive".to_owned()),
+            #[cfg(feature = "xwayland")]
+            ProtocolWindowSurface::X11(surface) => {
+                surface.request_close().map_err(|error| error.to_string())
             }
         }
     }
@@ -274,6 +299,23 @@ impl ProtocolWindow {
             #[cfg(feature = "xwayland")]
             ProtocolWindowSurface::X11(surface) => surface.wl_surface().map(Cow::Owned),
         }
+    }
+}
+
+impl super::RuntimeState {
+    /// Ask the exact stable view selected by overview to close. Attached
+    /// dialogs remain independent close targets; family teardown follows the
+    /// client's normal protocol lifecycle.
+    pub(crate) fn request_view_close(&self, view: ViewId) -> Result<(), ViewCloseError> {
+        if self.world.view_workspace(view).is_none() {
+            return Err(ViewCloseError::UnknownView(view));
+        }
+        let window = self
+            .retained_window_for_view(view)
+            .ok_or(ViewCloseError::UnmappedView(view))?;
+        window
+            .request_close()
+            .map_err(|message| ViewCloseError::Protocol { view, message })
     }
 }
 
