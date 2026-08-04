@@ -1,5 +1,4 @@
 use std::{os::unix::net::UnixStream, path::PathBuf, sync::mpsc, time::Duration};
-
 use tensor_host::{ConnectorId, PhysicalMode, SubpixelLayout};
 use tensor_util::OutputScale;
 use wayland_client::{
@@ -37,6 +36,7 @@ mod activation;
 #[cfg(feature = "tty")]
 mod background_effect;
 mod capture;
+mod color_management;
 mod color_representation;
 #[cfg(feature = "tty")]
 mod cursor_shape;

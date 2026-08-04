@@ -168,11 +168,22 @@ reaches each extracted surface draw, and produces a protocol-neutral renderer
 color plan. A separate retained managed-color pipeline now consumes
 non-identity plans in direct and region-local multi-pass recording without
 adding work to the SDR identity shader. Its production global and multi-plane
-YUV combinations remain unadvertised until encoded client-view selection and
-the output color owner make limited-range/electrical-alpha execution exact.
-The companion `wp_color_management_v1` v3 global is likewise gated until
-image-description, output-feedback, HDR post-encoding, and KMS HDR execution
-are complete.
+YUV combinations remain unadvertised until the output color owner and
+multi-plane import make YUV execution exact. Encoded/UNORM and sRGB client
+views are now selected explicitly, so RGB limited-range and managed-alpha
+transforms enter the shader before hardware transfer decoding.
+
+The companion `wp_color_management_v1` v3 now has a completion-gated direct
+wire owner. Its parametric creator validates one-shot properties, named and
+custom primaries, named and power transfer functions, luminance and contained
+mastering volumes, and permanent non-zero identities. Immutable descriptions
+emit `ready2` or an explicit `failed`; surface descriptions are copy-attached,
+double-buffered, and reach the existing value-only renderer color plan.
+Output and surface feedback currently expose the same information-capable SDR
+parametric description, while ICC and Windows presets fail as unadvertised
+features. Production advertising remains disabled until live output color
+selection, HDR post-encoding, KMS HDR metadata/reset, and corresponding output
+change notifications are complete.
 
 ## Priority backlog (tier-aware)
 
@@ -200,7 +211,9 @@ are complete.
    keyboard capability routing are implemented.
 8. **wp color-management v3 + wp color-representation** (tier 2): implement as
    one HDR/color slice spanning surface state, shared renderer transforms,
-   output feedback, formats, tone mapping, and KMS metadata.
+   output feedback, formats, tone mapping, and KMS metadata. Parametric image
+   descriptions, fixed SDR feedback, and surface commit state are implemented
+   behind the completion gate; production output/HDR ownership remains.
 9. **wp DRM lease** (tier 2): non-desktop connector advertisement, lease FD,
    revocation, hotplug, session, and output-plan exclusion.
 10. Finish already-advertised protocol depth: live output mode replacement,

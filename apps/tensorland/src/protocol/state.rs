@@ -85,8 +85,8 @@ use surfaces::SurfaceBufferRegistry;
 #[cfg(feature = "tty")]
 pub(crate) use surfaces::take_dnd_icon_surface_delta;
 pub(crate) use surfaces::{
-    apply_cursor_surface_delta, apply_surface_alpha, apply_surface_representation,
-    destroy_surface_state, on_commit_surface_handler,
+    apply_cursor_surface_delta, apply_surface_alpha, apply_surface_image_description,
+    apply_surface_representation, destroy_surface_state, on_commit_surface_handler,
 };
 pub(in crate::protocol) use surfaces::{pending_buffer_logical_size, surface_has_buffer};
 pub(in crate::protocol) use surfaces::{pending_surface_fourcc, surface_contains_point};

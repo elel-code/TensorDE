@@ -10,6 +10,7 @@ use super::state::RuntimeState;
 
 pub(in crate::protocol) mod activation;
 pub(in crate::protocol) mod background_effect;
+pub(in crate::protocol) mod color_management;
 pub(in crate::protocol) mod color_representation;
 pub(in crate::protocol) mod compositor;
 pub(in crate::protocol) mod cursor_shape;
@@ -55,6 +56,7 @@ pub(in crate::protocol) mod xwayland_keyboard_grab;
 
 use activation::ActivationProtocol;
 use background_effect::BackgroundEffectProtocol;
+use color_management::ColorManagementProtocol;
 use color_representation::ColorRepresentationProtocol;
 use cursor_shape::CursorShapeProtocol;
 use desktop_controls::DesktopControls;
@@ -128,6 +130,7 @@ pub(crate) struct ProtocolGlobals {
     pub(super) xdg_foreign: XdgForeignProtocol,
     pub(super) desktop_controls: DesktopControls,
     pub(super) surface_metadata: SurfaceMetadataProtocol,
+    pub(super) color_management: ColorManagementProtocol,
     pub(super) color_representation: ColorRepresentationProtocol,
     background_effect: BackgroundEffectProtocol,
     pub(super) surface_timing: SurfaceTimingProtocol,
@@ -193,6 +196,7 @@ impl ProtocolGlobals {
             xdg_foreign: XdgForeignProtocol::new(display),
             desktop_controls: DesktopControls::new(display),
             surface_metadata: SurfaceMetadataProtocol::new(display),
+            color_management: ColorManagementProtocol::new(display),
             color_representation: ColorRepresentationProtocol::new(display),
             background_effect: BackgroundEffectProtocol::new(display),
             surface_timing: SurfaceTimingProtocol::new(display),
@@ -242,6 +246,7 @@ impl ProtocolGlobals {
         self.pointer_constraints.remove_surface(surface);
         self.fractional_scale.remove_surface(surface);
         self.surface_metadata.remove_surface(surface);
+        self.color_management.remove_surface(surface);
         self.color_representation.remove_surface(surface);
         self.tearing_control.remove_surface(surface);
         self.desktop_controls.remove_surface(surface);
@@ -349,6 +354,7 @@ impl ProtocolGlobals {
             &self.xdg_foreign,
             &self.desktop_controls,
             &self.surface_metadata,
+            &self.color_management,
             &self.color_representation,
             &self.background_effect,
             &self.surface_timing,
@@ -392,6 +398,7 @@ impl ProtocolGlobals {
             pointer_warp: true,
             content_type: true,
             alpha_modifier: true,
+            color_management: self.color_management.advertised(),
             color_representation: self.color_representation.advertised(),
             background_effect: true,
             toplevel_icon: true,
@@ -451,6 +458,7 @@ pub(crate) struct ProtocolCapabilities {
     pub(crate) pointer_warp: bool,
     pub(crate) content_type: bool,
     pub(crate) alpha_modifier: bool,
+    pub(crate) color_management: bool,
     pub(crate) color_representation: bool,
     pub(crate) background_effect: bool,
     pub(crate) toplevel_icon: bool,
@@ -538,6 +546,7 @@ mod tests {
                 pointer_warp: true,
                 content_type: true,
                 alpha_modifier: true,
+                color_management: true,
                 color_representation: true,
                 background_effect: true,
                 toplevel_icon: true,

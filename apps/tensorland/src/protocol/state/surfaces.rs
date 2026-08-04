@@ -14,7 +14,8 @@ use crate::protocol::globals::compositor::{
 #[cfg(feature = "tty")]
 use tensor_protocol::SurfaceSampleTransform;
 use tensor_protocol::{
-    ColorRepresentation, SurfaceAlpha, SurfaceColorState, SurfaceSourceRect, SurfaceTransform,
+    ColorRepresentation, ImageDescription, RenderIntent, SurfaceAlpha, SurfaceColorState,
+    SurfaceSourceRect, SurfaceTransform,
 };
 use wayland_server::{
     Resource,
@@ -284,6 +285,24 @@ pub(crate) fn apply_surface_representation(
             .lock()
             .unwrap();
         state.color.representation = representation;
+    });
+}
+
+pub(crate) fn apply_surface_image_description(
+    surface: &WlSurface,
+    image_description: Option<(ImageDescription, RenderIntent)>,
+) {
+    with_states(surface, |states| {
+        states
+            .data_map
+            .insert_if_missing_threadsafe(|| Mutex::new(SurfaceState::default()));
+        let mut state = states
+            .data_map
+            .get::<Mutex<SurfaceState>>()
+            .expect("surface state was inserted above")
+            .lock()
+            .unwrap();
+        state.color.image_description = image_description;
     });
 }
 

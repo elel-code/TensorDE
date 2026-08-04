@@ -71,6 +71,17 @@ lifetime tests, surface/output feedback wire tests, SDR-to-SDR identity,
 HDR-to-HDR and HDR-to-SDR plan tests, target-format capability rejection,
 metadata hotplug/reset behavior, and native evidence on a capable output.
 
+The `wp_color_management_v1` v3 wire owner is now test-bindable behind the
+same production completion gate. It advertises only the perceptual intent and
+the parametric features the renderer can lower, validates required and
+one-shot creator properties, and creates immutable descriptions with permanent
+64-bit identities and `ready2`/`failed` outcomes. Parameter-created
+descriptions deliberately reject information queries; fixed SDR output and
+surface-preferred descriptions expose complete parametric information. Surface
+attachment has copy semantics and becomes current only at `wl_surface.commit`,
+so destroying the description object cannot invalidate pending render state.
+ICC and Windows presets remain explicit unsupported-feature errors.
+
 The `wp_color_representation_v1` wire owner now has real per-surface
 pending/current state, duplicate/inert/unknown-enum errors, commit-time buffer
 compatibility checks, value-only scene extraction, and a cached shared-renderer
@@ -95,9 +106,9 @@ target fails closed unless both a 10-bit/float format and native metadata path
 exist. The plan now retains a fixed-point source-to-target gamut matrix and
 lowers allocation-free into the managed shader ABI; Tensorland records that
 ABI in both direct and region-local multi-pass scene segments. The identity
-pipeline remains branch-free. `wp_color_management_v1` image creators, output
-feedback, HDR output post-encoding, and KMS metadata ownership remain before
-the combined slice is complete.
+pipeline remains branch-free. Live output color selection and change events,
+HDR output post-encoding, KMS metadata/reset ownership, ICC limits, and native
+HDR evidence remain before the combined slice is complete.
 
 ### 4. DRM leasing
 

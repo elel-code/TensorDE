@@ -16,6 +16,11 @@ impl RuntimeState {
             .expect("Wayland display must remain installed");
         let result = display.dispatch_clients(self);
         self.display = Some(display);
+        if result.is_ok() {
+            self.protocol_globals
+                .color_management
+                .flush_information_done();
+        }
         result
     }
 }
