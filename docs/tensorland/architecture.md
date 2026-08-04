@@ -73,7 +73,9 @@ that connection. If the bridge accepted a request but the compositor later drops
 response, the connection likewise flushes one `service_unavailable` response for every request in
 the decoded batch before EOF. Every complete frame decoded from one bounded read batch is submitted
 before the connection awaits the batch's one-shot completions; replies are still written in input
-order, so submission gains concurrency without making policy order completion-dependent.
+order, so submission gains concurrency without making policy order completion-dependent. The frame
+decoder scans a completed-read batch linearly and compacts its retained fragmented tail once, rather
+than shifting the unread suffix after every decoded frame.
 
 Tensorland intentionally has no general-purpose network control plane: its compositor control
 protocol is local Unix IPC.

@@ -74,8 +74,9 @@ Cancellation of an already accepted compositor one-shot uses the same per-reques
 rule instead of exposing an unstructured broken pipe.
 
 Complete frames decoded from one bounded read batch are submitted together before response waits,
-then written back in input order. External clients never receive Wayland resources, Vulkan handles,
-or mutable ECS access.
+then written back in input order. Coalesced frames are decoded by one linear scan and one tail
+compaction, so batching does not introduce per-frame suffix copies. External clients never receive
+Wayland resources, Vulkan handles, or mutable ECS access.
 
 Configuration control uses the same request/reply transport. `reload-config` non-blockingly queues
 the configured path on the one-entry cold worker and returns `accepted`; saturation and stopped

@@ -29,26 +29,32 @@ impl FrameDecoder {
     pub fn push<T: DeserializeOwned>(&mut self, bytes: &[u8]) -> Result<Vec<T>, CodecError> {
         self.buffer.extend_from_slice(bytes);
         let mut values = Vec::new();
+        let mut consumed = 0;
 
         loop {
-            if self.buffer.len() < FRAME_HEADER_SIZE {
+            let remaining = &self.buffer[consumed..];
+            if remaining.len() < FRAME_HEADER_SIZE {
                 break;
             }
 
             let payload_len =
-                u32::from_le_bytes(self.buffer[..FRAME_HEADER_SIZE].try_into().unwrap()) as usize;
+                u32::from_le_bytes(remaining[..FRAME_HEADER_SIZE].try_into().unwrap()) as usize;
             if payload_len > MAX_FRAME_SIZE {
                 return Err(CodecError::FrameTooLarge);
             }
 
             let frame_len = FRAME_HEADER_SIZE + payload_len;
-            if self.buffer.len() < frame_len {
+            if remaining.len() < frame_len {
                 break;
             }
 
-            let payload = &self.buffer[FRAME_HEADER_SIZE..frame_len];
+            let payload = &remaining[FRAME_HEADER_SIZE..frame_len];
             values.push(serde_json::from_slice(payload).map_err(CodecError::Deserialize)?);
-            self.buffer.drain(..frame_len);
+            consumed += frame_len;
+        }
+
+        if consumed != 0 {
+            self.buffer.drain(..consumed);
         }
 
         Ok(values)
@@ -106,6 +112,30 @@ mod tests {
                 .collect::<Vec<_>>(),
             [1, 2]
         );
+    }
+
+    #[test]
+    fn completed_prefix_is_compacted_once_without_losing_the_fragmented_tail() {
+        let mut bytes = Vec::new();
+        for request_id in 1..=64 {
+            bytes.extend(encode(&Request::new(request_id, Command::Ping)).unwrap());
+        }
+        let tail = encode(&Request::new(65, Command::GetState)).unwrap();
+        let split = tail.len() / 2;
+        bytes.extend_from_slice(&tail[..split]);
+
+        let mut decoder = FrameDecoder::new();
+        let completed = decoder.push::<Request>(&bytes).unwrap();
+
+        assert_eq!(completed.len(), 64);
+        assert_eq!(completed[0].request_id, 1);
+        assert_eq!(completed[63].request_id, 64);
+        assert_eq!(decoder.buffered_bytes(), split);
+
+        let tail = decoder.push::<Request>(&tail[split..]).unwrap();
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].request_id, 65);
+        assert_eq!(decoder.buffered_bytes(), 0);
     }
 
     #[test]
