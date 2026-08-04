@@ -1,0 +1,16 @@
+enabled #true
+respect-inhibitors #true
+
+ac {
+    monitor-off-after-seconds 600
+    lock-after-seconds 900
+    suspend-after-seconds 1800
+    post-lock-monitor-off-after-seconds 30
+}
+
+battery {
+    monitor-off-after-seconds 300
+    lock-after-seconds 600
+    suspend-after-seconds 900
+    post-lock-monitor-off-after-seconds 15
+}

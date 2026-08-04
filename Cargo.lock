@@ -3925,6 +3925,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tensor-idle"
+version = "0.1.0"
+dependencies = [
+ "tensor-kdl",
+ "thiserror",
+ "wayland-client-runtime",
+]
+
+[[package]]
 name = "tensor-kdl"
 version = "0.1.0"
 dependencies = [
