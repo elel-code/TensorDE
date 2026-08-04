@@ -141,6 +141,22 @@ fn console_log_and_error_retain_a_bounded_diagnostic_ring() {
 }
 
 #[test]
+fn authored_modules_may_replace_console_methods() {
+    let runtime = SceneScriptRuntime::new(
+        &[program(
+            SceneScriptTarget::Alpha,
+            SceneScriptSubscriptions::FRAME,
+            "const original = console.log; console.log = function() {}; export function update(value) { console.log(value); return typeof original === 'function' ? value : 0; }",
+        )],
+        &SceneScriptHostCatalog::empty(),
+    )
+    .expect("mutable console runtime");
+
+    let deltas = dispatch(&runtime, input(SceneScriptSubscriptions::FRAME)).expect("dispatch");
+    assert_eq!(deltas[0].numeric[0], 10.0);
+}
+
+#[test]
 fn runtime_clock_text_produces_distinct_retained_values() {
     let runtime = SceneScriptRuntime::new(
         &[program(

@@ -26,10 +26,10 @@
     };
     globalThis.__tensor_wallpaperConsoleMessages = consoleMessages;
     globalThis.__tensor_wallpaperConsoleRetainedCount = 0;
-    globalThis.console = Object.freeze({
+    globalThis.console = {
         log(...args) { recordConsole('log', args); },
         error(...args) { recordConsole('error', args); },
-    });
+    };
     const emptyClicks = Object.freeze([]);
     globalThis.__tensor_wallpaperEmptyClicks = emptyClicks;
     let sceneEffects = [];
