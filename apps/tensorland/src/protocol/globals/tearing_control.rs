@@ -256,6 +256,7 @@ fn tearing_control_post_commit(
         .set_presentation_hint(view_id, hint)
         .unwrap_or(false)
     {
+        #[cfg(feature = "tty")]
         state.request_redraw_all();
     }
 }

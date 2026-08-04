@@ -474,6 +474,11 @@ pub(crate) fn test_surface_buffer(surface: &WlSurface) -> Option<WlBuffer> {
     surface_buffer(surface)
 }
 
+pub(super) fn surface_logical_size(states: &SurfaceData) -> Option<tensor_util::Size> {
+    let state = states.data_map.get::<Mutex<SurfaceState>>()?.lock().ok()?;
+    state.view.and_then(|view| logical_size(view.size))
+}
+
 #[cfg(feature = "tty")]
 pub(super) fn surface_render_snapshot(states: &SurfaceData) -> Option<SurfaceRenderSnapshot> {
     let state = states
@@ -481,12 +486,7 @@ pub(super) fn surface_render_snapshot(states: &SurfaceData) -> Option<SurfaceRen
         .get::<Mutex<SurfaceState>>()?
         .lock()
         .unwrap();
-    let logical_size = state.view.and_then(|view| {
-        Some(tensor_util::Size::new(
-            u32::try_from(view.size.0).ok()?,
-            u32::try_from(view.size.1).ok()?,
-        ))
-    });
+    let logical_size = state.view.and_then(|view| logical_size(view.size));
     Some(SurfaceRenderSnapshot {
         buffer: state.buffer.as_ref().map(Resource::id),
         logical_size,
@@ -497,6 +497,13 @@ pub(super) fn surface_render_snapshot(states: &SurfaceData) -> Option<SurfaceRen
         alpha: state.alpha,
         color: state.color,
     })
+}
+
+fn logical_size(size: (i32, i32)) -> Option<tensor_util::Size> {
+    Some(tensor_util::Size::new(
+        u32::try_from(size.0).ok()?,
+        u32::try_from(size.1).ok()?,
+    ))
 }
 
 #[cfg(test)]

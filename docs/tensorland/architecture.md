@@ -14,6 +14,11 @@ Tensorland is a Rust Wayland compositor built around five ownership domains:
    renderer KMS state.
 5. **IPC / portal** adapters translate external requests into validated commands / event IDs.
 
+The no-default-feature build is a real headless protocol target rather than an accidental subset.
+Stable-view lookup, dialog attachment, workspace focus, capture value types, and surface logical
+geometry stay in protocol/state owners that compile without TTY. Libinput ingestion, native cursor
+rasters, output redraw submission, and GPU/KMS capture execution remain TTY-only side effects.
+
 ## Async execution and the event layer
 
 The I/O runtime is **Compio (completion model) + io_uring driver**

@@ -5,6 +5,7 @@ mod client;
 mod config;
 mod display;
 mod event_loop;
+mod focus;
 #[cfg(feature = "tty")]
 mod input_method;
 mod ipc_snapshot;
@@ -33,6 +34,8 @@ mod workspace_host;
 #[cfg(feature = "xwayland")]
 mod xwayland;
 
+#[cfg(feature = "tty")]
+pub(in crate::protocol) use capture::cursor::{CursorCaptureImage, CursorCapturePixels};
 pub(crate) use client::WaylandClientState;
 pub(crate) use popup::{PopupGrab, PopupKind, PopupManager, find_popup_root_surface};
 pub(crate) use protocol_side::{ObjectKey, ProtocolSideState};

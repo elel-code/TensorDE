@@ -8,7 +8,7 @@
 //! - SHM publication and format conversion stay off the page-flip path.
 //! - Oversized buffers and DMA client buffers fail honestly.
 
-mod cursor;
+pub(super) mod cursor;
 #[cfg(feature = "tty")]
 mod gpu;
 #[cfg(test)]

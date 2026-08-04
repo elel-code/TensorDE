@@ -1,16 +1,29 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use tensor_util::{BufferSize, OutputScale, Point};
-use wayland_server::protocol::wl_shm;
+use wayland_server::protocol::{wl_shm, wl_surface::WlSurface};
 
 use super::{
     BufferAccessError, BufferConstraints, CAPTURE_TIMER_ID, CaptureFailureReason, Frame,
     MAX_PENDING_CAPTURES, RuntimeState, capture_shm, with_buffer_contents_mut,
 };
-use crate::protocol::{
-    cursor::{CursorCaptureImage, CursorCapturePixels},
-    globals::image_copy_capture::{CursorSession, CursorSessionRef, CursorSessionUpdate},
+use crate::protocol::globals::image_copy_capture::{
+    CursorSession, CursorSessionRef, CursorSessionUpdate,
 };
+
+#[derive(Clone)]
+pub(in crate::protocol) enum CursorCapturePixels {
+    Rgba(Arc<[u8]>),
+    Surface(WlSurface),
+}
+
+#[derive(Clone)]
+pub(in crate::protocol) struct CursorCaptureImage {
+    pub(in crate::protocol) size: tensor_util::Size,
+    pub(in crate::protocol) hotspot: Point,
+    pub(in crate::protocol) sample_transform: tensor_protocol::SurfaceSampleTransform,
+    pub(in crate::protocol) pixels: CursorCapturePixels,
+}
 
 pub(super) struct PendingCursorCapture {
     pub(super) frame: Frame,
@@ -139,19 +152,16 @@ impl RuntimeState {
                     scale,
                 )
             });
-        if let Some(CursorCaptureImage {
-            size,
-            sample_transform,
-            pixels: CursorCapturePixels::Surface(surface),
-            ..
-        }) = image.as_ref()
-            && (*sample_transform != tensor_protocol::SurfaceSampleTransform::IDENTITY
+        if let Some(image) = image.as_ref()
+            && let CursorCapturePixels::Surface(surface) = &image.pixels
+            && (image.sample_transform != tensor_protocol::SurfaceSampleTransform::IDENTITY
                 || !crate::protocol::state::surfaces::surface_buffer(surface).is_some_and(
                     |buffer| {
                         crate::protocol::globals::shm::shm_buffer(&buffer).is_some_and(|shm| {
                             let metadata = shm.metadata();
-                            metadata.width == i32::try_from(size.width).unwrap_or(i32::MAX)
-                                && metadata.height == i32::try_from(size.height).unwrap_or(i32::MAX)
+                            metadata.width == i32::try_from(image.size.width).unwrap_or(i32::MAX)
+                                && metadata.height
+                                    == i32::try_from(image.size.height).unwrap_or(i32::MAX)
                         })
                     },
                 ))

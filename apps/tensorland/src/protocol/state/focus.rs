@@ -38,6 +38,7 @@ impl RuntimeState {
             warn!(%error, view_id = view_id.get(), "failed to focus mapped view");
             return false;
         }
+        #[cfg(feature = "tty")]
         self.clear_layer_on_demand_focus();
         self.publish_window_activation(Some(&window));
         if focus_changed {

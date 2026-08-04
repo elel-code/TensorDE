@@ -1,5 +1,4 @@
 mod device;
-mod focus;
 mod pointer_geometry;
 mod session_lock;
 mod tablet;

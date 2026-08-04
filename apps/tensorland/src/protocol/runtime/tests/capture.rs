@@ -156,6 +156,7 @@ delegate_noop!(CaptureClient: ignore ext_image_capture_source_v1::ExtImageCaptur
 delegate_noop!(CaptureClient: ignore ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1);
 delegate_noop!(CaptureClient: ignore ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1);
 
+#[cfg(feature = "tty")]
 #[derive(Debug, Eq, PartialEq)]
 struct CapturedCursor {
     size: (u32, u32),
@@ -165,6 +166,7 @@ struct CapturedCursor {
     first_pixel: [u8; 4],
 }
 
+#[cfg(feature = "tty")]
 #[test]
 fn pointer_cursor_capture_writes_separate_alpha_image_and_metadata() {
     let mut runtime = capture_runtime();

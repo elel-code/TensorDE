@@ -11,7 +11,7 @@ use tensor_util::Rect;
 
 use crate::scene::{BackdropBlur, BackdropRegion, EffectStyle};
 
-use super::{RuntimeState, surfaces::surface_render_snapshot};
+use super::{RuntimeState, surfaces::surface_logical_size};
 
 /// Compositor policy blur radius in logical pixels (protocol leaves algorithm
 /// to the compositor). Kept small so damage expansion stays cheap until the
@@ -52,7 +52,7 @@ impl RuntimeState {
             return false;
         };
         let size = crate::protocol::globals::compositor::with_states(root, |states| {
-            surface_render_snapshot(states).and_then(|snapshot| snapshot.logical_size)
+            surface_logical_size(states)
         })
         .or_else(|| {
             Some(tensor_util::Size::new(

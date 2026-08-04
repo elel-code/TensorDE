@@ -330,6 +330,12 @@ cargo test -p tensorland --all-targets --no-default-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
+The `--no-default-features` gate executes the headless direct-protocol path, including dialog,
+workspace/focus, output SHM capture, tablet topology, and protocol-error tests. Tests that require a
+native cursor raster or TTY redraw are gated with the implementation they exercise; shared capture
+image values and stable-window lookup remain available instead of being hidden behind the TTY
+feature.
+
 The IPC tests cover fragmented and coalesced frames, multiple requests on one Compio-completed
 client, version rejection, layout mutation, graceful response-before-stop shutdown, bounded
 subscription registration/backpressure, response/event envelopes, peer disconnect, and applied or

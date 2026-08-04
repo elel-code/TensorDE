@@ -12,6 +12,7 @@ use wayland_server::{Resource, protocol::wl_surface::WlSurface};
 
 use crate::{
     ecs::SurfaceBufferId,
+    protocol::state::{CursorCaptureImage, CursorCapturePixels},
     render::{CursorOverlay, CursorOverlays, CursorTexture},
 };
 
@@ -87,20 +88,6 @@ pub(in crate::protocol) struct CursorRaster {
     pub(in crate::protocol) size: Size,
     pub(in crate::protocol) hotspot: Point,
     pub(in crate::protocol) sample_transform: SurfaceSampleTransform,
-}
-
-#[derive(Clone)]
-pub(in crate::protocol) enum CursorCapturePixels {
-    Rgba(Arc<[u8]>),
-    Surface(WlSurface),
-}
-
-#[derive(Clone)]
-pub(in crate::protocol) struct CursorCaptureImage {
-    pub(in crate::protocol) size: Size,
-    pub(in crate::protocol) hotspot: Point,
-    pub(in crate::protocol) sample_transform: SurfaceSampleTransform,
-    pub(in crate::protocol) pixels: CursorCapturePixels,
 }
 
 struct CursorRasterSequence {

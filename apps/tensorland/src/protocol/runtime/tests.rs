@@ -675,6 +675,8 @@ fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
         crate::layout::Rect::new(8, 80, 388, 480)
     );
     let view_id = invariants::assert_workspace_visibility_retains_window(&mut runtime);
+    #[cfg(not(feature = "tty"))]
+    let _ = view_id;
     #[cfg(feature = "tty")]
     {
         let focused_view = view_id.expect("mapped test window has an ECS view");
