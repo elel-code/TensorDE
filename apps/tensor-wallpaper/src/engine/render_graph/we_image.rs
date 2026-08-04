@@ -522,5 +522,8 @@ fn we_render_target_role(name: &str) -> RenderTargetRole {
 #[path = "we_image/puppet_effect_stream_tests.rs"]
 mod puppet_effect_stream_tests;
 #[cfg(test)]
+#[path = "we_image/tests/rounded_mask_fusion.rs"]
+mod rounded_mask_fusion_tests;
+#[cfg(test)]
 #[path = "we_image/tests.rs"]
 mod tests;

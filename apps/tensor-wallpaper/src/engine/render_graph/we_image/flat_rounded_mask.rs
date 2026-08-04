@@ -158,10 +158,16 @@ fn compatible_effect(effect: &WeEffectPassContract) -> bool {
         && effect
             .binds
             .iter()
-            .all(|(slot, source)| *slot == 0 && is_previous(source))
+            .all(|(slot, source)| (*slot == 0 && is_previous(source)) || *slot == 2)
         && effect_combo_value(effect, "B_SQUARE", 1) == 0
         && effect_combo_value(effect, "C_ALPHA_ONLY", 1) == 0
         && effect_combo_value(effect, "SOFT", 0) == 1
+        && effect_combo_value(effect, "OPACITYMASK", 0) == 0
+        && effect_combo_value(effect, "HOLLOW", 0) == 0
+        && effect_combo_value(effect, "TRANSPARENCY", 4) == 4
+        && effect_combo_value(effect, "INVERT", 0) == 0
+        && effect_combo_value(effect, "SEDIRECTION", 0) == 0
+        && effect_combo_value(effect, "BLENDMODE", 0) == 0
 }
 
 fn effect_combo_value(effect: &WeEffectPassContract, name: &str, default: i64) -> i64 {

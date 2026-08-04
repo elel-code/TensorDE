@@ -32,8 +32,8 @@ pub(super) fn compiler_definitions(
             }
             authored_defaults.insert(name, default);
         }
-        for (name, slot) in sampler_combo_slots(source, &spec.program_key)? {
-            values.insert(name, i64::from(spec.texture_slot_mask & (1 << slot) != 0));
+        for name in sampler_combo_names(source, &spec.program_key)? {
+            values.entry(name).or_insert(0);
         }
     }
     for invalid in invalid_declarations {
@@ -166,7 +166,7 @@ fn combo_default_hint(declaration: &str) -> Option<(&str, i64)> {
     Some((name, default[..end].parse().ok()?))
 }
 
-fn sampler_combo_slots(source: &str, program: &str) -> Result<Vec<(String, u32)>, WeIngestError> {
+fn sampler_combo_names(source: &str, program: &str) -> Result<Vec<String>, WeIngestError> {
     let mut combos = Vec::new();
     for (line_index, line) in source.lines().enumerate() {
         let Some((declaration, annotation)) = line.split_once("//") else {
@@ -180,7 +180,7 @@ fn sampler_combo_slots(source: &str, program: &str) -> Result<Vec<(String, u32)>
         else {
             continue;
         };
-        let Some(slot) = name
+        let Some(_slot) = name
             .strip_prefix("g_Texture")
             .and_then(|slot| slot.parse::<u32>().ok())
             .filter(|slot| *slot < 32)
@@ -201,7 +201,7 @@ fn sampler_combo_slots(source: &str, program: &str) -> Result<Vec<(String, u32)>
             )
         })?;
         if let Some(combo) = value.get("combo").and_then(Value::as_str) {
-            combos.push((combo.to_owned(), slot));
+            combos.push(combo.to_owned());
         }
     }
     Ok(combos)
@@ -361,6 +361,33 @@ mod tests {
         assert_eq!(definitions.get("SLOTS").map(String::as_str), Some("1"));
         assert_eq!(definitions.get("HLSL").map(String::as_str), Some("1"));
         assert!(!definitions.keys().any(|name| name.contains('(')));
+    }
+
+    #[test]
+    fn bound_sampler_does_not_enable_its_combo_without_an_authored_override() {
+        let source =
+            r#"uniform sampler2D g_Texture2; // {"combo":"OPACITYMASK","default":"util/white"}"#;
+        let inactive = AuthoredProgramSpec {
+            program_key: "workshop/test/effects/rounded_mask__SLOTS_5".to_owned(),
+            source_key: "workshop/test/effects/rounded_mask".to_owned(),
+            texture_slot_mask: 5,
+        };
+        let inactive = compiler_definitions(&inactive, ["", source])
+            .expect("inactive sampler combo")
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(inactive.get("OPACITYMASK").map(String::as_str), Some("0"));
+
+        let active = AuthoredProgramSpec {
+            program_key: "workshop/test/effects/rounded_mask__SLOTS_5__OPACITYMASK_1".to_owned(),
+            source_key: "workshop/test/effects/rounded_mask".to_owned(),
+            texture_slot_mask: 5,
+        };
+        let active = compiler_definitions(&active, ["", source])
+            .expect("explicit sampler combo")
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(active.get("OPACITYMASK").map(String::as_str), Some("1"));
     }
 
     #[test]
