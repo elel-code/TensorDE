@@ -87,7 +87,9 @@ become destination rectangles plus clips, and the plan retains the existing back
 The hit tester walks those exact clips front-to-back, so rendering and input cannot drift. An
 attached dialog is hit by its own stable view ID while retaining its root family ID. Inventory
 records retain last valid geometry across workspace moves and join window metadata through the
-stable `ext-foreign-toplevel-list-v1` identifier.
+stable `ext-foreign-toplevel-list-v1` identifier. Snapshot extraction builds that bounded identity
+join once per request, so retained-window lookup stays linear instead of rescanning WindowSpace for
+every overview entry.
 
 The plan contains no client pixels and creates no descriptor identity. Overview entry, exit, and
 whole-workspace rearrangement therefore reuse imported images and descriptor-heap bindings; a later

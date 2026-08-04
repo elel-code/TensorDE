@@ -1,7 +1,9 @@
 //! Value-only compositor and workspace snapshots for local IPC consumers.
 
+use std::collections::{HashMap, HashSet};
+
 use crate::{
-    ecs::OverviewViewKind,
+    ecs::{OverviewViewKind, ViewId},
     ipc::{
         MAX_OVERVIEW_VIEWS, OverviewGeometrySnapshot, OverviewSnapshot, OverviewViewKindSnapshot,
         OverviewViewSnapshot, OverviewWorkspaceSnapshot,
@@ -96,6 +98,23 @@ impl RuntimeState {
             emitted += views.len();
             inventory.push((id, name, hidden, minimize_target, view_count, views));
         }
+        let snapshot_view_ids = inventory
+            .iter()
+            .flat_map(|(_, _, _, _, _, views)| views.iter().map(|view| view.id))
+            .collect::<HashSet<ViewId>>();
+        let foreign_toplevel_identifiers = self
+            .space
+            .retained_elements()
+            .filter_map(|window| window.wl_surface())
+            .filter_map(|surface| {
+                let view = self.view_for_surface(&surface)?;
+                if !snapshot_view_ids.contains(&view) {
+                    return None;
+                }
+                self.foreign_toplevel_identifier(&surface)
+                    .map(|identifier| (view, identifier))
+            })
+            .collect::<HashMap<ViewId, String>>();
         let sources = inventory
             .iter()
             .map(|(id, _, _, _, _, views)| OverviewWorkspaceSource::new(*id, views.as_slice()))
@@ -122,16 +141,12 @@ impl RuntimeState {
                         } else {
                             None
                         };
-                        let foreign_toplevel_identifier = self
-                            .retained_window_for_view(view.id)
-                            .and_then(|window| {
-                                window.wl_surface().map(|surface| surface.into_owned())
-                            })
-                            .and_then(|surface| self.foreign_toplevel_identifier(&surface));
                         OverviewViewSnapshot {
                             id: view.id.get(),
                             root: view.root.get(),
-                            foreign_toplevel_identifier,
+                            foreign_toplevel_identifier: foreign_toplevel_identifiers
+                                .get(&view.id)
+                                .cloned(),
                             source_geometry: view.geometry.map(geometry_snapshot),
                             geometry: transformed.map(|view| geometry_snapshot(view.geometry)),
                             clip: transformed.map(|view| geometry_snapshot(view.clip)),
