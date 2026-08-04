@@ -5,6 +5,7 @@ use tensor_util::Rect;
 use super::model::{SceneNode, SceneSnapshot};
 
 const MAX_DAMAGE_REGIONS: usize = 64;
+const DAMAGE_EXTENTS_FACTOR: u64 = 2;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DamageSet {
@@ -75,9 +76,67 @@ impl DamageSet {
         }
         self.regions.push(region);
         if self.regions.len() > MAX_DAMAGE_REGIONS {
-            self.regions.clear();
-            self.regions.push(viewport);
+            self.compact();
         }
+    }
+
+    fn compact(&mut self) {
+        let extents = self
+            .regions
+            .iter()
+            .copied()
+            .reduce(Rect::union)
+            .expect("damage compaction requires at least one region");
+        let damaged_area = self
+            .regions
+            .iter()
+            .copied()
+            .map(rect_area)
+            .fold(0_u64, u64::saturating_add);
+        if rect_area(extents) <= damaged_area.saturating_mul(DAMAGE_EXTENTS_FACTOR) {
+            self.regions.clear();
+            self.regions.push(extents);
+            return;
+        }
+
+        while self.regions.len() > MAX_DAMAGE_REGIONS {
+            self.merge_cheapest_pair();
+        }
+    }
+
+    fn merge_cheapest_pair(&mut self) {
+        let mut best = None;
+        for left in 0..self.regions.len() {
+            for right in left + 1..self.regions.len() {
+                let union = self.regions[left].union(self.regions[right]);
+                let source_area =
+                    rect_area(self.regions[left]).saturating_add(rect_area(self.regions[right]));
+                let key = (
+                    rect_area(union).saturating_sub(source_area),
+                    rect_area(union),
+                    left,
+                    right,
+                );
+                if best.as_ref().is_none_or(|(current, _)| key < *current) {
+                    best = Some((key, union));
+                }
+            }
+        }
+
+        let ((_, _, left, right), mut merged) =
+            best.expect("damage overflow always contains at least two regions");
+        self.regions.remove(right);
+        self.regions.remove(left);
+        let mut index = 0;
+        while index < self.regions.len() {
+            if self.regions[index].touches_or_overlaps(merged) {
+                merged = merged.union(self.regions.remove(index));
+                index = 0;
+            } else {
+                index += 1;
+            }
+        }
+        self.regions.push(merged);
     }
 
     fn sort(&mut self) {
@@ -176,6 +235,10 @@ fn propagate_background_dependencies(damage: &mut DamageSet, current: &SceneSnap
 
 fn non_empty(rect: Rect) -> Option<Rect> {
     (rect.width > 0 && rect.height > 0).then_some(rect)
+}
+
+fn rect_area(rect: Rect) -> u64 {
+    u64::from(rect.width) * u64::from(rect.height)
 }
 
 #[cfg(test)]
@@ -281,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn fragmented_damage_falls_back_to_the_viewport() {
+    fn fragmented_damage_stays_bounded_without_full_output_fallback() {
         let old = snapshot(Vec::new());
         let nodes = (0..=MAX_DAMAGE_REGIONS)
             .map(|index| {
@@ -294,7 +357,31 @@ mod tests {
             .collect();
         let new = snapshot(nodes);
 
-        assert_eq!(new.damage_since(Some(&old)).regions(), [VIEWPORT]);
+        let damage = new.damage_since(Some(&old));
+        assert_eq!(damage.regions().len(), MAX_DAMAGE_REGIONS);
+        assert_ne!(damage.regions(), [VIEWPORT]);
+        for index in 0..=MAX_DAMAGE_REGIONS {
+            let region = Rect::new(index as i32 * 3, 0, 1, 1);
+            assert!(
+                damage
+                    .regions()
+                    .iter()
+                    .any(|damaged| damaged.contains_rect(region))
+            );
+        }
+    }
+
+    #[test]
+    fn dense_damage_compacts_to_local_extents() {
+        let mut damage = DamageSet::default();
+        for index in 0..=MAX_DAMAGE_REGIONS {
+            damage.add(
+                Rect::new((index % 9) as i32 * 4, (index / 9) as i32 * 4, 3, 3),
+                VIEWPORT,
+            );
+        }
+
+        assert_eq!(damage.regions(), [Rect::new(0, 0, 35, 31)]);
     }
 
     #[test]

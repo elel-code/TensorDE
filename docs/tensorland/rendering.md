@@ -247,6 +247,15 @@ clear, while a retained slot uses `Load`, clears only accumulated damaged rectan
 every draw to those rectangles. This avoids assuming that the newest scene is also the content of
 the next KMS buffer.
 
+Both domains retain at most 64 rectangles. Crossing that bound no longer
+unconditionally damages the complete output: dense rectangles collapse to
+their local extent only when that extent covers at most twice their summed
+area, while sparse rectangles merge the pair with the least added area until
+the fixed bound is restored. This keeps command/scissor work bounded without
+turning scattered window updates into full-output fragment shading. The rule
+is deterministic, allocation-bounded, and conservative: compaction may add
+overdraw but never removes a damaged pixel.
+
 This follows the useful parts of the local references without copying their backend ownership.
 Niri retains offscreen textures and an independent damage tracker only for effects and animations
 that need them; its normal output remains a direct composition. Nourish likewise keeps ordinary
