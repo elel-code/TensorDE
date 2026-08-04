@@ -477,6 +477,11 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
         }
         if !particle.child_probability.is_finite()
             || !(0.0..=1.0).contains(&particle.child_probability)
+            || !particle.instance_time_scale.is_finite()
+            || particle.instance_time_scale < 0.01
+            || particle.instance_color_enabled > 1
+            || !valid_vec3(particle.instance_color)
+            || !valid_vec3(particle.color_reference)
             || !particle.instance_count_scale.is_finite()
             || particle.instance_count_scale < 0.0
         {

@@ -33,6 +33,9 @@ pub(super) fn lower_particles(ir: &WeSceneIr) -> Vec<SceneParticleSystemRecord> 
             };
             record.child_probability = particle.child_probability;
             record.child_max_count = particle.child_max_count;
+            record.instance_color_enabled = u32::from(particle.instance_color.is_some());
+            record.instance_color = particle.instance_color.unwrap_or(SceneVec3::ONE);
+            record.color_reference = particle.color_reference;
             record.instance_count_scale = particle.instance_count_scale;
             if let Some(profile) = particle.falling_leaves_profile() {
                 apply_falling_leaves_profile(&mut record, profile);
@@ -43,6 +46,12 @@ pub(super) fn lower_particles(ir: &WeSceneIr) -> Vec<SceneParticleSystemRecord> 
             } else if let Some(profile) = particle.module_sprite_profile() {
                 apply_module_sprite_profile(&mut record, profile);
             }
+            (record.color_min, record.color_max) = resolve_particle_color_range(
+                record.color_min,
+                record.color_max,
+                record.color_reference,
+                particle.instance_color,
+            );
             record
         })
         .collect()

@@ -68,6 +68,8 @@ impl WeIrBuilder {
         let projection_mode = self.scene.orthogonal_projection_auto
             || self.scene.logical_width != 0
             || self.scene.logical_height != 0;
+        let initializers = parse_initializers(&definition, projection_mode);
+        let instance_color = particle_instance_color(instance);
         let system = WeIrParticleSystem {
             object,
             resource,
@@ -80,11 +82,13 @@ impl WeIrBuilder {
             max_count: value_u32(definition.get("maxcount")).unwrap_or(0),
             sequence_multiplier: value_f32(definition.get("sequencemultiplier")).unwrap_or(1.0),
             start_time: value_f32(definition.get("starttime")).unwrap_or(0.0),
-            instance_time_scale: particle_instance_time_scale(instance),
+            instance_time_scale: particle_instance_time_scale(instance_color),
+            instance_color,
+            color_reference: particle_color_reference(&initializers),
             instance_count_scale: particle_instance_count_scale(instance),
             control_points: parse_control_points(&definition, instance),
             emitters: parse_emitters(&definition),
-            initializers: parse_initializers(&definition, projection_mode),
+            initializers,
             operators: parse_operators(&definition, projection_mode),
             renderers: parse_renderers(&definition),
             children: children.clone(),
@@ -543,13 +547,64 @@ fn particle_vec3(value: Option<&Value>) -> Option<SceneVec3> {
     })
 }
 
-fn particle_instance_time_scale(instance: &Value) -> f32 {
-    instance
-        .pointer("/instanceoverride/colorn")
-        .and_then(|value| particle_vec3(Some(value)))
-        .map(|color| ((color.x / 255.0 * 100_000.0).round() / 100_000.0).max(0.01))
+pub(super) fn particle_instance_color(instance: &Value) -> Option<SceneVec3> {
+    let overrides = instance.get("instanceoverride")?;
+    if let Some(color) = particle_vec3(overrides.get("colorn")) {
+        return valid_instance_color(color);
+    }
+    particle_vec3(overrides.get("color")).and_then(|color| {
+        valid_instance_color(SceneVec3 {
+            x: legacy_color_component(color.x),
+            y: legacy_color_component(color.y),
+            z: legacy_color_component(color.z),
+        })
+    })
+}
+
+fn valid_instance_color(color: SceneVec3) -> Option<SceneVec3> {
+    (color.x.is_finite() && color.y.is_finite() && color.z.is_finite()).then_some(color)
+}
+
+fn legacy_color_component(component: f32) -> f32 {
+    (component / 255.0 * 100_000.0).round() / 100_000.0
+}
+
+pub(super) fn particle_instance_time_scale(instance_color: Option<SceneVec3>) -> f32 {
+    instance_color
+        .map(|color| color.x.max(0.01))
         .filter(|scale| scale.is_finite())
         .unwrap_or(1.0)
+}
+
+fn particle_color_reference(initializers: &[WeIrParticleInitializer]) -> SceneVec3 {
+    initializers
+        .iter()
+        .find_map(|initializer| match initializer {
+            WeIrParticleInitializer::ColorRandom { min, max, .. } => {
+                let min = normalized_particle_color(*min);
+                let max = normalized_particle_color(*max);
+                Some(SceneVec3 {
+                    x: (min.x + max.x) * 0.5,
+                    y: (min.y + max.y) * 0.5,
+                    z: (min.z + max.z) * 0.5,
+                })
+            }
+            _ => None,
+        })
+        .unwrap_or(SceneVec3::ONE)
+}
+
+fn normalized_particle_color(color: SceneVec3) -> SceneVec3 {
+    let divisor = if color.x > 1.0 || color.y > 1.0 || color.z > 1.0 {
+        255.0
+    } else {
+        1.0
+    };
+    SceneVec3 {
+        x: color.x / divisor,
+        y: color.y / divisor,
+        z: color.z / divisor,
+    }
 }
 
 fn particle_instance_count_scale(instance: &Value) -> f32 {

@@ -16,6 +16,17 @@ fn scene_binary_rejects_the_immediately_previous_layout() {
 fn scene_binary_round_trip_preserves_sprite_trail_maximum() {
     let particle = SceneParticleSystemRecord {
         renderer: SceneParticleRendererKind::SpriteTrail,
+        instance_color_enabled: 1,
+        instance_color: SceneVec3 {
+            x: 0.5,
+            y: 0.25,
+            z: 0.75,
+        },
+        color_reference: SceneVec3 {
+            x: 140.0 / 255.0,
+            y: 101.0 / 255.0,
+            z: 30.0 / 255.0,
+        },
         trail_length: 0.007,
         trail_min_length: 0.25,
         trail_max_length: 10.0,

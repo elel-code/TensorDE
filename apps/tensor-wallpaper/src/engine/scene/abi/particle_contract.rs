@@ -4,8 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use super::{SceneMaterialHandle, SceneObjectHandle, SceneResourceId, SceneVec3};
 
+mod color;
 #[cfg(test)]
 mod gpu_contract_tests;
+
+pub use color::resolve_particle_color_range;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -291,6 +294,9 @@ pub struct SceneParticleSystemRecord {
     pub sequence_multiplier: f32,
     pub start_time: f32,
     pub instance_time_scale: f32,
+    pub instance_color_enabled: u32,
+    pub instance_color: SceneVec3,
+    pub color_reference: SceneVec3,
     pub instance_count_scale: f32,
     pub rate: f32,
     pub emitter_origin: SceneVec3,
@@ -426,6 +432,9 @@ impl SceneParticleSystemRecord {
             sequence_multiplier,
             start_time,
             instance_time_scale,
+            instance_color_enabled: 0,
+            instance_color: SceneVec3::ONE,
+            color_reference: SceneVec3::ONE,
             instance_count_scale: 1.0,
             rate: 0.0,
             emitter_origin: SceneVec3 {

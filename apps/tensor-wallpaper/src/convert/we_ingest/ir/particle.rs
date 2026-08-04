@@ -27,6 +27,8 @@ pub struct WeIrParticleSystem {
     pub sequence_multiplier: f32,
     pub start_time: f32,
     pub instance_time_scale: f32,
+    pub instance_color: Option<SceneVec3>,
+    pub color_reference: SceneVec3,
     pub instance_count_scale: f32,
     pub control_points: Vec<WeIrParticleControlPoint>,
     pub emitters: Vec<WeIrParticleEmitter>,

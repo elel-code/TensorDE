@@ -59,6 +59,12 @@ fn gpu_state_preserves_semantic_particle_values() {
         y: -2.0,
         z: 3.0,
     };
+    particle.color_min = SceneVec3 {
+        x: 0.88235294,
+        y: 0.85813251,
+        z: 0.85370512,
+    };
+    particle.color_max = SceneVec3::ONE;
     let state = SceneParticleGpuEmitterState::from_record(
         &particle,
         80,
@@ -72,6 +78,11 @@ fn gpu_state_preserves_semantic_particle_values() {
     assert_eq!(state.gravity, [1.0, -2.0, 3.0, 0.0]);
     assert_eq!(state.emitter_origin[3], 17.0);
     assert_eq!(state.lifetime_min_max_profile_flags[2], 1.0);
+    assert_eq!(
+        state.color_min_alpha[..3],
+        [0.88235294, 0.85813251, 0.85370512]
+    );
+    assert_eq!(state.color_max_alpha[..3], [1.0, 1.0, 1.0]);
 
     particle.initializer_order = SceneParticleInitializerOrder::from_kinds(&[
         SceneParticleInitializerKind::LifetimeRandom,

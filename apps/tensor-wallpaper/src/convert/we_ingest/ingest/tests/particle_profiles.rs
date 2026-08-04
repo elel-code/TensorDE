@@ -1,3 +1,4 @@
+use super::super::particle::{particle_instance_color, particle_instance_time_scale};
 use super::*;
 
 #[test]
@@ -139,7 +140,15 @@ fn ingests_ambient_sparkles_as_typed_particle_ir_and_part_record() {
     assert_eq!(profile.oscillation_phase_max, std::f32::consts::TAU);
     assert_eq!(profile.oscillation_scale_min, 0.2);
     assert_eq!(profile.oscillation_scale_max, 1.0);
-    assert_eq!(ir.particles[0].instance_time_scale, 0.01);
+    assert_eq!(ir.particles[0].instance_time_scale, 0.83922);
+    assert_eq!(
+        ir.particles[0].instance_color,
+        Some(SceneVec3 {
+            x: 0.83922,
+            y: 1.0,
+            z: 1.0,
+        })
+    );
 
     let document =
         crate::convert::we_ingest::lower::lower_ir_to_scene_binary(&ir).expect("lower sparkles");
@@ -149,13 +158,66 @@ fn ingests_ambient_sparkles_as_typed_particle_ir_and_part_record() {
     );
     assert_eq!(document.particles[0].size_min, 2.5);
     assert_eq!(document.particles[0].size_max, 5.0);
-    assert_eq!(document.particles[0].instance_time_scale, 0.01);
+    assert_eq!(document.particles[0].instance_time_scale, 0.83922);
+    assert_eq!(document.particles[0].instance_color_enabled, 1);
+    assert_eq!(
+        document.particles[0].color_min,
+        SceneVec3 {
+            x: 0.83922,
+            y: 1.0,
+            z: 1.0,
+        }
+    );
     let mut bytes = Vec::new();
     crate::engine::scene::write_scene_binary(&document, &mut bytes).expect("write PART");
     let decoded = crate::engine::scene::read_scene_binary_bytes(&bytes).expect("read PART");
     assert_eq!(decoded.particles, document.particles);
 
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn particle_instance_color_preserves_direct_and_legacy_we_semantics() {
+    let absent = serde_json::json!({});
+    assert_eq!(particle_instance_color(&absent), None);
+    assert_eq!(particle_instance_time_scale(None), 1.0);
+
+    let white = serde_json::json!({"instanceoverride":{"colorn":"1 1 1"}});
+    assert_eq!(particle_instance_color(&white), Some(SceneVec3::ONE));
+    assert_eq!(
+        particle_instance_time_scale(particle_instance_color(&white)),
+        1.0
+    );
+
+    let tinted = serde_json::json!({
+        "instanceoverride":{"colorn":"0.5 0.25 0.75"}
+    });
+    assert_eq!(
+        particle_instance_color(&tinted),
+        Some(SceneVec3 {
+            x: 0.5,
+            y: 0.25,
+            z: 0.75,
+        })
+    );
+    assert_eq!(
+        particle_instance_time_scale(particle_instance_color(&tinted)),
+        0.5
+    );
+
+    let legacy = serde_json::json!({"instanceoverride":{"color":"128 64 255"}});
+    assert_eq!(
+        particle_instance_color(&legacy),
+        Some(SceneVec3 {
+            x: 0.50196,
+            y: 0.25098,
+            z: 1.0,
+        })
+    );
+    assert_eq!(
+        particle_instance_time_scale(particle_instance_color(&legacy)),
+        0.50196
+    );
 }
 
 #[test]
