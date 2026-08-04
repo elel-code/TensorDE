@@ -38,6 +38,14 @@ pub(super) const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
+        key: "effects/blend__SLOTS_ff__BLENDMODE_0",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/blend__SLOTS_ff__BLENDMODE_0__TRANSFORMREPEAT_2__TRANSFORMUV_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
         key: "effects/blur_combine__SLOTS_5__BLENDMODE_1__COMPOSITE_1",
         family: SceneShaderFamily::Effect,
     },
@@ -131,6 +139,10 @@ pub(super) const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
     },
     SceneShaderSpec {
         key: "effects/swing__SLOTS_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/swing__SLOTS_5",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
