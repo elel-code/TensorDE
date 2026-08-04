@@ -137,8 +137,10 @@ The following are extensions of already advertised protocols, not new globals:
 - pointer/cursor/tablet: finish fixed hardware cursor-slot rendering, binary
   fence handoff, and joint Vulkan/KMS retirement. Tablet `set_cursor` wire
   errors, serials, detach, membership, and lifetime coverage are complete.
-- `xdg_toplevel_drag_v1`: complete duplicate-source, duplicate-attach, selection
-  misuse, and destroy-before-end wire errors in addition to the execution path.
+
+`xdg_toplevel_drag_v1` execution and wire errors are complete, including
+duplicate-source, duplicate-attach, selection misuse, and destroy-before-end
+failures on their protocol-defined objects.
 
 Each depth item retains bounded per-output/per-surface storage, explicit failure
 for unsupported capability combinations, and no CPU rendering or descriptor-set

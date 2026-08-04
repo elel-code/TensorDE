@@ -24,6 +24,8 @@ use crate::ecs::{ViewId, ViewPlacement};
 
 use super::*;
 
+mod errors;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DragStep {
     Ready,

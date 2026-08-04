@@ -97,7 +97,9 @@ the parent, or tearing down the parent restores/detaches placement without leavi
 parallel drag path. It rejects reused/selection sources, enforces attach and end-before-destroy
 lifetime rules, and lowers an attached toplevel to retained ECS floating placement while the core
 DnD grab moves it. The dragged window is excluded from DnD target hit testing, and its last
-position remains the floating placement when the drag ends.
+position remains the floating placement when the drag ends. Real wire tests verify manager errors
+for duplicate and selection-used sources plus drag-object errors for duplicate live attachments and
+destruction before the underlying drag ends.
 
 `ext-background-effect` is a direct implementation rather than a private blur request. A
 `set_blur_region` request copies the complete `wl_region` add/subtract result, permits immediate
@@ -218,8 +220,8 @@ change notifications are complete.
    revocation, hotplug, session, and output-plan exclusion.
 10. Finish already-advertised protocol depth: live output mode replacement,
     cross-output capture, cursor-only GPU capture, multi-plane/YUV dma-buf,
-    implicit reservation-fence policy, atomic cursor planes, and
-    xdg-toplevel-drag error paths. Tablet cursor wire coverage is complete.
+    implicit reservation-fence policy, and atomic cursor planes. Tablet cursor
+    and xdg-toplevel-drag wire coverage are complete.
 11. Migrate remaining tier-3 surfaces upward when wayland-protocols promotes them.
 
 The required ownership, failure, hardware, and test gates for items 6–10 are
