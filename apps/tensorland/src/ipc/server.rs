@@ -344,6 +344,53 @@ mod tests {
     }
 
     #[test]
+    fn dropped_compositor_replies_flush_service_unavailable_before_close() {
+        let path = std::env::temp_dir().join(format!(
+            "tensor-ipc-reply-stopped-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_file(&path);
+        let server = IpcServer::bind(&path).unwrap();
+        let (requests, received_requests) = WorkerBridge::bounded(MAX_PENDING_IPC_REQUESTS);
+        let (control, _) = WorkerBridge::bounded(MAX_PENDING_IPC_CONTROL_EVENTS);
+        let runtime = server.start(requests, control).unwrap();
+
+        let mut client = UnixStream::connect(&path).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        client
+            .write_all(&{
+                let mut frames = encode(&Request::new(45, Command::Ping)).unwrap();
+                frames.extend(encode(&Request::new(46, Command::GetState)).unwrap());
+                frames
+            })
+            .unwrap();
+
+        for expected_id in [45, 46] {
+            let event = received_requests
+                .recv_timeout(Duration::from_secs(1))
+                .expect("completed request reaches the compositor bridge");
+            assert_eq!(event.request.request_id, expected_id);
+            drop(event.respond_to);
+        }
+        for (unavailable, expected_id) in read_responses(&mut client, 2).into_iter().zip([45, 46]) {
+            assert_eq!(unavailable.request_id, expected_id);
+            let ResultBody::Error(error) = unavailable.result else {
+                panic!("dropped compositor reply must return a structured error");
+            };
+            assert_eq!(error.code, "service_unavailable");
+        }
+
+        let mut byte = [0; 1];
+        assert_eq!(client.read(&mut byte).unwrap(), 0);
+        drop(runtime);
+        drop(server);
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn shutdown_signal_follows_the_accepted_response() {
         let path = PathBuf::from(format!("target/tensor-ipc-shutdown-{}", std::process::id()));
         let _ = fs::remove_file(&path);

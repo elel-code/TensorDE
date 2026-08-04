@@ -70,6 +70,9 @@ Tensorland worker bridge; requests are validated and dispatched on the composito
 cross a one-shot value channel back to the Compio connection task. `quit` stops the compositor only
 after the accepted response write completes. A saturated request bridge returns `queue_full` and
 keeps the connection usable; a stopped bridge flushes `service_unavailable` before closing it.
+Cancellation of an already accepted compositor one-shot uses the same per-request flush-before-EOF
+rule instead of exposing an unstructured broken pipe.
+
 Complete frames decoded from one bounded read batch are submitted together before response waits,
 then written back in input order. External clients never receive Wayland resources, Vulkan handles,
 or mutable ECS access.

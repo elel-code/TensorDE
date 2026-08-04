@@ -229,7 +229,10 @@ async fn handle_client(
                 request,
                 respond_to,
             }) {
-                Ok(()) => pending.push(PendingIpcReply::Compositor(response)),
+                Ok(()) => pending.push(PendingIpcReply::Compositor {
+                    request_id,
+                    response,
+                }),
                 Err(TrySendError::Full) => pending.push(PendingIpcReply::Ready {
                     reply: IpcReply::new(Response::error(
                         request_id,
@@ -244,8 +247,22 @@ async fn handle_client(
                 }
             }
         }
-        for pending_reply in pending {
-            let (reply, close_after_flush) = pending_reply.resolve().await?;
+        let pending_count = pending.len();
+        let mut compositor_stopped = false;
+        for (index, pending_reply) in pending.into_iter().enumerate() {
+            let closes_batch = index + 1 == pending_count;
+            let request_id = pending_reply.request_id();
+            let (reply, close_after_flush) = if compositor_stopped {
+                (unavailable_response(request_id), closes_batch)
+            } else {
+                match pending_reply.resolve().await {
+                    Ok(resolved) => resolved,
+                    Err(request_id) => {
+                        compositor_stopped = true;
+                        (unavailable_response(request_id), closes_batch)
+                    }
+                }
+            };
             let stop_after_flush = reply.should_stop_after_flush();
             let frame = match encode(&reply.response) {
                 Ok(frame) => frame,
@@ -263,17 +280,24 @@ async fn handle_client(
 
 fn unavailable_reply(request_id: u64, close_after_flush: bool) -> PendingIpcReply {
     PendingIpcReply::Ready {
-        reply: IpcReply::new(Response::error(
-            request_id,
-            "service_unavailable",
-            "compositor IPC request queue has stopped",
-        )),
+        reply: unavailable_response(request_id),
         close_after_flush,
     }
 }
 
+fn unavailable_response(request_id: u64) -> IpcReply {
+    IpcReply::new(Response::error(
+        request_id,
+        "service_unavailable",
+        "compositor IPC service has stopped",
+    ))
+}
+
 enum PendingIpcReply {
-    Compositor(oneshot::Receiver<IpcReply>),
+    Compositor {
+        request_id: u64,
+        response: oneshot::Receiver<IpcReply>,
+    },
     Ready {
         reply: IpcReply,
         close_after_flush: bool,
@@ -281,16 +305,22 @@ enum PendingIpcReply {
 }
 
 impl PendingIpcReply {
-    async fn resolve(self) -> io::Result<(IpcReply, bool)> {
+    fn request_id(&self) -> u64 {
         match self {
-            Self::Compositor(response) => {
-                response.await.map(|reply| (reply, false)).map_err(|_| {
-                    io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "compositor dropped the IPC response",
-                    )
-                })
-            }
+            Self::Compositor { request_id, .. } => *request_id,
+            Self::Ready { reply, .. } => reply.response.request_id,
+        }
+    }
+
+    async fn resolve(self) -> Result<(IpcReply, bool), u64> {
+        match self {
+            Self::Compositor {
+                request_id,
+                response,
+            } => response
+                .await
+                .map(|reply| (reply, false))
+                .map_err(|_| request_id),
             Self::Ready {
                 reply,
                 close_after_flush,
