@@ -110,6 +110,16 @@ impl RuntimeState {
         self.flush_queued_redraws();
     }
 
+    pub(crate) fn queue_all_cursor_extents(&mut self) {
+        if let Some(location) = self.input_seat.pointer_location() {
+            self.queue_cursor_redraw_between(0, location, location);
+        }
+        let tablets = self.cursor.tablet_positions();
+        for (tool, location) in tablets.iter() {
+            self.queue_cursor_redraw_between(tool.get(), location, location);
+        }
+    }
+
     fn queue_named_cursor_extents(&mut self) {
         let pointer = self.input_seat.pointer_location();
         let cursor = &self.cursor;
@@ -365,38 +375,46 @@ impl RuntimeState {
             .set_preferred_fractional_scale(&surface, scale);
     }
 
-    pub(crate) fn duplicate_cursor_animation_timer_fd(
+    pub(crate) fn duplicate_cursor_timer_fd(
         &self,
     ) -> std::io::Result<Option<std::os::fd::OwnedFd>> {
-        self.cursor.duplicate_animation_timer_fd()
+        self.cursor.duplicate_cursor_timer_fd()
     }
 
-    pub(crate) fn complete_cursor_animation_timer(&mut self) -> bool {
-        match self.cursor.complete_animation_timer() {
+    pub(crate) fn complete_cursor_timer(&mut self) -> bool {
+        match self.cursor.complete_cursor_timer() {
             Ok(redraw) => {
                 if redraw {
                     let now = std::time::Instant::now();
-                    let changed = self.cursor.named_animation_will_change(now);
-                    if changed {
+                    let hides_for_inactivity = self.cursor.inactivity_will_hide(now);
+                    if hides_for_inactivity {
+                        self.queue_all_cursor_extents();
+                    }
+                    let hidden = self.cursor.expire_inactivity(now);
+                    let animation_changed = self.cursor.named_animation_will_change(now);
+                    if animation_changed {
                         self.queue_named_cursor_extents();
                     }
                     self.cursor.advance_named_animation(now);
-                    if changed {
+                    self.cursor.arm_pending_inactivity(now);
+                    if animation_changed {
                         self.queue_named_cursor_extents();
+                    }
+                    if hidden || animation_changed {
                         self.flush_queued_redraws();
                     }
                 }
                 true
             }
             Err(error) => {
-                self.cursor_animation_timer_failed(&error);
+                self.cursor_timer_failed(&error);
                 false
             }
         }
     }
 
-    pub(crate) fn cursor_animation_timer_failed(&mut self, error: &std::io::Error) {
-        warn!(%error, "cursor animation io_uring completion failed");
-        self.cursor.animation_timer_failed();
+    pub(crate) fn cursor_timer_failed(&mut self, error: &std::io::Error) {
+        warn!(%error, "cursor timer io_uring completion failed");
+        self.cursor.cursor_timer_failed();
     }
 }

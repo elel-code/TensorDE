@@ -134,7 +134,7 @@ impl WaylandRuntime {
         #[cfg(feature = "tty")]
         let cursor_timer_fd = self
             .state
-            .duplicate_cursor_animation_timer_fd()
+            .duplicate_cursor_timer_fd()
             .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
         let runtime = io_uring_runtime(MAIN_COMPLETION_CAPACITY)
             .map_err(|error| ProtocolError::MainCompletion(error.to_string()))?;
@@ -274,9 +274,9 @@ impl WaylandRuntime {
                 #[cfg(feature = "tty")]
                 if let Some(result) = turn.cursor_timer {
                     let rearm = match result {
-                        Ok(()) => self.state.complete_cursor_animation_timer(),
+                        Ok(()) => self.state.complete_cursor_timer(),
                         Err(error) => {
-                            self.state.cursor_animation_timer_failed(&error);
+                            self.state.cursor_timer_failed(&error);
                             false
                         }
                     };

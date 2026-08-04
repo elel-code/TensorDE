@@ -44,6 +44,7 @@ impl RuntimeState {
             self.process_session_lock_input(event);
             return;
         }
+        let cursor_revealed = self.note_cursor_device_activity(&event);
         let activity = matches!(&event, LibinputEvent::Input(event) if event.is_activity());
         match event {
             LibinputEvent::Device(_) => unreachable!("device changes returned above"),
@@ -89,6 +90,49 @@ impl RuntimeState {
         }
         if activity {
             self.notify_idle_activity();
+        }
+        if cursor_revealed {
+            self.flush_queued_redraws();
+        }
+    }
+
+    fn note_cursor_device_activity(&mut self, event: &LibinputEvent) -> bool {
+        let activity = matches!(
+            event,
+            LibinputEvent::Input(
+                BackendInputEvent::PointerMotion(_)
+                    | BackendInputEvent::PointerMotionAbsolute(_)
+                    | BackendInputEvent::PointerButton(_)
+                    | BackendInputEvent::PointerAxis(_)
+                    | BackendInputEvent::TabletToolProximity(_)
+                    | BackendInputEvent::TabletToolAxes(_)
+                    | BackendInputEvent::TabletToolTip(_)
+                    | BackendInputEvent::TabletToolButton(_)
+            )
+        );
+        if !activity {
+            return false;
+        }
+        let revealed = self.cursor.note_pointer_activity(std::time::Instant::now());
+        if revealed {
+            self.queue_all_cursor_extents();
+        }
+        revealed
+    }
+
+    fn hide_cursor_for_keyboard_activity(&mut self) {
+        if !self.cursor.will_hide_for_keyboard_activity() {
+            return;
+        }
+        let location = self.input_seat.pointer_location();
+        if let Some(location) = location {
+            self.queue_cursor_redraw_between(0, location, location);
+        }
+        assert!(self.cursor.note_keyboard_activity());
+        if location.is_some() {
+            self.flush_queued_redraws();
+        } else {
+            self.request_redraw_all();
         }
     }
 
@@ -208,17 +252,8 @@ impl RuntimeState {
                 .seat
                 .modifiers(self.input_seat.keyboard_modifiers(), serial);
         }
-        if event.pressed && self.cursor.will_hide_for_keyboard_activity() {
-            let location = self.input_seat.pointer_location();
-            if let Some(location) = location {
-                self.queue_cursor_redraw_between(0, location, location);
-            }
-            assert!(self.cursor.note_keyboard_activity());
-            if location.is_some() {
-                self.flush_queued_redraws();
-            } else {
-                self.request_redraw_all();
-            }
+        if event.pressed {
+            self.hide_cursor_for_keyboard_activity();
         }
         let shortcuts_inhibited = self
             .input_seat
@@ -359,7 +394,6 @@ impl RuntimeState {
         };
         let time = (time_ns / 1_000_000) as u32;
         let serial = next_serial();
-        let _ = self.cursor.note_pointer_activity();
         let constraint = self
             .protocol_globals
             .pointer_constraints

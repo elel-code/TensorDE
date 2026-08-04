@@ -200,7 +200,12 @@ fn parses_environment_cursor_and_debug_nodes() {
             set "EDITOR" "hx"
             set "BROWSER" "firefox"
         }
-        cursor theme="Adwaita" size=32 hide-when-typing=#true
+        cursor {
+            xcursor-theme "Adwaita"
+            xcursor-size 32
+            hide-when-typing
+            hide-after-inactive-ms 3000
+        }
         debug frame-stats=#true force-full-redraw=#true
         "#,
     )
@@ -221,6 +226,7 @@ fn parses_environment_cursor_and_debug_nodes() {
             theme: "Adwaita".to_owned(),
             size: 32,
             hide_when_typing: true,
+            hide_after_inactive_ms: Some(3000),
         }
     );
     assert_eq!(
@@ -230,6 +236,34 @@ fn parses_environment_cursor_and_debug_nodes() {
             force_full_redraw: true,
         }
     );
+}
+
+#[test]
+fn cursor_uses_niri_child_nodes_and_rejects_the_old_property_shape() {
+    assert!(matches!(
+        parse(r#"cursor theme="Adwaita" size=32 hide-when-typing=#true"#),
+        Err(ConfigError::Parse(_))
+    ));
+    assert!(matches!(
+        parse(
+            r#"
+            cursor {
+                hide-when-typing #true
+            }
+            "#
+        ),
+        Err(ConfigError::Parse(_))
+    ));
+    assert!(matches!(
+        parse(
+            r#"
+            cursor {
+                xcursor-size 256
+            }
+            "#
+        ),
+        Err(ConfigError::Parse(_))
+    ));
 }
 
 #[test]

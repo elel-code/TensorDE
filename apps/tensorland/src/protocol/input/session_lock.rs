@@ -2,6 +2,7 @@ use super::*;
 
 impl RuntimeState {
     pub(super) fn process_session_lock_input(&mut self, event: LibinputEvent) {
+        let cursor_revealed = self.note_cursor_device_activity(&event);
         match event {
             LibinputEvent::Input(BackendInputEvent::Keyboard(event)) => {
                 self.forward_session_lock_keyboard(event)
@@ -68,11 +69,17 @@ impl RuntimeState {
                 .pad_event(&self.display_handle, event),
             LibinputEvent::Input(BackendInputEvent::Activity) | LibinputEvent::Device(_) => {}
         }
+        if cursor_revealed {
+            self.flush_queued_redraws();
+        }
     }
 
     fn forward_session_lock_keyboard(&mut self, event: KeyboardEvent) {
         if !self.input_seat.keyboard_enabled() {
             return;
+        }
+        if event.pressed {
+            self.hide_cursor_for_keyboard_activity();
         }
         let serial = next_serial();
         let Some(update) = self.input_seat.update_key(event.key, event.pressed, serial) else {
@@ -121,7 +128,6 @@ impl RuntimeState {
         self.protocol_globals
             .activation
             .sync_pointer_focus(self.input_seat.pointer_focus());
-        let _ = self.cursor.note_pointer_activity();
         self.request_cursor_redraw_between(0, previous, location);
     }
 

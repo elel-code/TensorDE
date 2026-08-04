@@ -47,9 +47,12 @@ use space::WindowSpace;
 #[cfg(test)]
 pub(super) use surface_tree::OutputPresentationFeedback;
 
-use crate::protocol::serial::next_serial;
 #[cfg(feature = "xwayland")]
 use crate::protocol::xwayland::{X11Wm, XWaylandShellState};
+use crate::{
+    config::{CursorConfig, DebugConfig},
+    protocol::serial::next_serial,
+};
 use std::collections::HashMap;
 #[cfg(feature = "tty")]
 use std::collections::HashSet;
@@ -273,17 +276,14 @@ impl RuntimeState {
     }
 
     /// Apply value-only cursor and debug policy from the configuration boundary.
-    pub(crate) fn apply_runtime_policy(
-        &mut self,
-        cursor: crate::config::CursorConfig,
-        debug: crate::config::DebugConfig,
-    ) {
+    pub(crate) fn apply_runtime_policy(&mut self, cursor: CursorConfig, debug: DebugConfig) {
         #[cfg(feature = "tty")]
         {
-            let released =
-                self.cursor
-                    .configure(cursor.theme, cursor.size, cursor.hide_when_typing);
+            let (released, cursor_changed) = self.cursor.configure_from(cursor);
             self.release_client_buffers(released);
+            if cursor_changed {
+                self.request_redraw_all();
+            }
             self.force_full_redraw = debug.force_full_redraw;
             self.frame_stats = debug.frame_stats;
         }

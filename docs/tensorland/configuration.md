@@ -64,7 +64,13 @@ environment {
     set "EDITOR" "hx"
 }
 
-cursor theme="default" size=24 hide-when-typing=#false
+cursor {
+    xcursor-theme "default"
+    xcursor-size 24
+    // Presence enables these policies; omit a node to disable it.
+    // hide-when-typing
+    // hide-after-inactive-ms 1000
+}
 
 debug frame-stats=#false force-full-redraw=#false
 
@@ -191,8 +197,20 @@ or replaces user variables. Session-owned names (`WAYLAND_DISPLAY`, `DISPLAY`, `
 `XDG_SESSION_TYPE`, `TENSOR_IPC_SOCKET`) cannot be cleared or overridden from this node; Tensorland keeps
 the compositor-published values authoritative.
 
-The `cursor` node controls the software fallback cursor. `size` is the logical size in pixels
-(default `24`). `hide-when-typing` hides that overlay after a key press until the next pointer motion.
+The `cursor` node intentionally uses Niri's cursor vocabulary and defaults: `xcursor-theme`
+defaults to `"default"`, and `xcursor-size` defaults to 24 logical pixels. The configured nominal
+size is multiplied by each output's physical scale, then the closest raster group is selected once
+and retained. `hide-when-typing` is a presence-only node that hides the pointer after a key press
+until pointer or tablet activity; an active tablet tool is not hidden by typing. The optional
+`hide-after-inactive-ms` hides pointer and tablet overlays after the same pointer/tablet activity
+set used by Niri (motion, buttons, axes, proximity and tip events). Activity restores visibility
+without changing Wayland focus.
+
+The final theme and size are also published as `XCURSOR_THEME` and `XCURSOR_SIZE` to session
+clients. Cursor animation and inactivity share one timerfd submitted through the existing
+io_uring completion path. Motion updates only a value deadline and keeps an already-earlier arm,
+so high-rate pointer input does not perform a timerfd rearm syscall per sample; a harmless early
+wake validates and rearms the latest deadline. No timer polling or frame-time theme lookup is used.
 
 The `debug` node is for development only. `frame-stats` logs per-output submit latency at info level.
 `force-full-redraw` disables output-local redraw targeting so every CRTC is resubmitted on each

@@ -7,7 +7,7 @@ use std::{
     str::FromStr,
 };
 
-use tensor_kdl::{CtxResult, Decode, ErrorCode, ErrorCtx, Located};
+use tensor_kdl::{CtxResult, Decode, ErrorCode, ErrorCtx, Flag, Located};
 use tensor_util::OutputScale;
 use thiserror::Error;
 
@@ -572,6 +572,7 @@ pub struct CursorConfig {
     pub theme: String,
     pub size: u32,
     pub hide_when_typing: bool,
+    pub hide_after_inactive_ms: Option<u32>,
 }
 
 impl Default for CursorConfig {
@@ -580,6 +581,7 @@ impl Default for CursorConfig {
             theme: "default".to_owned(),
             size: 24,
             hide_when_typing: false,
+            hide_after_inactive_ms: None,
         }
     }
 }
@@ -629,12 +631,14 @@ struct EnvironmentSetFileConfig {
 
 #[derive(Debug, Default, Decode)]
 struct CursorFileConfig {
-    #[kdl(property)]
+    #[kdl(child(name = "xcursor-theme"), unwrap(argument))]
     theme: Option<String>,
-    #[kdl(property)]
-    size: Option<u32>,
-    #[kdl(property(name = "hide-when-typing"))]
-    hide_when_typing: Option<bool>,
+    #[kdl(child(name = "xcursor-size"), unwrap(argument))]
+    size: Option<u8>,
+    #[kdl(child(name = "hide-when-typing"))]
+    hide_when_typing: Option<Flag>,
+    #[kdl(child(name = "hide-after-inactive-ms"), unwrap(argument))]
+    hide_after_inactive_ms: Option<u32>,
 }
 
 impl CursorFileConfig {
@@ -642,8 +646,9 @@ impl CursorFileConfig {
         let defaults = CursorConfig::default();
         CursorConfig {
             theme: self.theme.unwrap_or(defaults.theme),
-            size: self.size.unwrap_or(defaults.size).max(1),
-            hide_when_typing: self.hide_when_typing.unwrap_or(defaults.hide_when_typing),
+            size: self.size.map(u32::from).unwrap_or(defaults.size),
+            hide_when_typing: self.hide_when_typing.is_some(),
+            hide_after_inactive_ms: self.hide_after_inactive_ms,
         }
     }
 }

@@ -256,8 +256,54 @@ fn theme_change_releases_every_uploaded_animation_frame() {
         }),
     );
 
-    let released = cursor.configure("another-theme".to_owned(), 24, false);
+    let (released, changed) = cursor.configure("another-theme".to_owned(), 24, false, None);
 
+    assert!(changed);
     assert_eq!(released, [SurfaceBufferId::new(3), SurfaceBufferId::new(4)]);
     assert!(cursor.named_rasters.is_empty());
+}
+
+#[test]
+fn inactivity_hides_pointer_and_tablets_until_device_activity() {
+    let mut cursor = CursorState::default();
+    let _ = cursor.configure("default".to_owned(), 24, false, Some(1_000));
+    assert!(cursor.note_tablet_activity(tensor_event::TabletToolId::new(1), (40.0, 50.0).into()));
+    let activity = Instant::now();
+    assert!(!cursor.note_pointer_activity(activity));
+    assert!(!cursor.expire_inactivity(activity + Duration::from_millis(999)));
+    assert!(cursor.expire_inactivity(activity + Duration::from_millis(1_000)));
+
+    let hidden = cursor.overlays_for_output(
+        Some((20.0, 30.0).into()),
+        output(),
+        OutputScale::ONE,
+        Rect::new(0, 0, 100, 80),
+        |_, _| None,
+    );
+    assert!(hidden.as_slice().is_empty());
+
+    assert!(cursor.note_pointer_activity(activity + Duration::from_millis(1_001)));
+    let visible = cursor.overlays_for_output(
+        Some((20.0, 30.0).into()),
+        output(),
+        OutputScale::ONE,
+        Rect::new(0, 0, 100, 80),
+        |_, _| None,
+    );
+    assert_eq!(visible.as_slice().len(), 2);
+}
+
+#[test]
+fn hide_when_typing_does_not_flicker_an_active_tablet_cursor() {
+    let mut cursor = CursorState::default();
+    let _ = cursor.configure("default".to_owned(), 24, true, None);
+    assert!(cursor.note_keyboard_activity());
+    assert!(!cursor.pointer_is_visible());
+
+    assert!(cursor.note_pointer_activity(Instant::now()));
+    assert!(cursor.note_tablet_activity(tensor_event::TabletToolId::new(1), (40.0, 50.0).into()));
+    assert!(!cursor.will_hide_for_keyboard_activity());
+    assert!(!cursor.note_keyboard_activity());
+    assert!(cursor.pointer_is_visible());
+    assert!(cursor.tablets_are_visible());
 }

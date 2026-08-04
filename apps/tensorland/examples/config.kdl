@@ -36,5 +36,11 @@ appearance {
 //     set "EDITOR" "hx"
 // }
 
-// cursor theme="default" size=24 hide-when-typing=#false
+// Cursor syntax and defaults match Niri. Omit either hide node to disable it.
+// cursor {
+//     xcursor-theme "default"
+//     xcursor-size 24
+//     hide-when-typing
+//     hide-after-inactive-ms 1000
+// }
 // debug frame-stats=#false force-full-redraw=#false

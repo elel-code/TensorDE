@@ -16,6 +16,7 @@ use crate::{
 };
 
 mod animation;
+mod visibility;
 
 const MAX_TABLET_CURSORS: usize = 64;
 
@@ -54,12 +55,15 @@ pub(crate) struct CursorState {
     logical_size: u32,
     hide_when_typing: bool,
     hidden_for_typing: bool,
+    hide_after_inactive: Option<Duration>,
+    inactivity_deadline: Option<Instant>,
+    hidden_for_inactivity: bool,
     theme_name: String,
     theme: xcursor::CursorTheme,
     named_rasters: HashMap<(CursorIcon, OutputScale), Option<CursorRasterSequence>>,
     animation_epoch: Instant,
-    animation_timer: Option<OwnedFd>,
-    animation_deadline: Option<Instant>,
+    cursor_timer: Option<OwnedFd>,
+    cursor_timer_deadline: Option<Instant>,
     retired_surfaces: Vec<WlSurface>,
 }
 
@@ -141,12 +145,15 @@ impl Default for CursorState {
             logical_size: 24,
             hide_when_typing: false,
             hidden_for_typing: false,
+            hide_after_inactive: None,
+            inactivity_deadline: None,
+            hidden_for_inactivity: false,
             theme_name: "default".to_owned(),
             theme: xcursor::CursorTheme::load("default"),
             named_rasters: HashMap::with_capacity(16),
             animation_epoch: Instant::now(),
-            animation_timer: animation::create_timer(),
-            animation_deadline: None,
+            cursor_timer: animation::create_timer(),
+            cursor_timer_deadline: None,
             retired_surfaces: Vec::with_capacity(MAX_TABLET_CURSORS + 1),
         }
     }
@@ -158,10 +165,14 @@ impl CursorState {
         theme: String,
         size: u32,
         hide_when_typing: bool,
-    ) -> Vec<SurfaceBufferId> {
+        hide_after_inactive_ms: Option<u32>,
+    ) -> (Vec<SurfaceBufferId>, bool) {
         let size = size.max(1);
-        let changed = self.theme_name != theme || self.logical_size != size;
-        let released = if changed {
+        let image_changed = self.theme_name != theme || self.logical_size != size;
+        let visibility_changed = self.hide_when_typing != hide_when_typing
+            || self.hide_after_inactive
+                != hide_after_inactive_ms.map(|millis| Duration::from_millis(u64::from(millis)));
+        let released = if image_changed {
             self.named_rasters
                 .drain()
                 .flat_map(|(_, sequence)| {
@@ -179,15 +190,13 @@ impl CursorState {
             self.theme_name = theme;
         }
         self.logical_size = size;
-        self.hide_when_typing = hide_when_typing;
-        if !hide_when_typing {
-            self.hidden_for_typing = false;
+        let now = Instant::now();
+        if image_changed {
+            self.animation_epoch = now;
+            self.disarm_cursor_timer();
         }
-        if changed {
-            self.animation_epoch = Instant::now();
-            self.disarm_animation_timer();
-        }
-        released
+        self.configure_visibility(hide_when_typing, hide_after_inactive_ms, now);
+        (released, image_changed || visibility_changed)
     }
 
     pub(crate) fn prepare_named_rasters(
@@ -311,28 +320,6 @@ impl CursorState {
         &self.image == image
     }
 
-    /// Hide the software cursor after a keyboard press when configured.
-    pub(crate) fn will_hide_for_keyboard_activity(&self) -> bool {
-        self.hide_when_typing && !self.hidden_for_typing
-    }
-
-    pub(crate) fn note_keyboard_activity(&mut self) -> bool {
-        if !self.hide_when_typing || self.hidden_for_typing {
-            return false;
-        }
-        self.hidden_for_typing = true;
-        true
-    }
-
-    /// Reveal the cursor again after pointer motion.
-    pub(crate) fn note_pointer_activity(&mut self) -> bool {
-        if !self.hidden_for_typing {
-            return false;
-        }
-        self.hidden_for_typing = false;
-        true
-    }
-
     pub(in crate::protocol) fn note_tablet_activity(
         &mut self,
         tool: tensor_event::TabletToolId,
@@ -385,6 +372,18 @@ impl CursorState {
                 unreachable!("tablet cursor positions share the cursor capacity");
             };
             *entry = Some((tool, location));
+            positions.len += 1;
+        }
+        positions
+    }
+
+    pub(in crate::protocol) fn tablet_positions(&self) -> TabletCursorPositions {
+        let mut positions = TabletCursorPositions {
+            entries: [None; MAX_TABLET_CURSORS],
+            len: 0,
+        };
+        for tablet in &self.tablets {
+            positions.entries[positions.len] = Some((tablet.tool, tablet.location));
             positions.len += 1;
         }
         positions
@@ -492,24 +491,26 @@ impl CursorState {
             scale,
             viewport,
         };
-        if !self.hidden_for_typing
+        if self.pointer_is_visible()
             && let Some(pointer) = pointer
             && let Some(overlay) = self.overlay(0, pointer, &self.image, output, &mut resolve)
         {
             assert!(overlays.push(overlay), "pointer cursor has a reserved slot");
         }
-        for tablet in &self.tablets {
-            if let Some(overlay) = self.overlay(
-                tablet.tool.get(),
-                tablet.location,
-                &tablet.image,
-                output,
-                &mut resolve,
-            ) {
-                assert!(
-                    overlays.push(overlay),
-                    "tablet cursor capacity matches tools"
-                );
+        if self.tablets_are_visible() {
+            for tablet in &self.tablets {
+                if let Some(overlay) = self.overlay(
+                    tablet.tool.get(),
+                    tablet.location,
+                    &tablet.image,
+                    output,
+                    &mut resolve,
+                ) {
+                    assert!(
+                        overlays.push(overlay),
+                        "tablet cursor capacity matches tools"
+                    );
+                }
             }
         }
         overlays
@@ -525,11 +526,14 @@ impl CursorState {
         mut resolve: impl FnMut(&WlSurface, OutputScale) -> Option<CursorRaster>,
     ) -> Option<CursorOverlay> {
         let image = if source == 0 {
-            if self.hidden_for_typing {
+            if !self.pointer_is_visible() {
                 return None;
             }
             &self.image
         } else {
+            if !self.tablets_are_visible() {
+                return None;
+            }
             &self
                 .tablets
                 .iter()
@@ -554,7 +558,7 @@ impl CursorState {
         scale: OutputScale,
         mut resolve: impl FnMut(&WlSurface, OutputScale) -> Option<CursorRaster>,
     ) -> Option<CursorCaptureImage> {
-        if self.hidden_for_typing {
+        if !self.pointer_is_visible() {
             return None;
         }
         match &self.image {
@@ -593,7 +597,7 @@ impl CursorState {
             scale,
             viewport,
         };
-        if !self.hidden_for_typing
+        if self.pointer_is_visible()
             && let (Some(pointer), CursorImage::Named(_)) = (pointer, &self.image)
             && self
                 .overlay(0, pointer, &self.image, output, &mut |_, _| None)
@@ -601,18 +605,19 @@ impl CursorState {
         {
             return true;
         }
-        self.tablets.iter().any(|tablet| {
-            matches!(tablet.image, CursorImage::Named(_))
-                && self
-                    .overlay(
-                        tablet.tool.get(),
-                        tablet.location,
-                        &tablet.image,
-                        output,
-                        &mut |_, _| None,
-                    )
-                    .is_some()
-        })
+        self.tablets_are_visible()
+            && self.tablets.iter().any(|tablet| {
+                matches!(tablet.image, CursorImage::Named(_))
+                    && self
+                        .overlay(
+                            tablet.tool.get(),
+                            tablet.location,
+                            &tablet.image,
+                            output,
+                            &mut |_, _| None,
+                        )
+                        .is_some()
+            })
     }
 
     fn overlay(

@@ -20,6 +20,14 @@ renderer:
 - Named XCursor images are selected at each output's physical scale. Every animation frame for the
   chosen nominal size is uploaded during cold loading, and a one-shot timerfd advances active
   sequences through a submitted Compio/io_uring completion.
+- Cursor configuration matches Niri's KDL surface and defaults:
+  `xcursor-theme "default"`, `xcursor-size 24`, the presence-only `hide-when-typing`, and optional
+  `hide-after-inactive-ms`. Theme and size are published as `XCURSOR_THEME`/`XCURSOR_SIZE` for
+  session clients. Pointer/tablet activity restores visibility without disturbing Wayland focus;
+  keyboard hiding leaves an active tablet cursor visible.
+- Animation and inactivity use the same one-shot cursor timerfd. High-frequency activity moves a
+  value-only deadline without rearming the fd for every input sample; an earlier outstanding wake
+  validates the current deadline and rearms once if necessary.
 - Pointer and tablet motion, image replacement, animation, surface commit/destruction, and device
   removal damage the complete old/new cursor extents. A cursor straddling two outputs damages both.
 - Cursor surfaces track output-instance membership and emit exact `wl_surface.enter` and
