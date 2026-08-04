@@ -11,5 +11,5 @@ pub use content::{
 pub use damage::DamageSet;
 pub use model::{
     BackdropBlur, BackdropRegion, EffectStyle, FocusOutline, LinearRgba16, SceneNode,
-    SceneSnapshot, ShadowStyle, UnitFraction,
+    SceneSnapshot, SceneSurfaceSubmission, ShadowStyle, UnitFraction,
 };

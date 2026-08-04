@@ -410,11 +410,12 @@ count, surface-content count, and damage-region count for each prepared frame.
 `wp_presentation` v2 uses `CLOCK_MONOTONIC`. Before Vulkan submission, the protocol layer takes
 feedback only from surfaces intersecting the submitted scene and whose largest output intersection
 selects that output as primary. This is geometry-aware but not yet opaque-region occlusion-aware.
-One value-only submission index computes surface membership, owning view, and
-unioned visible bounds in a single draw-order traversal; output selection no
-longer rebuilds the same geometry in a second HashMap. The temporary index is
-consumed into the exact surface/view sets retained by the in-flight feedback
-owner, so the optimization does not coalesce callbacks or change FIFO lifetime.
+Scene extraction prepares one immutable, shared value-only submission index
+containing surface membership, owning view, and unioned visible bounds. Every
+output borrows that slice for primary-output selection instead of traversing
+the scene or allocating a temporary HashMap during presentation capture. Only
+the exact surface/view sets retained by the in-flight feedback owner allocate;
+the optimization does not coalesce callbacks or change FIFO lifetime.
 The resulting owner is keyed by both stable backend output ID and renderer timeline value. Renderer
 failure, missing `SYNC_FD`, atomic KMS failure, output replacement, disconnect, or session pause
 drops that owner and therefore sends `discarded`. Once atomic KMS accepts the frame, frame callbacks

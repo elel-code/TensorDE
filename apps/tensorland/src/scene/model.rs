@@ -1,7 +1,10 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use crate::{
-    ecs::{SurfaceBufferId, ViewId, WorkspaceId},
+    ecs::{SurfaceBufferId, SurfaceId, ViewId, WorkspaceId},
     layout::{LayoutPlacement, Rect},
 };
 use tensor_protocol::SurfacePresentationHint;
@@ -247,6 +250,13 @@ impl SceneNode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SceneSurfaceSubmission {
+    pub surface_id: SurfaceId,
+    pub view_id: ViewId,
+    pub bounds: Rect,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SceneSnapshot {
     pub workspace_id: WorkspaceId,
@@ -254,6 +264,7 @@ pub struct SceneSnapshot {
     nodes: Vec<SceneNode>,
     contents: Vec<SurfaceContent>,
     draw_order: Vec<u32>,
+    submitted_surfaces: Arc<[SceneSurfaceSubmission]>,
 }
 
 impl SceneSnapshot {
@@ -280,13 +291,16 @@ impl SceneSnapshot {
             let node = &nodes[*index as usize];
             (node.stacking_order, node.view_id)
         });
-        Self {
+        let mut scene = Self {
             workspace_id,
             viewport,
             nodes,
             contents,
             draw_order,
-        }
+            submitted_surfaces: Arc::default(),
+        };
+        scene.submitted_surfaces = build_surface_submissions(&scene);
+        scene
     }
 
     pub fn nodes(&self) -> &[SceneNode] {
@@ -309,6 +323,12 @@ impl SceneSnapshot {
             .range()
             .expect("scene content span was validated during extraction");
         &self.contents[range]
+    }
+
+    /// Visible surface membership and unioned logical bounds prepared once
+    /// when this immutable snapshot is extracted.
+    pub fn submitted_surfaces(&self) -> &[SceneSurfaceSubmission] {
+        &self.submitted_surfaces
     }
 
     /// Return the output-visible bounds of a node and all popup content it
@@ -352,6 +372,52 @@ impl SceneSnapshot {
 
     pub fn damage_since(&self, previous: Option<&Self>) -> super::DamageSet {
         super::damage::between(previous, self)
+    }
+}
+
+fn build_surface_submissions(scene: &SceneSnapshot) -> Arc<[SceneSurfaceSubmission]> {
+    let mut submitted =
+        HashMap::<SurfaceId, SceneSurfaceSubmission>::with_capacity(scene.contents().len());
+    for node in scene.draw_order() {
+        if scene.visual_bounds(node).is_none() {
+            continue;
+        }
+        for content in scene.contents_for(node) {
+            let Some(content_bounds) = submitted_content_bounds(scene, node, content) else {
+                continue;
+            };
+            submitted
+                .entry(content.surface_id)
+                .and_modify(|surface| {
+                    surface.view_id = node.view_id;
+                    surface.bounds = surface.bounds.union(content_bounds);
+                })
+                .or_insert(SceneSurfaceSubmission {
+                    surface_id: content.surface_id,
+                    view_id: node.view_id,
+                    bounds: content_bounds,
+                });
+        }
+    }
+    let mut submitted = submitted.into_values().collect::<Vec<_>>();
+    submitted.sort_unstable_by_key(|surface| surface.surface_id);
+    submitted.into()
+}
+
+fn submitted_content_bounds(
+    scene: &SceneSnapshot,
+    node: &SceneNode,
+    content: &SurfaceContent,
+) -> Option<Rect> {
+    let destination = content
+        .local_geometry
+        .translated(node.placement.geometry.x, node.placement.geometry.y);
+    match content.layer {
+        super::SurfaceLayer::View => node
+            .placement
+            .visible
+            .and_then(|clip| destination.intersection(clip)),
+        super::SurfaceLayer::Popup => destination.intersection(scene.viewport),
     }
 }
 

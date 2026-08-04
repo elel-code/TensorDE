@@ -1,6 +1,6 @@
 use std::{
     cmp::Reverse,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashSet},
     time::Duration,
 };
 
@@ -15,7 +15,7 @@ use crate::{
     backend::BackendOutputId,
     ecs::{SurfaceId, ViewId},
     render::CursorOverlays,
-    scene::{SceneSnapshot, SurfaceContent, SurfaceLayer},
+    scene::{SceneSnapshot, SceneSurfaceSubmission},
 };
 
 use super::{
@@ -33,12 +33,6 @@ use crate::protocol::globals::{
 struct PresentationKey {
     output: BackendOutputId,
     timeline_value: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SubmittedSurface {
-    view_id: ViewId,
-    bounds: Rect,
 }
 
 #[derive(Debug)]
@@ -168,7 +162,7 @@ impl RuntimeState {
         self.capture_presentation(
             output_id,
             output,
-            scene_submission_index(scene),
+            scene.submitted_surfaces(),
             cursor_surfaces,
         )
     }
@@ -233,17 +227,17 @@ impl RuntimeState {
         &self,
         output_id: BackendOutputId,
         output: &Output,
-        mut submitted: HashMap<SurfaceId, SubmittedSurface>,
+        submitted: &[SceneSurfaceSubmission],
         cursor_surfaces: CursorSurfaces,
     ) -> CapturedPresentation {
         let output_regions = self.output_regions();
-        submitted.retain(|_, surface| {
-            primary_output(surface.bounds, &output_regions) == Some(output_id)
-        });
         let mut submitted_surfaces = HashSet::with_capacity(submitted.len());
         let mut submitted_views = HashSet::with_capacity(submitted.len());
-        for (surface_id, surface) in submitted {
-            submitted_surfaces.insert(surface_id);
+        for surface in submitted
+            .iter()
+            .filter(|surface| primary_output(surface.bounds, &output_regions) == Some(output_id))
+        {
+            submitted_surfaces.insert(surface.surface_id);
             submitted_views.insert(surface.view_id);
         }
         let surface_buffers = &self.surface_buffers;
@@ -392,49 +386,6 @@ impl RuntimeState {
     }
 }
 
-fn scene_submission_index(scene: &SceneSnapshot) -> HashMap<SurfaceId, SubmittedSurface> {
-    let mut submitted =
-        HashMap::<SurfaceId, SubmittedSurface>::with_capacity(scene.contents().len());
-    for node in scene.draw_order() {
-        if scene.visual_bounds(node).is_none() {
-            continue;
-        }
-        for content in scene.contents_for(node) {
-            let Some(content_bounds) = submitted_content_bounds(scene, node, content) else {
-                continue;
-            };
-            submitted
-                .entry(content.surface_id)
-                .and_modify(|surface| {
-                    surface.view_id = node.view_id;
-                    surface.bounds = surface.bounds.union(content_bounds);
-                })
-                .or_insert(SubmittedSurface {
-                    view_id: node.view_id,
-                    bounds: content_bounds,
-                });
-        }
-    }
-    submitted
-}
-
-fn submitted_content_bounds(
-    scene: &SceneSnapshot,
-    node: &crate::scene::SceneNode,
-    content: &SurfaceContent,
-) -> Option<Rect> {
-    let destination = content
-        .local_geometry
-        .translated(node.placement.geometry.x, node.placement.geometry.y);
-    match content.layer {
-        SurfaceLayer::View => node
-            .placement
-            .visible
-            .and_then(|clip| destination.intersection(clip)),
-        SurfaceLayer::Popup => destination.intersection(scene.viewport),
-    }
-}
-
 fn primary_output(bounds: Rect, outputs: &[(BackendOutputId, Rect)]) -> Option<BackendOutputId> {
     outputs
         .iter()
@@ -500,7 +451,10 @@ mod tests {
     use crate::{
         ecs::{SurfaceBufferId, WorkspaceId},
         layout::LayoutPlacement,
-        scene::{ContentRevision, ContentSpan, EffectStyle, SceneNode, SurfaceSampleTransform},
+        scene::{
+            ContentRevision, ContentSpan, EffectStyle, SceneNode, SurfaceContent, SurfaceLayer,
+            SurfaceSampleTransform,
+        },
     };
 
     use super::*;
@@ -589,22 +543,21 @@ mod tests {
             contents,
         );
 
-        let submitted = scene_submission_index(&scene);
         assert_eq!(
-            submitted.get(&SurfaceId::new(1)),
-            Some(&SubmittedSurface {
-                view_id,
-                bounds: Rect::new(100, 0, 50, 100),
-            })
+            scene.submitted_surfaces(),
+            [
+                SceneSurfaceSubmission {
+                    surface_id: SurfaceId::new(1),
+                    view_id,
+                    bounds: Rect::new(100, 0, 50, 100),
+                },
+                SceneSurfaceSubmission {
+                    surface_id: SurfaceId::new(2),
+                    view_id,
+                    bounds: Rect::new(150, 0, 50, 100),
+                },
+            ]
         );
-        assert_eq!(
-            submitted.get(&SurfaceId::new(2)),
-            Some(&SubmittedSurface {
-                view_id,
-                bounds: Rect::new(150, 0, 50, 100),
-            })
-        );
-        assert!(!submitted.contains_key(&SurfaceId::new(3)));
     }
 
     #[test]

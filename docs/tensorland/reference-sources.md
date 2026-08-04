@@ -45,8 +45,9 @@ profiling evidence, not as renderer code to copy:
   uses one submitted io_uring poll only for exported frame-completion
   sync-files, so the eventfd optimization is not transplanted into the wrong
   ownership model. Presentation capture does adopt the repeated-query lesson:
-  one scene traversal now computes surface membership, owning view, and unioned
-  visible bounds instead of building two maps from two equivalent traversals.
+  scene extraction computes surface membership, owning view, and unioned
+  visible bounds once, then every output borrows that immutable index instead
+  of rebuilding geometry maps during presentation capture.
 - `1ea103b5` enables FP16 targets when supported. Tensorland already selects a
   typed `R16G16B16A16` linear working target for managed color and keeps HDR
   advertisement completion-gated on format plus KMS metadata support; support
