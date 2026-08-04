@@ -11,6 +11,7 @@ struct ScenePipelineProgramSelection<'a> {
     fragment_spirv: &'a [u32],
     fragment_local_read_shader: Option<&'static BuiltinSceneLocalReadShader>,
     vertex_attributes: Option<Vec<SceneVertexAttributePlan>>,
+    default_mesh_vertex_input: bool,
 }
 
 struct ScenePipelineVertexSelection<'a> {
@@ -192,8 +193,7 @@ pub(in crate::renderer::rendering_device) fn create_scene_pipelines(
             } else {
                 vulkan_renderer::PrimitiveTopology::TriangleList
             },
-            default_mesh_vertex_input: key.primitive
-                == SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+            default_mesh_vertex_input: program.default_mesh_vertex_input,
             dynamic_text: program.vertex_key == "tensor-wallpaper/dynamic-text",
             pipeline_binary_cache,
         }) {
@@ -309,6 +309,7 @@ fn select_scene_pipeline_program(
                     fragment_spirv: authored.fragment_spirv(storage),
                     fragment_local_read_shader: None,
                     vertex_attributes: vertex.attributes,
+                    default_mesh_vertex_input: false,
                 })
             }
             SceneResolvedGraphicsProgram::EngineBuiltIn { shader, .. } => {
@@ -321,6 +322,8 @@ fn select_scene_pipeline_program(
                     fragment_spirv: authored.fragment_spirv(storage),
                     fragment_local_read_shader: shader.local_read_shader.as_ref(),
                     vertex_attributes: vertex.attributes,
+                    default_mesh_vertex_input: key.primitive
+                        == SceneRenderingDeviceDrawPrimitive::ObjectMesh,
                 })
             }
         },
@@ -348,6 +351,11 @@ fn select_scene_pipeline_program(
                 fragment_spirv: passthrough.fragment_spirv,
                 fragment_local_read_shader: passthrough.local_read_shader.as_ref(),
                 vertex_attributes: None,
+                default_mesh_vertex_input: matches!(
+                    key.primitive,
+                    SceneRenderingDeviceDrawPrimitive::ObjectMesh
+                        | SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad
+                ),
             })
         }
     }
@@ -522,6 +530,23 @@ mod tests {
         assert_eq!(selection.vertex_entry_point, "main");
         assert_eq!(selection.fragment_entry_point, "main");
         assert!(selection.vertex_attributes.is_none());
+        assert!(selection.default_mesh_vertex_input);
+    }
+
+    #[test]
+    fn object_uv_support_effect_passthrough_uses_retained_quad_vertex_input() {
+        let storage = scene_owned_storage(true);
+        let mut key = authored_key();
+        key.shader = ScenePipelineShader::EffectPassthrough(SceneStringId(0));
+        key.primitive = SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad;
+
+        let selection = select_scene_pipeline_program(&storage, key)
+            .expect("engine passthrough retained-quad program");
+
+        assert_eq!(selection.vertex_key, "we/passthrough");
+        assert_eq!(selection.fragment_key, "we/passthrough");
+        assert!(selection.vertex_attributes.is_none());
+        assert!(selection.default_mesh_vertex_input);
     }
 
     fn authored_key() -> ScenePipelineKey {

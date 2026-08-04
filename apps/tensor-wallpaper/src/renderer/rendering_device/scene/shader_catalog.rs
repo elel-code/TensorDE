@@ -166,9 +166,13 @@ pub fn rendering_device_scene_vertex_shader_for_primitive(
     if shader.vertex_primitive == primitive {
         return Some(shader.vertex);
     }
-    (primitive == crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh)
-        .then_some(shader.object_mesh_vertex)
-        .flatten()
+    matches!(
+        primitive,
+        crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh
+            | crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad
+    )
+    .then_some(shader.object_mesh_vertex)
+    .flatten()
 }
 
 #[cfg(test)]

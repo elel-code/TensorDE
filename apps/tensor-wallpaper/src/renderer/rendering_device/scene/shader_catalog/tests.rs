@@ -1,5 +1,6 @@
 use super::*;
 
+#[path = "tests/framebuffer_water.rs"]
 mod framebuffer_water;
 mod workshop_effects;
 
@@ -540,6 +541,28 @@ fn passthrough_catalog_has_object_mesh_vertex_for_effect_visibility_passthrough(
     )
     .expect("object-mesh passthrough vertex");
     assert!(object_mesh.bindings.iter().any(|binding| {
+        binding.kind == BuiltinSceneDescriptorBindingKind::UniformBuffer && binding.register == 2
+    }));
+}
+
+#[test]
+fn passthrough_catalog_has_retained_object_uv_quad_vertex() {
+    let passthrough =
+        rendering_device_scene_shader_for_key("we/passthrough").expect("passthrough shader");
+    let object_uv_quad = rendering_device_scene_vertex_shader_for_primitive(
+        passthrough,
+        crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad,
+    )
+    .expect("retained object-UV quad passthrough vertex");
+
+    assert_eq!(
+        object_uv_quad.spirv,
+        passthrough
+            .object_mesh_vertex
+            .expect("retained vertex")
+            .spirv
+    );
+    assert!(object_uv_quad.bindings.iter().any(|binding| {
         binding.kind == BuiltinSceneDescriptorBindingKind::UniformBuffer && binding.register == 2
     }));
 }

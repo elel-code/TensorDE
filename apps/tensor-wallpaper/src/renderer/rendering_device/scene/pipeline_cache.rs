@@ -334,13 +334,18 @@ mod tests {
         let shimmer = rendering_device_scene_shader_for_key("effects/shimmer__SLOTS_9")
             .expect("shimmer shader");
         let shimmer_programs = shader_program_set(SceneStringId(4), shimmer);
-        assert_eq!(shimmer_programs.vertex_programs.len(), 2);
+        assert_eq!(shimmer_programs.vertex_programs.len(), 3);
         assert!(shimmer_programs.vertex_programs.iter().any(|program| {
             program.primitive == SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
                 && program.program.spirv_words == shimmer.vertex.spirv
         }));
         assert!(shimmer_programs.vertex_programs.iter().any(|program| {
             program.primitive == SceneRenderingDeviceDrawPrimitive::ObjectMesh
+                && Some(program.program.spirv_words)
+                    == shimmer.object_mesh_vertex.map(|vertex| vertex.spirv)
+        }));
+        assert!(shimmer_programs.vertex_programs.iter().any(|program| {
+            program.primitive == SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad
                 && Some(program.program.spirv_words)
                     == shimmer.object_mesh_vertex.map(|vertex| vertex.spirv)
         }));
