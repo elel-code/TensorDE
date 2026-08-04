@@ -113,6 +113,7 @@ fn ipc_minimize_moves_to_hidden_workspace_and_restores_origin() {
         state.world.view_workspace(dialog),
         Some(WorkspaceId::new(0))
     );
+    assert_eq!(state.world.focused_view(WorkspaceId::new(0)), Some(dialog));
     assert_eq!(state.ipc_state_snapshot().minimized_count, 0);
     drop(worker);
 }
@@ -205,6 +206,41 @@ fn ipc_activate_view_returns_structured_identity_and_hidden_errors() {
         &submitter,
     );
     assert_error_code(hidden.response.result, "hidden_workspace");
+}
+
+#[test]
+fn ipc_restore_minimized_distinguishes_unknown_and_live_views() {
+    let mut state = runtime_state();
+    let live = ViewId::new(75);
+    state.world.spawn_view(live, WorkspaceId::new(0)).unwrap();
+    let (worker, _) = live_worker();
+    let submitter = worker.submitter();
+
+    let unknown = handle_ipc_request(
+        Request::new(
+            38,
+            Command::RestoreMinimized {
+                view: 999,
+                follow: true,
+            },
+        ),
+        &mut state,
+        &submitter,
+    );
+    assert_error_code(unknown.response.result, "unknown_view");
+
+    let live = handle_ipc_request(
+        Request::new(
+            39,
+            Command::RestoreMinimized {
+                view: live.get(),
+                follow: true,
+            },
+        ),
+        &mut state,
+        &submitter,
+    );
+    assert_error_code(live.response.result, "not_minimized");
 }
 
 #[test]

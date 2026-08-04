@@ -264,12 +264,9 @@ pub(super) fn handle_ipc_request_with_config(
             ResultBody::Accepted
         }
         IpcCommand::RestoreMinimized { view, follow } => {
-            if !state.restore_minimized_view(crate::ecs::ViewId::new(view), follow) {
-                return IpcReply::new(Response::error(
-                    request_id,
-                    "not_minimized",
-                    format!("view {view} is not minimized"),
-                ));
+            if let Err(error) = state.restore_minimized_view(crate::ecs::ViewId::new(view), follow)
+            {
+                return view_workspace_error_reply(request_id, error);
             }
             ResultBody::Accepted
         }
@@ -295,6 +292,7 @@ fn view_workspace_error_reply(request_id: u64, error: ViewWorkspaceError) -> Ipc
         ViewWorkspaceError::InvalidWorkspace { .. } => "invalid_argument",
         ViewWorkspaceError::HiddenWorkspace { .. } => "hidden_workspace",
         ViewWorkspaceError::InteractionBlocked => "interaction_blocked",
+        ViewWorkspaceError::NotMinimized(_) => "not_minimized",
         ViewWorkspaceError::Lifecycle(_) => "view_lifecycle",
     };
     IpcReply::new(Response::error(request_id, code, error.to_string()))

@@ -45,6 +45,8 @@ pub(crate) enum ViewWorkspaceError {
     },
     #[error("overview selection is blocked by an active popup grab")]
     InteractionBlocked,
+    #[error("view {0:?} is not minimized")]
+    NotMinimized(ViewId),
     #[error("view lifecycle operation failed: {0}")]
     Lifecycle(#[from] crate::ecs::ViewLifecycleError),
 }
@@ -244,9 +246,7 @@ impl RuntimeState {
             .view_workspace(root)
             .ok_or(ViewWorkspaceError::UnknownView(view_id))?;
         if self.world.minimized_from(root).is_some() {
-            if !self.restore_minimized_view(root, true) {
-                return Err(ViewWorkspaceError::UnknownView(view_id));
-            }
+            self.restore_minimized_view(view_id, true)?;
         } else {
             if workspace.get() >= self.workspaces.count() {
                 return Err(ViewWorkspaceError::HiddenWorkspace {
@@ -348,16 +348,21 @@ impl RuntimeState {
         }
     }
 
-    pub(crate) fn restore_minimized_view(&mut self, view_id: ViewId, follow: bool) -> bool {
-        let Some(view_id) = self.world.tiled_ancestor(view_id) else {
-            return false;
-        };
-        let origin = match self.world.restore_minimized_view(view_id) {
+    pub(crate) fn restore_minimized_view(
+        &mut self,
+        requested: ViewId,
+        follow: bool,
+    ) -> Result<ViewId, ViewWorkspaceError> {
+        let root = self
+            .world
+            .tiled_ancestor(requested)
+            .ok_or(ViewWorkspaceError::UnknownView(requested))?;
+        let origin = match self.world.restore_minimized_view(root) {
             Ok(Some(origin)) => origin,
-            Ok(None) => return false,
+            Ok(None) => return Err(ViewWorkspaceError::NotMinimized(requested)),
             Err(error) => {
-                tracing::warn!(%error, view = view_id.get(), "failed to restore minimized view");
-                return false;
+                tracing::warn!(%error, view = root.get(), "failed to restore minimized view");
+                return Err(error.into());
             }
         };
         if follow && origin != self.workspaces.active() {
@@ -368,11 +373,11 @@ impl RuntimeState {
         }
         #[cfg(feature = "tty")]
         if origin == self.workspaces.active()
-            && let Some(window) = self.mapped_window_for_view(view_id)
+            && let Some(window) = self.mapped_window_for_view(requested)
         {
             let _ = self.focus_mapped_window(window, crate::protocol::serial::next_serial());
         }
-        true
+        Ok(root)
     }
 
     /// Show only windows belonging to the active workspace.

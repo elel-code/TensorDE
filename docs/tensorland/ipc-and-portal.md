@@ -26,6 +26,8 @@ indices and `ext-workspace-v1` remain limited to the regular pool.
 `tensorctl restore-minimized <view-id>` restores it and follows its recorded regular workspace;
 `--stay` restores without switching away from the current workspace. These operations reuse the
 retained protocol window and renderer resource identity rather than asking the client to remap.
+Restore reports `unknown_view` for a stale stable ID and `not_minimized` only for a live view that
+has no retained minimize origin.
 
 Version 6 `get-overview` returns a deterministic back-to-front plan for every regular workspace and
 each hidden workspace whose KDL policy permits overview display. The response names the primary
