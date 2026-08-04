@@ -96,9 +96,11 @@ StructuredBuffer<ParticleSimulationState> g_ParticleStates : register(t5);
 static uint gl_VertexIndex;
 static uint gl_InstanceIndex;
 static vec2 v_TexCoord;
+static vec2 v_TexCoordNext;
 static float v_VertexAlpha;
 static vec3 v_ParticleColor;
 static float v_TextureDecodeMode;
+static float v_TextureSequenceBlend;
 static float4 tensorWallpaperPosition;
 struct TensorWallpaperVertexInput
 {
@@ -112,6 +114,8 @@ struct TensorWallpaperVertexOutput
     [[vk::location(1)]] float v_VertexAlpha : TEXCOORD1;
     [[vk::location(2)]] vec3 v_ParticleColor : TEXCOORD2;
     nointerpolation [[vk::location(3)]] float v_TextureDecodeMode : TEXCOORD3;
+    [[vk::location(4)]] vec2 v_TexCoordNext : TEXCOORD4;
+    nointerpolation [[vk::location(5)]] float v_TextureSequenceBlend : TEXCOORD5;
 };
 
 float hash11(float value) {
@@ -309,20 +313,45 @@ vec2 billboard_uv(int vertex) {
         vec2(0.0, 0.0), vec2(1.0, 0.0));
     return uvs[vertex];
 }
-vec2 particle_texture_uv(vec2 localUv, float lifetimeFraction) {
-    float frameCount = g_Particle.g_TextureSequence.z;
-    if (frameCount < 1.0) {
-        return localUv;
-    }
+struct ParticleTextureCoordinates {
+    vec2 current;
+    vec2 next;
+    float blend;
+};
+vec2 particle_texture_frame_uv(vec2 localUv, float frame) {
     float frameWidth = g_Particle.g_TextureSequence.x;
     float frameHeight = g_Particle.g_TextureSequence.y;
+    vec2 origin = g_Particle.g_TextureSequenceOrigin.xy + vec2(
+        fract(frame * frameWidth),
+        floor(frame * frameWidth) * frameHeight);
+    return origin + localUv * vec2(frameWidth, frameHeight);
+}
+ParticleTextureCoordinates particle_texture_coordinates(
+    vec2 localUv,
+    float lifetimeFraction,
+    float stableRandom) {
+    ParticleTextureCoordinates coordinates;
+    float frameCount = g_Particle.g_TextureSequence.z;
+    if (frameCount < 1.0) {
+        coordinates.current = localUv;
+        coordinates.next = localUv;
+        coordinates.blend = 0.0;
+        return coordinates;
+    }
+    bool randomFrame = g_Particle.g_TextureSequenceOrigin.z > 0.5;
     float sequencePhase = fract(
         lifetimeFraction * g_Particle.g_SequenceLifetimeSize.x);
-    float currentFrame = min(frameCount - 1.0, floor(sequencePhase * frameCount));
-    vec2 origin = g_Particle.g_TextureSequenceOrigin.xy + vec2(
-        fract(currentFrame * frameWidth),
-        floor(currentFrame * frameWidth) * frameHeight);
-    return origin + localUv * vec2(frameWidth, frameHeight);
+    float framePosition = randomFrame
+        ? stableRandom * frameCount
+        : sequencePhase * frameCount;
+    float currentFrame = min(frameCount - 1.0, floor(framePosition));
+    float nextFrame = randomFrame
+        ? currentFrame
+        : min(frameCount - 1.0, currentFrame + 1.0);
+    coordinates.current = particle_texture_frame_uv(localUv, currentFrame);
+    coordinates.next = particle_texture_frame_uv(localUv, nextFrame);
+    coordinates.blend = randomFrame ? 0.0 : fract(framePosition);
+    return coordinates;
 }
 [[shader("vertex")]]
 TensorWallpaperVertexOutput main(TensorWallpaperVertexInput input)
@@ -669,9 +698,13 @@ TensorWallpaperVertexOutput main(TensorWallpaperVertexInput input)
         v_ParticleColor = retainedState.colorLastTime.xyz;
     }
     v_TextureDecodeMode = g_Particle.g_OscillationScale.y;
-    v_TexCoord = particle_texture_uv(
+    ParticleTextureCoordinates textureCoordinates = particle_texture_coordinates(
         billboard_uv(gl_VertexIndex),
-        lifetime_fraction);
+        lifetime_fraction,
+        hash11(seed + 313.0));
+    v_TexCoord = textureCoordinates.current;
+    v_TexCoordNext = textureCoordinates.next;
+    v_TextureSequenceBlend = textureCoordinates.blend;
     // WE's orthographic scene particles simulate a three-component position, but the
     // authored Z is not Vulkan clip-space depth. Billboard ordering is owned by the
     // scene graph, so projecting the random sphere Z would clip almost every 2D leaf.
@@ -685,5 +718,7 @@ TensorWallpaperVertexOutput main(TensorWallpaperVertexInput input)
     output.v_VertexAlpha = v_VertexAlpha;
     output.v_ParticleColor = v_ParticleColor;
     output.v_TextureDecodeMode = v_TextureDecodeMode;
+    output.v_TexCoordNext = v_TexCoordNext;
+    output.v_TextureSequenceBlend = v_TextureSequenceBlend;
     return output;
 }

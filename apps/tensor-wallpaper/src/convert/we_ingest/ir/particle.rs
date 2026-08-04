@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::engine::scene::abi::{
-    SceneParticleEmitterShape, SceneParticleInitializerKind, SceneParticleInitializerOrder,
-    SceneParticleModuleMask, SceneParticleRendererKind, SceneVec3,
+    SceneParticleAnimationMode, SceneParticleEmitterShape, SceneParticleInitializerKind,
+    SceneParticleInitializerOrder, SceneParticleModuleMask, SceneParticleRendererKind, SceneVec3,
 };
 
 mod floral_oscillation;
@@ -24,6 +24,7 @@ pub struct WeIrParticleSystem {
     pub child_max_count: u32,
     pub flags: u32,
     pub max_count: u32,
+    pub animation_mode: SceneParticleAnimationMode,
     pub sequence_multiplier: f32,
     pub start_time: f32,
     pub instance_time_scale: f32,

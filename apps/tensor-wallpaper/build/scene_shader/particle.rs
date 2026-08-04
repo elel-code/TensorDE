@@ -20,4 +20,13 @@ mod tests {
         }
     }
 
+    #[test]
+    fn particle_stages_preserve_random_frame_and_interpolated_sequence_sampling() {
+        let (vertex, fragment) = generic_particle_sources();
+        assert!(vertex.contains("bool randomFrame ="));
+        assert!(vertex.contains("coordinates.next = particle_texture_frame_uv"));
+        assert!(vertex.contains("coordinates.blend = randomFrame ? 0.0 : fract(framePosition)"));
+        assert!(fragment.contains("texture(g_Texture0, v_TexCoordNext)"));
+        assert!(fragment.contains("mix(texel, nextTexel, v_TextureSequenceBlend)"));
+    }
 }

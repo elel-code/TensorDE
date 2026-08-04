@@ -80,6 +80,7 @@ impl WeIrBuilder {
             child_max_count,
             flags: value_u32(definition.get("flags")).unwrap_or(0),
             max_count: value_u32(definition.get("maxcount")).unwrap_or(0),
+            animation_mode: particle_animation_mode(&definition, &path)?,
             sequence_multiplier: value_f32(definition.get("sequencemultiplier")).unwrap_or(1.0),
             start_time: value_f32(definition.get("starttime")).unwrap_or(0.0),
             instance_time_scale: particle_instance_time_scale(instance_color),
@@ -167,6 +168,27 @@ impl WeIrBuilder {
             unsupported: Vec::new(),
         });
         graph_index
+    }
+}
+
+pub(super) fn particle_animation_mode(
+    definition: &Value,
+    definition_path: &str,
+) -> Result<crate::engine::scene::SceneParticleAnimationMode, WeIngestError> {
+    let Some(value) = definition.get("animationmode") else {
+        return Ok(crate::engine::scene::SceneParticleAnimationMode::InterpolatedSequence);
+    };
+    let mode = bound_string(Some(value)).ok_or_else(|| {
+        WeIngestError::InvalidProject(format!(
+            "particle definition {definition_path} has a non-string animationmode"
+        ))
+    })?;
+    match mode.as_str() {
+        "sequence" => Ok(crate::engine::scene::SceneParticleAnimationMode::InterpolatedSequence),
+        "randomframe" => Ok(crate::engine::scene::SceneParticleAnimationMode::RandomFrame),
+        _ => Err(WeIngestError::InvalidProject(format!(
+            "particle definition {definition_path} has unsupported animationmode {mode:?}"
+        ))),
     }
 }
 

@@ -24,6 +24,7 @@ pub(super) fn encode_particles(
         put_u32(&mut out, record.initializer_order.packed_high() as u32);
         put_u32(&mut out, record.flags);
         put_u32(&mut out, record.max_count);
+        put_u32(&mut out, record.animation_mode.to_u32());
         put_f32(&mut out, record.sequence_multiplier);
         put_f32(&mut out, record.start_time);
         put_f32(&mut out, record.instance_time_scale);
@@ -163,6 +164,12 @@ pub(super) fn decode_particles(
             initializer_order,
             flags: decoder.u32()?,
             max_count: decoder.u32()?,
+            animation_mode: {
+                let raw = decoder.u32()?;
+                SceneParticleAnimationMode::from_u32(raw).ok_or(
+                    SceneBinaryError::InvalidChunkValue("particle animation mode", raw),
+                )?
+            },
             sequence_multiplier: decoder.f32()?,
             start_time: decoder.f32()?,
             instance_time_scale: decoder.f32()?,

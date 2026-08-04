@@ -54,9 +54,11 @@ cbuffer ParticleMaterial_Buffer : register(b3)
 }
 
 static vec2 v_TexCoord;
+static vec2 v_TexCoordNext;
 static float v_VertexAlpha;
 static vec3 v_ParticleColor;
 static float v_TextureDecodeMode;
+static float v_TextureSequenceBlend;
 static vec4 o_Color;
 struct TensorWallpaperFragmentInput
 {
@@ -64,6 +66,8 @@ struct TensorWallpaperFragmentInput
     [[vk::location(1)]] float v_VertexAlpha : TEXCOORD1;
     [[vk::location(2)]] vec3 v_ParticleColor : TEXCOORD2;
     nointerpolation [[vk::location(3)]] float v_TextureDecodeMode : TEXCOORD3;
+    [[vk::location(4)]] vec2 v_TexCoordNext : TEXCOORD4;
+    nointerpolation [[vk::location(5)]] float v_TextureSequenceBlend : TEXCOORD5;
 };
 struct TensorWallpaperFragmentOutput
 {
@@ -77,15 +81,23 @@ TensorWallpaperFragmentOutput main(TensorWallpaperFragmentInput input)
     v_VertexAlpha = input.v_VertexAlpha;
     v_ParticleColor = input.v_ParticleColor;
     v_TextureDecodeMode = input.v_TextureDecodeMode;
+    v_TexCoordNext = input.v_TexCoordNext;
+    v_TextureSequenceBlend = input.v_TextureSequenceBlend;
     TensorWallpaperFragmentOutput output;
 
     if (v_VertexAlpha <= 0.0) {
         discard;
     }
     vec4 texel = texture(g_Texture0, v_TexCoord);
+    vec4 nextTexel = texel;
+    if (v_TextureSequenceBlend > 0.0) {
+        nextTexel = texture(g_Texture0, v_TexCoordNext);
+    }
     if (v_TextureDecodeMode > 0.5) {
         texel = vec4(texel.rrr, texel.g);
+        nextTexel = vec4(nextTexel.rrr, nextTexel.g);
     }
+    texel = mix(texel, nextTexel, v_TextureSequenceBlend);
     if (texel.a <= 0.0) {
         discard;
     }

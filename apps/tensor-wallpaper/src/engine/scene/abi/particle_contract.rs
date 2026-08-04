@@ -4,10 +4,12 @@ use serde::{Deserialize, Serialize};
 
 use super::{SceneMaterialHandle, SceneObjectHandle, SceneResourceId, SceneVec3};
 
+mod animation;
 mod color;
 #[cfg(test)]
 mod gpu_contract_tests;
 
+pub use animation::SceneParticleAnimationMode;
 pub use color::resolve_particle_color_range;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -291,6 +293,7 @@ pub struct SceneParticleSystemRecord {
     pub initializer_order: SceneParticleInitializerOrder,
     pub flags: u32,
     pub max_count: u32,
+    pub animation_mode: SceneParticleAnimationMode,
     pub sequence_multiplier: f32,
     pub start_time: f32,
     pub instance_time_scale: f32,
@@ -429,6 +432,7 @@ impl SceneParticleSystemRecord {
             },
             flags,
             max_count,
+            animation_mode: SceneParticleAnimationMode::InterpolatedSequence,
             sequence_multiplier,
             start_time,
             instance_time_scale,

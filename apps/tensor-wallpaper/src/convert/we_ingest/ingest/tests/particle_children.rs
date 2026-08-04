@@ -449,6 +449,46 @@ fn rejects_particle_child_cycles_and_unknown_explicit_types() {
     let _ = fs::remove_dir_all(type_root);
 }
 
+#[test]
+fn particle_animation_mode_is_typed_and_strict() {
+    use crate::engine::scene::SceneParticleAnimationMode;
+
+    let default = serde_json::json!({});
+    let sequence = serde_json::json!({"animationmode": "sequence"});
+    let random = serde_json::json!({"animationmode": "randomframe"});
+    assert_eq!(
+        super::super::particle::particle_animation_mode(&default, "default.json").unwrap(),
+        SceneParticleAnimationMode::InterpolatedSequence
+    );
+    assert_eq!(
+        super::super::particle::particle_animation_mode(&sequence, "sequence.json").unwrap(),
+        SceneParticleAnimationMode::InterpolatedSequence
+    );
+    assert_eq!(
+        super::super::particle::particle_animation_mode(&random, "random.json").unwrap(),
+        SceneParticleAnimationMode::RandomFrame
+    );
+    for invalid in [
+        serde_json::json!({"animationmode": "RandomFrame"}),
+        serde_json::json!({"animationmode": 1}),
+        serde_json::json!({"animationmode": null}),
+    ] {
+        assert!(super::super::particle::particle_animation_mode(&invalid, "invalid.json").is_err());
+    }
+}
+
+#[test]
+fn particle_shader_keeps_random_frames_stable_and_interpolates_sequences() {
+    let vertex = include_str!("../../../../../shaders/scene/genericparticle.vert.slang");
+    let fragment = include_str!("../../../../../shaders/scene/genericparticle.frag.slang");
+
+    assert!(vertex.contains("bool randomFrame ="));
+    assert!(vertex.contains("nextFrame = randomFrame"));
+    assert!(vertex.contains("coordinates.blend = randomFrame ? 0.0 : fract(framePosition)"));
+    assert!(fragment.contains("texture(g_Texture0, v_TexCoordNext)"));
+    assert!(fragment.contains("mix(texel, nextTexel, v_TextureSequenceBlend)"));
+}
+
 fn particle_fixture_root(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "tensor-wallpaper-particle-child-{name}-{}",

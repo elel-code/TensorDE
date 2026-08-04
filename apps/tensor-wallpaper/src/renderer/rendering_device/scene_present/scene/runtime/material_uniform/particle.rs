@@ -129,9 +129,15 @@ fn particle_texture_sequence(
         height / width,
         first.origin[0],
         first.origin[1],
-        0.0,
+        particle_animation_mode(storage, draw),
         0.0,
     ]
+}
+
+fn particle_animation_mode(storage: &SceneStorage, draw: &SceneRenderingDeviceMeshDraw) -> f32 {
+    storage
+        .particle(draw.particle_index)
+        .map_or(0.0, |particle| particle.animation_mode.to_u32() as f32)
 }
 
 fn particle_trail_eye_and_max(

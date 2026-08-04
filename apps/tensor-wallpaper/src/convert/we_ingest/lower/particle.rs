@@ -22,6 +22,7 @@ pub(super) fn lower_particles(ir: &WeSceneIr) -> Vec<SceneParticleSystemRecord> 
                 particle.instance_time_scale,
             );
             record.parent_particle_index = particle.parent_particle_index;
+            record.animation_mode = particle.animation_mode;
             record.child_type = match particle.child_type {
                 super::WeIrParticleChildType::BuiltinDefault => {
                     SceneParticleChildType::BuiltinDefault

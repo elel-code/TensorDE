@@ -37,6 +37,7 @@ fn ingests_falling_leaves_as_typed_particle_ir_and_part_record() {
             ],
             "material":"materials/particle/leaf.json",
             "maxcount":11,
+            "animationmode":"randomframe",
             "operator":[{"id":10,"name":"movement"},{"id":11,"name":"alphafade","fadeintime":0.1,"fadeouttime":0.9},{"id":12,"name":"angularmovement"}],
             "renderer":[{"id":1,"name":"sprite"}],
             "sequencemultiplier":3,
@@ -53,6 +54,10 @@ fn ingests_falling_leaves_as_typed_particle_ir_and_part_record() {
     let ir = ingest_wallpaper_engine_project(&root).expect("particle IR");
     assert_eq!(ir.objects[0].kind, SceneAbiObjectKind::ParticleEmitter);
     assert_eq!(ir.particles.len(), 1);
+    assert_eq!(
+        ir.particles[0].animation_mode,
+        crate::engine::scene::SceneParticleAnimationMode::RandomFrame
+    );
     let profile = ir.particles[0]
         .falling_leaves_profile()
         .expect("falling leaves specialization");
@@ -72,6 +77,10 @@ fn ingests_falling_leaves_as_typed_particle_ir_and_part_record() {
         crate::engine::scene::SceneParticleSimulationKind::FallingLeaves
     );
     assert_eq!(document.particles[0].max_count, 11);
+    assert_eq!(
+        document.particles[0].animation_mode,
+        crate::engine::scene::SceneParticleAnimationMode::RandomFrame
+    );
     assert_eq!(document.particles[0].size_min, 35.0);
     assert_eq!(document.particles[0].size_max, 37.5);
     assert_eq!(document.particles[0].color_min.x, 1.0);
