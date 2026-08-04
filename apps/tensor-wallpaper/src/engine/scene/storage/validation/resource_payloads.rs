@@ -1,6 +1,8 @@
 // Resource and texture payload ownership/range validation.
 
-fn validate_resources_and_textures(document: &SceneBinaryDocument) -> Result<(), SceneStorageError> {
+fn validate_resources_and_textures(
+    document: &SceneBinaryDocument,
+) -> Result<(), SceneStorageError> {
     for resource in &document.resources {
         validate_string(document, "resource.path", resource.path)?;
         validate_string(document, "resource.source", resource.source)?;
@@ -23,13 +25,10 @@ fn validate_resources_and_textures(document: &SceneBinaryDocument) -> Result<(),
             texture.sequence_frame_count,
             document.texture_sequence_frames.len(),
         )?;
-        let frames = document
-            .texture_sequence_frames
-            .iter()
-            .skip(texture.sequence_frame_start as usize)
-            .take(texture.sequence_frame_count as usize)
-            .collect::<Vec<_>>();
-        for frame in &frames {
+        let sequence_start = texture.sequence_frame_start as usize;
+        let sequence_end = sequence_start + texture.sequence_frame_count as usize;
+        let frames = &document.texture_sequence_frames[sequence_start..sequence_end];
+        for frame in frames {
             if frame.resource_index != 0
                 || ![
                     frame.duration,
@@ -49,31 +48,11 @@ fn validate_resources_and_textures(document: &SceneBinaryDocument) -> Result<(),
                 });
             }
         }
-        if let Some(first) = frames.first() {
-            let frame_width = first.axis_x[0];
-            let frame_height = first.axis_y[1];
-            let close = |left: f32, right: f32| (left - right).abs() <= 1.0e-4;
-            for (index, frame) in frames.iter().enumerate() {
-                let frame_number = index as f32;
-                let expected_origin = [
-                    first.origin[0] + (frame_number * frame_width).fract(),
-                    first.origin[1] + (frame_number * frame_width).floor() * frame_height,
-                ];
-                if frame_width <= 0.0
-                    || frame_height <= 0.0
-                    || !close(frame.origin[0], expected_origin[0])
-                    || !close(frame.origin[1], expected_origin[1])
-                    || !close(frame.axis_x[0], frame_width)
-                    || !close(frame.axis_x[1], 0.0)
-                    || !close(frame.axis_y[0], 0.0)
-                    || !close(frame.axis_y[1], frame_height)
-                {
-                    return Err(SceneStorageError::InvalidTextureSequence {
-                        resource: texture.resource,
-                        reason: "runtime particle sampling requires a regular axis-aligned frame grid",
-                    });
-                }
-            }
+        if !frames.is_empty() && texture_sequence::texture_sequence_layout(frames).is_none() {
+            return Err(SceneStorageError::InvalidTextureSequence {
+                resource: texture.resource,
+                reason: "runtime particle sampling requires a constant axis-aligned row-major frame grid",
+            });
         }
         validate_texture_payload(
             document,

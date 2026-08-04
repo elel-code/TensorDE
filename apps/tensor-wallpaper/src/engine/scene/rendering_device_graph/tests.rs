@@ -21,7 +21,7 @@ fn procedural_particle_capacity_omits_permanently_inactive_slots() {
 }
 
 #[test]
-fn particle_gpu_plan_selects_profiles_and_stable_indices() {
+fn particle_gpu_plan_selects_supported_nonempty_profiles_and_stable_indices() {
     let mut analytic = SceneParticleSystemRecord::unsupported(
         SceneObjectHandle(4),
         SceneResourceId(0),
@@ -47,14 +47,11 @@ fn particle_gpu_plan_selects_profiles_and_stable_indices() {
     );
 
     let plans = particle_gpu_emitter_plans(&[analytic, retained]);
-    assert_eq!(plans.len(), 2);
+    assert_eq!(plans.len(), 1);
     assert_eq!(plans[0].profile, SceneParticleGpuProfile::AnalyticBillboard);
     assert_eq!(plans[0].capacity, 100);
     assert_eq!(plans[0].state_index, 0);
     assert_eq!(plans[0].particle_state_offset, 0);
-    assert_eq!(plans[1].profile, SceneParticleGpuProfile::RetainedState);
-    assert_eq!(plans[1].state_index, 1);
-    assert_eq!(plans[1].particle_state_offset, 100);
 }
 use crate::engine::scene::{RenderingServer, SceneStorage};
 use crate::engine::scene::{

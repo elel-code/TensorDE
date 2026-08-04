@@ -468,6 +468,9 @@ fn particle_gpu_emitter_plans(
             continue;
         }
         let capacity = procedural_particle_instance_capacity(particle);
+        if capacity == 0 {
+            continue;
+        }
         let profile = particle.gpu_profile();
         let emitter_index = plans.len() as u32;
         plans.push(SceneParticleGpuEmitterPlan {

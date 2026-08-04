@@ -321,9 +321,10 @@ struct ParticleTextureCoordinates {
 vec2 particle_texture_frame_uv(vec2 localUv, float frame) {
     float frameWidth = g_Particle.g_TextureSequence.x;
     float frameHeight = g_Particle.g_TextureSequence.y;
+    float rowStride = g_Particle.g_TextureSequence.w;
     vec2 origin = g_Particle.g_TextureSequenceOrigin.xy + vec2(
-        fract(frame * frameWidth),
-        floor(frame * frameWidth) * frameHeight);
+        fmod(frame, rowStride) * frameWidth,
+        floor(frame / rowStride) * frameHeight);
     return origin + localUv * vec2(frameWidth, frameHeight);
 }
 ParticleTextureCoordinates particle_texture_coordinates(

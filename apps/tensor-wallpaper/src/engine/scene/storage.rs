@@ -16,6 +16,7 @@ use super::binary::{
     SceneBinaryDocument, SceneBinaryError, read_scene_binary, read_scene_binary_bytes,
 };
 
+pub(crate) mod texture_sequence;
 mod validation;
 
 use validation::validate_document;

@@ -117,18 +117,18 @@ fn particle_texture_sequence(
     let Some(texture) = particle_texture(storage, draw) else {
         return [0.0; 8];
     };
-    let Some(first) = storage.texture_sequence_frames(texture).first() else {
+    let Some(layout) = crate::engine::scene::storage::texture_sequence::texture_sequence_layout(
+        storage.texture_sequence_frames(texture),
+    ) else {
         return [0.0; 8];
     };
-    let width = first.axis_x[0];
-    let height = first.axis_y[1];
     [
-        width,
-        height,
+        layout.frame_size[0],
+        layout.frame_size[1],
         texture.sequence_frame_count as f32,
-        height / width,
-        first.origin[0],
-        first.origin[1],
+        layout.row_stride as f32,
+        layout.origin[0],
+        layout.origin[1],
         particle_animation_mode(storage, draw),
         0.0,
     ]

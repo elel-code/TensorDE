@@ -26,6 +26,8 @@ mod tests {
         assert!(vertex.contains("bool randomFrame ="));
         assert!(vertex.contains("coordinates.next = particle_texture_frame_uv"));
         assert!(vertex.contains("coordinates.blend = randomFrame ? 0.0 : fract(framePosition)"));
+        assert!(vertex.contains("fmod(frame, rowStride) * frameWidth"));
+        assert!(vertex.contains("floor(frame / rowStride) * frameHeight"));
         assert!(fragment.contains("texture(g_Texture0, v_TexCoordNext)"));
         assert!(fragment.contains("mix(texel, nextTexel, v_TextureSequenceBlend)"));
     }
