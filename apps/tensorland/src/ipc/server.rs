@@ -236,6 +236,106 @@ mod tests {
     }
 
     #[test]
+    fn saturated_request_bridge_returns_queue_full_and_keeps_connection_live() {
+        let path = std::env::temp_dir().join(format!(
+            "tensor-ipc-full-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_file(&path);
+        let server = IpcServer::bind(&path).unwrap();
+        let (requests, received_requests) = WorkerBridge::bounded(1);
+        let saturate = requests.clone();
+        let (control, _) = WorkerBridge::bounded(MAX_PENDING_IPC_CONTROL_EVENTS);
+        let runtime = server.start(requests, control).unwrap();
+        let (held_response, _) = futures_channel::oneshot::channel();
+        saturate
+            .try_send(IpcEvent {
+                request: Request::new(40, Command::Ping),
+                respond_to: held_response,
+            })
+            .unwrap();
+
+        let mut client = UnixStream::connect(&path).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        client
+            .write_all(&encode(&Request::new(41, Command::Ping)).unwrap())
+            .unwrap();
+        let overloaded = read_one_response(&mut client);
+        assert_eq!(overloaded.request_id, 41);
+        let ResultBody::Error(error) = overloaded.result else {
+            panic!("saturated bridge must return a structured error");
+        };
+        assert_eq!(error.code, "queue_full");
+
+        drop(
+            received_requests
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap(),
+        );
+        client
+            .write_all(&encode(&Request::new(42, Command::Ping)).unwrap())
+            .unwrap();
+        let IpcEvent {
+            request,
+            respond_to,
+        } = received_requests
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        respond_to
+            .send(IpcReply::new(Response::new(
+                request.request_id,
+                ResultBody::Pong,
+            )))
+            .unwrap();
+        let recovered = read_one_response(&mut client);
+        assert_eq!(recovered.request_id, 42);
+        assert!(matches!(recovered.result, ResultBody::Pong));
+
+        drop(client);
+        drop(runtime);
+        drop(server);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn stopped_request_bridge_flushes_service_unavailable_before_close() {
+        let path = std::env::temp_dir().join(format!(
+            "tensor-ipc-stopped-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_file(&path);
+        let server = IpcServer::bind(&path).unwrap();
+        let (requests, received_requests) = WorkerBridge::bounded(1);
+        let (control, _) = WorkerBridge::bounded(MAX_PENDING_IPC_CONTROL_EVENTS);
+        let runtime = server.start(requests, control).unwrap();
+        drop(received_requests);
+
+        let mut client = UnixStream::connect(&path).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        client
+            .write_all(&encode(&Request::new(43, Command::Ping)).unwrap())
+            .unwrap();
+        let unavailable = read_one_response(&mut client);
+        assert_eq!(unavailable.request_id, 43);
+        let ResultBody::Error(error) = unavailable.result else {
+            panic!("stopped bridge must return a structured error");
+        };
+        assert_eq!(error.code, "service_unavailable");
+
+        let mut byte = [0; 1];
+        assert_eq!(client.read(&mut byte).unwrap(), 0);
+        drop(runtime);
+        drop(server);
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn shutdown_signal_follows_the_accepted_response() {
         let path = PathBuf::from(format!("target/tensor-ipc-shutdown-{}", std::process::id()));
         let _ = fs::remove_file(&path);
@@ -282,5 +382,22 @@ mod tests {
         drop(runtime);
         drop(server);
         assert!(!path.exists());
+    }
+
+    fn read_one_response(client: &mut UnixStream) -> Response {
+        let mut decoder = FrameDecoder::new();
+        let mut buffer = [0; 4096];
+        loop {
+            let read = client.read(&mut buffer).expect("IPC response completion");
+            assert_ne!(read, 0, "IPC connection closed before its response");
+            if let Some(response) = decoder
+                .push::<Response>(&buffer[..read])
+                .unwrap()
+                .into_iter()
+                .next()
+            {
+                return response;
+            }
+        }
     }
 }

@@ -66,7 +66,10 @@ IPC also carries runtime **workspace** and **output layout** commands
 (`set-workspace`, `set-output-position` / `enabled` / `scale`) that mutate value-only
 policy and replan through the tty backend without a second configuration language. IPC accept,
 read, and response writes are submitted Compio operations. Decoded requests and critical runtime
-state cross separate bounded bridges; only the compositor thread touches policy state.
+state cross separate bounded bridges; only the compositor thread touches policy state. Request
+bridge saturation returns a request-ID-correlated `queue_full` response without discarding the
+connection. A stopped compositor bridge flushes `service_unavailable` before the Compio task closes
+that connection.
 
 Tensorland intentionally has no general-purpose network control plane: its compositor control
 protocol is local Unix IPC.

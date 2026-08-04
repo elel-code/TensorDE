@@ -21,11 +21,11 @@ use compio::{
 };
 use futures_channel::oneshot;
 use rustix::{net::sockopt::socket_peercred, process::geteuid};
-use tensor_runtime::{EventfdWake, WakeSink, WorkerTx, io_uring_runtime};
+use tensor_runtime::{EventfdWake, TrySendError, WakeSink, WorkerTx, io_uring_runtime};
 use tracing::warn;
 
 use super::{IpcError, IpcReply};
-use crate::ipc::{FrameDecoder, Request, encode};
+use crate::ipc::{FrameDecoder, Request, Response, encode};
 
 const READ_BUFFER_SIZE: usize = 16 * 1024;
 const MAX_IPC_CONNECTIONS: usize = 64;
@@ -215,24 +215,38 @@ async fn handle_client(
             .push::<Request>(&buffer[..read])
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         for request in decoded_requests {
+            let request_id = request.request_id;
             let (respond_to, response) = oneshot::channel();
-            requests
-                .try_send(IpcEvent {
-                    request,
-                    respond_to,
-                })
-                .map_err(|error| {
-                    io::Error::new(
-                        io::ErrorKind::WouldBlock,
-                        format!("IPC request bridge rejected a request: {error:?}"),
-                    )
-                })?;
-            let reply = response.await.map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "compositor dropped the IPC response",
-                )
-            })?;
+            let (reply, close_after_flush) = match requests.try_send(IpcEvent {
+                request,
+                respond_to,
+            }) {
+                Ok(()) => {
+                    let reply = response.await.map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "compositor dropped the IPC response",
+                        )
+                    })?;
+                    (reply, false)
+                }
+                Err(TrySendError::Full) => (
+                    IpcReply::new(Response::error(
+                        request_id,
+                        "queue_full",
+                        "compositor IPC request queue is full",
+                    )),
+                    false,
+                ),
+                Err(TrySendError::Disconnected) => (
+                    IpcReply::new(Response::error(
+                        request_id,
+                        "service_unavailable",
+                        "compositor IPC request queue has stopped",
+                    )),
+                    true,
+                ),
+            };
             let stop_after_flush = reply.should_stop_after_flush();
             let frame = match encode(&reply.response) {
                 Ok(frame) => frame,
@@ -241,6 +255,9 @@ async fn handle_client(
             let BufResult(result, _) = stream.write_all(frame).await;
             result?;
             notify_shutdown_if_needed(stop_after_flush, &control);
+            if close_after_flush {
+                return Ok(());
+            }
         }
     }
 }

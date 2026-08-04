@@ -68,8 +68,9 @@ this path.
 Connection handling verifies peer credentials before dispatch. Completed reads cross the bounded
 Tensorland worker bridge; requests are validated and dispatched on the compositor thread, and replies
 cross a one-shot value channel back to the Compio connection task. `quit` stops the compositor only
-after the accepted response write completes. External clients never receive Wayland resources,
-Vulkan handles, or mutable ECS access.
+after the accepted response write completes. A saturated request bridge returns `queue_full` and
+keeps the connection usable; a stopped bridge flushes `service_unavailable` before closing it.
+External clients never receive Wayland resources, Vulkan handles, or mutable ECS access.
 
 Configuration control uses the same request/reply transport. `reload-config` non-blockingly queues
 the configured path on the one-entry cold worker and returns `accepted`; saturation and stopped
@@ -78,7 +79,7 @@ the last source-free bounded failure metadata. Filesystem changes reach that sam
 configuration watcher, and completed candidates commit on the compositor thread before the turn's
 IPC requests are answered.
 
-The current version-5 transport is still request/reply only. The next protocol slice is an explicit,
+The current version-6 transport is still request/reply only. The next protocol slice is an explicit,
 versioned subscription/event extension rather than unsolicited frames to existing clients. A failed
 reload event is bounded to diagnostic category, path, error code, line, column, short summary, and a
 config-validation command; the full KDL source remains in Tensorland's retained diagnostic and logs.
