@@ -111,7 +111,9 @@ workspaces alone participate in next/previous navigation and `ext-workspace-v1` 
 Up to 16 named `hidden` workspaces may be declared. Exactly one explicit hidden list entry must set
 `minimize-target=#true`; when the complete `workspaces` node or its hidden list is omitted,
 Tensorland supplies `hidden "minimized" minimize-target=#true`. `show-in-overview` defaults to
-true and is retained as value-only policy for Tensor Shell's overview scene.
+true and controls whether the hidden workspace enters the bounded `get-overview` inventory.
+Regular workspaces always enter that inventory. This option does not expose a hidden workspace to
+normal activation, numeric bindings, or `ext-workspace-v1`.
 
 Minimizing does not create a second window lifecycle: Tensorland moves the existing view family to
 the configured hidden target and records its regular origin. Restore moves the same IDs and retained

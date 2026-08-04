@@ -1,5 +1,13 @@
 //! Value-only compositor and workspace snapshots for local IPC consumers.
 
+use crate::{
+    ecs::OverviewViewKind,
+    ipc::{
+        MAX_OVERVIEW_VIEWS, OverviewGeometrySnapshot, OverviewSnapshot, OverviewViewKindSnapshot,
+        OverviewViewSnapshot, OverviewWorkspaceSnapshot,
+    },
+};
+
 use super::RuntimeState;
 
 impl RuntimeState {
@@ -49,5 +57,82 @@ impl RuntimeState {
             }
         }));
         snapshots
+    }
+
+    pub(crate) fn ipc_overview_snapshot(&mut self) -> OverviewSnapshot {
+        let active_workspace = self.workspaces.active().get();
+        let mut topology = self
+            .workspaces
+            .regular_ids()
+            .map(|id| (id, (id.get() + 1).to_string(), false, false))
+            .collect::<Vec<_>>();
+        topology.extend(
+            self.workspaces
+                .hidden()
+                .iter()
+                .filter(|workspace| workspace.show_in_overview)
+                .map(|workspace| {
+                    (
+                        workspace.id,
+                        workspace.name.to_string(),
+                        true,
+                        workspace.minimize_target,
+                    )
+                }),
+        );
+
+        let mut emitted = 0;
+        let mut truncated = false;
+        let mut workspaces = Vec::with_capacity(topology.len());
+        for (id, name, hidden, minimize_target) in topology {
+            let mut inventory = self.world.overview_views(id);
+            let view_count = inventory.len();
+            let available = MAX_OVERVIEW_VIEWS.saturating_sub(emitted);
+            if inventory.len() > available {
+                inventory.truncate(available);
+                truncated = true;
+            }
+            emitted += inventory.len();
+            let views = inventory
+                .into_iter()
+                .map(|view| {
+                    let foreign_toplevel_identifier = self
+                        .retained_window_for_view(view.id)
+                        .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()))
+                        .and_then(|surface| self.foreign_toplevel_identifier(&surface));
+                    OverviewViewSnapshot {
+                        id: view.id.get(),
+                        root: view.root.get(),
+                        foreign_toplevel_identifier,
+                        geometry: view.geometry.map(|geometry| OverviewGeometrySnapshot {
+                            x: geometry.x,
+                            y: geometry.y,
+                            width: geometry.width,
+                            height: geometry.height,
+                        }),
+                        focused: view.focused,
+                        kind: match view.kind {
+                            OverviewViewKind::Tiled => OverviewViewKindSnapshot::Tiled,
+                            OverviewViewKind::Floating => OverviewViewKindSnapshot::Floating,
+                            OverviewViewKind::Attached => OverviewViewKindSnapshot::Attached,
+                        },
+                        stacking_order: view.stacking_order,
+                    }
+                })
+                .collect();
+            workspaces.push(OverviewWorkspaceSnapshot {
+                index: id.get(),
+                name,
+                hidden,
+                minimize_target,
+                view_count,
+                views,
+            });
+        }
+        OverviewSnapshot {
+            active_workspace,
+            truncated,
+            workspaces,
+        }
     }
 }

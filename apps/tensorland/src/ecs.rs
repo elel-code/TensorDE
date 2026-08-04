@@ -7,4 +7,4 @@ pub use components::{
     ViewPresentationHint,
 };
 pub use ids::{SurfaceBufferId, SurfaceId, ViewId, WorkspaceId};
-pub use world::{CompositorWorld, ViewLifecycleError};
+pub use world::{CompositorWorld, OverviewView, OverviewViewKind, ViewLifecycleError};

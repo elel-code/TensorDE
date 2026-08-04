@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use crate::config::ConfigDiagnosticMetadata;
 use crate::layout::LayoutKind;
 
-pub const IPC_PROTOCOL_VERSION: u16 = 2;
+pub const IPC_PROTOCOL_VERSION: u16 = 3;
+pub const MAX_OVERVIEW_VIEWS: usize = 4_096;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Request {
@@ -50,6 +51,8 @@ pub enum Command {
     GetOutputs,
     /// List regular and named hidden workspaces with occupancy.
     GetWorkspaces,
+    /// Return the bounded window/workspace inventory used by overview chrome.
+    GetOverview,
     /// Return the active configuration generation and last bounded failure.
     GetConfigStatus,
     /// Queue an off-thread load of the configured KDL path.
@@ -117,6 +120,7 @@ pub enum ResultBody {
     State(StateSnapshot),
     Outputs(Vec<OutputSnapshot>),
     Workspaces(Vec<WorkspaceSnapshot>),
+    Overview(OverviewSnapshot),
     ConfigStatus(ConfigStatusSnapshot),
     Accepted,
     Error(IpcErrorBody),
@@ -156,6 +160,56 @@ pub struct WorkspaceSnapshot {
     pub minimize_target: bool,
     pub view_count: usize,
     pub focused_view: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct OverviewSnapshot {
+    pub active_workspace: u32,
+    /// True when the stable prefix reached [`MAX_OVERVIEW_VIEWS`].
+    pub truncated: bool,
+    pub workspaces: Vec<OverviewWorkspaceSnapshot>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct OverviewWorkspaceSnapshot {
+    pub index: u32,
+    pub name: String,
+    pub hidden: bool,
+    pub minimize_target: bool,
+    /// Total inventory size before the global bounded-prefix limit.
+    pub view_count: usize,
+    pub views: Vec<OverviewViewSnapshot>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct OverviewViewSnapshot {
+    pub id: u64,
+    pub root: u64,
+    /// Joins this record to `ext-foreign-toplevel-list-v1` metadata.
+    pub foreign_toplevel_identifier: Option<String>,
+    /// Current or last valid arranged geometry; overview transforms are a
+    /// separate compositor-owned planning step.
+    pub geometry: Option<OverviewGeometrySnapshot>,
+    pub focused: bool,
+    pub kind: OverviewViewKindSnapshot,
+    /// Back-to-front order within the compositor scene.
+    pub stacking_order: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OverviewGeometrySnapshot {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewViewKindSnapshot {
+    Tiled,
+    Floating,
+    Attached,
 }
 
 /// Value-only output topology for control clients.

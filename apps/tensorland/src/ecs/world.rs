@@ -4,8 +4,8 @@ use bevy_ecs::{entity::Entity, world::World};
 use thiserror::Error;
 
 use super::components::{
-    Focused, MinimizedFrom, StackingOrder, View, ViewBackdropRegion, ViewContent, ViewEffects,
-    ViewGeometry, ViewLayout, ViewPlacement, ViewPresentationHint, Workspace,
+    Focused, LastViewGeometry, MinimizedFrom, StackingOrder, View, ViewBackdropRegion, ViewContent,
+    ViewEffects, ViewGeometry, ViewLayout, ViewPlacement, ViewPresentationHint, Workspace,
 };
 use super::{ViewId, WorkspaceId};
 use crate::layout::{LayoutEngine, LayoutSnapshot, LayoutState, Rect, SizeConstraints};
@@ -14,6 +14,9 @@ use tensor_util::Size;
 
 mod extract;
 mod minimize;
+mod overview;
+
+pub use overview::{OverviewView, OverviewViewKind};
 
 pub struct CompositorWorld {
     world: World,
@@ -238,9 +241,11 @@ impl CompositorWorld {
         if current == geometry {
             return Ok(false);
         }
-        self.world
-            .entity_mut(entity)
-            .insert((ViewPlacement::Floating { geometry }, ViewGeometry(geometry)));
+        self.world.entity_mut(entity).insert((
+            ViewPlacement::Floating { geometry },
+            ViewGeometry(geometry),
+            LastViewGeometry(geometry),
+        ));
         Ok(true)
     }
 
@@ -574,7 +579,7 @@ impl CompositorWorld {
             if let Some(geometry) = geometries.get(&view.id).copied() {
                 self.world
                     .entity_mut(view.entity)
-                    .insert(ViewGeometry(geometry));
+                    .insert((ViewGeometry(geometry), LastViewGeometry(geometry)));
             } else {
                 self.world.entity_mut(view.entity).remove::<ViewGeometry>();
             }

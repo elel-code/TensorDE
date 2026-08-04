@@ -50,6 +50,17 @@ pub(super) fn assert_workspace_visibility_retains_window(
     assert!(runtime.state.activate_workspace_index(0));
     assert_eq!(runtime.state.space.elements().count(), 1);
     assert_eq!(runtime.state.space.retained_elements().count(), 1);
+    let overview = runtime.state.ipc_overview_snapshot();
+    let overview_view = &overview.workspaces[0].views[0];
+    assert_eq!(overview_view.id, view_id.unwrap().get());
+    assert_eq!(overview_view.root, overview_view.id);
+    assert!(overview_view.geometry.is_some());
+    assert!(
+        overview_view
+            .foreign_toplevel_identifier
+            .as_deref()
+            .is_some_and(|identifier| identifier.starts_with("tensor-"))
+    );
     view_id
 }
 

@@ -116,6 +116,10 @@ impl ForeignToplevelHandle {
         }
     }
 
+    pub(crate) fn identifier(&self) -> String {
+        self.shared.inner.lock().unwrap().identifier.clone()
+    }
+
     fn init_instance(&self, resource: ExtForeignToplevelHandleV1) {
         if self.shared.closed.load(Ordering::Acquire) {
             resource.closed();

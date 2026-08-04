@@ -12,9 +12,9 @@ count, frame size, and the request bridge are fixed-capacity. Each connection aw
 compositor reply without blocking the runtime thread, so a slow IPC peer cannot stall Wayland
 dispatch or grow compositor memory without limit. Runtime failure and graceful-shutdown completion
 use a reserved control slot that cannot be consumed by request load.
-`tensorctl` exposes `ping`, `get-state`, `get-outputs`, `get-workspaces`, `get-config-status`,
-`reload-config`, layout/workspace/output controls, `minimize-focused`, `restore-minimized`, `spawn`,
-and `quit` using the same codec.
+`tensorctl` exposes `ping`, `get-state`, `get-outputs`, `get-workspaces`, `get-overview`,
+`get-config-status`, `reload-config`, layout/workspace/output controls, `minimize-focused`,
+`restore-minimized`, `spawn`, and `quit` using the same codec.
 
 `get-state` returns a value-only snapshot: active layout kind, view count on the active regular
 workspace, mapped output count, focused view ID, regular/hidden workspace counts, and minimized-view
@@ -26,6 +26,14 @@ indices and `ext-workspace-v1` remain limited to the regular pool.
 `tensorctl restore-minimized <view-id>` restores it and follows its recorded regular workspace;
 `--stay` restores without switching away from the current workspace. These operations reuse the
 retained protocol window and renderer resource identity rather than asking the client to remap.
+
+`get-overview` returns a deterministic back-to-front value inventory for every regular workspace
+and each hidden workspace whose KDL policy permits overview display. Each view names its root family,
+placement kind, focus state, current-or-last-valid geometry, stacking order, and the stable
+`ext-foreign-toplevel-list-v1` identifier used to join title/app-id metadata without duplicating an
+unbounded client string in IPC. The response is capped at 4,096 view records across the topology and
+sets `truncated` when it returns only the stable prefix. This inventory is the compositor-to-Shell
+data boundary; it does not claim that the transformed overview scene or its hit testing is complete.
 
 `get-outputs` returns the current output topology as sorted value-only records (name, logical
 geometry, fractional scale, mode size/refresh, and whether the head hosts the default workspace

@@ -91,6 +91,7 @@ pub(super) fn handle_ipc_request_with_config(
         IpcCommand::GetState => ResultBody::State(state.ipc_state_snapshot()),
         IpcCommand::GetOutputs => ResultBody::Outputs(state.ipc_output_snapshots()),
         IpcCommand::GetWorkspaces => ResultBody::Workspaces(state.ipc_workspace_snapshots()),
+        IpcCommand::GetOverview => ResultBody::Overview(state.ipc_overview_snapshot()),
         IpcCommand::GetConfigStatus => {
             let Some(config) = config else {
                 return IpcReply::new(Response::error(

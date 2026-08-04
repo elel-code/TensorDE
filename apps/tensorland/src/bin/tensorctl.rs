@@ -31,6 +31,7 @@ enum CliCommand {
     GetState,
     GetOutputs,
     GetWorkspaces,
+    GetOverview,
     GetConfigStatus,
     ReloadConfig,
     SetLayout {
@@ -88,6 +89,7 @@ impl From<CliCommand> for Command {
             CliCommand::GetState => Self::GetState,
             CliCommand::GetOutputs => Self::GetOutputs,
             CliCommand::GetWorkspaces => Self::GetWorkspaces,
+            CliCommand::GetOverview => Self::GetOverview,
             CliCommand::GetConfigStatus => Self::GetConfigStatus,
             CliCommand::ReloadConfig => Self::ReloadConfig,
             CliCommand::SetLayout { layout } => Self::SetLayout { layout },
@@ -210,6 +212,10 @@ mod tests {
     #[test]
     fn cli_commands_map_to_protocol_commands() {
         assert!(matches!(Command::from(CliCommand::Ping), Command::Ping));
+        assert!(matches!(
+            Command::from(CliCommand::GetOverview),
+            Command::GetOverview
+        ));
         assert!(matches!(
             Command::from(CliCommand::GetConfigStatus),
             Command::GetConfigStatus

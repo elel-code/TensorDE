@@ -82,9 +82,12 @@ workspace policy instead of a parallel lifecycle state.
 The overview boundary is defined to consume the same regular/hidden metadata and retained workspace
 snapshots. Tensorland will own overview geometry, hit testing, focus, and cross-workspace moves;
 Tensor Shell will own its visual chrome and accessible controls. The current compositor slice
-publishes the required workspace metadata and minimize/restore operations; it does not yet claim an
-overview scene implementation. Hidden workspaces marked `show-in-overview=#false` remain available
-to explicit IPC actions without entering that future scene.
+publishes the required workspace metadata, minimize/restore operations, and a bounded back-to-front
+view inventory. Inventory records retain last valid geometry across workspace moves and join window
+metadata through the stable `ext-foreign-toplevel-list-v1` identifier. It does not yet claim the
+transformed overview scene or overview hit testing. Hidden workspaces marked
+`show-in-overview=#false` remain available to explicit IPC actions without entering that future
+scene.
 
 Configuration diagnostics follow the product boundary rather than becoming compositor UI.
 `tensor-kdl` produces parser/typed-decode context and an optional named-source miette report;

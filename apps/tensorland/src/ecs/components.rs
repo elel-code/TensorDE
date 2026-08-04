@@ -25,6 +25,11 @@ pub struct MinimizedFrom(pub WorkspaceId);
 #[derive(Clone, Copy, Component, Debug, Eq, PartialEq)]
 pub struct ViewGeometry(pub Rect);
 
+/// Last valid arranged geometry retained across workspace moves for overview
+/// inventory. It is never used as current render geometry.
+#[derive(Clone, Copy, Component, Debug, Eq, PartialEq)]
+pub(super) struct LastViewGeometry(pub Rect);
+
 #[derive(Clone, Copy, Component, Debug, Eq, PartialEq)]
 pub struct StackingOrder(pub u64);
 

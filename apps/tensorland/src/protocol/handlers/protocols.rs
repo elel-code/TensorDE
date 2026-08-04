@@ -13,6 +13,13 @@ use crate::protocol::globals::xdg_shell::Toplevel;
 use crate::protocol::state::{ObjectKey, RuntimeState};
 
 impl RuntimeState {
+    pub(crate) fn foreign_toplevel_identifier(&self, surface: &WlSurface) -> Option<String> {
+        self.protocol_side
+            .foreign_toplevels
+            .get(&ObjectKey::from_surface(surface))
+            .map(|handle| handle.identifier())
+    }
+
     pub(crate) fn publish_foreign_toplevel_from_surface(&mut self, surface: &WlSurface) {
         let (title, app_id) = self
             .protocol_globals

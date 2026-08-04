@@ -446,11 +446,19 @@ fn minimized_view_retains_origin_and_restore_is_transactional() {
     let origin = workspace(1);
     let hidden = workspace(9);
     world.spawn_view(view_id, origin).unwrap();
+    world.arrange_workspace(
+        origin,
+        LayoutEngine::new(LayoutKind::Scrolling1D),
+        Rect::new(0, 0, 200, 100),
+    );
+    let arranged = world.geometry(view_id).unwrap();
 
     assert!(world.minimize_view(view_id, hidden).unwrap());
     assert_eq!(world.view_workspace(view_id), Some(hidden));
     assert_eq!(world.minimized_from(view_id), Some(origin));
     assert_eq!(world.minimized_count(), 1);
+    assert_eq!(world.geometry(view_id), None);
+    assert_eq!(world.overview_views(hidden)[0].geometry, Some(arranged));
     assert!(!world.minimize_view(view_id, hidden).unwrap());
 
     assert_eq!(world.restore_minimized_view(view_id).unwrap(), Some(origin));
