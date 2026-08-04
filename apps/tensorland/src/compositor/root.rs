@@ -21,7 +21,7 @@ use config::drain_config_reload_outcomes;
 use environment::apply_user_environment;
 #[cfg(feature = "tty")]
 use gpu::drain_gpu_fence_events;
-use ipc::{ConfigIpcContext, drain_ipc_events};
+use ipc::{ConfigIpcContext, IpcDrainContext, drain_ipc_events};
 use launch::drain_launch_outcomes;
 use signal::drain_signal_events;
 use wayland_completion::WaylandCompletionBridges;
@@ -36,8 +36,8 @@ use crate::{
         MAX_PENDING_CONFIG_RELOAD_RESULTS, StartupCommand,
     },
     ipc::{
-        IpcControlEvent, IpcError, IpcEvent, IpcRuntime, IpcServer, MAX_PENDING_IPC_CONTROL_EVENTS,
-        MAX_PENDING_IPC_REQUESTS,
+        IpcControlEvent, IpcError, IpcEvent, IpcRuntime, IpcServer, IpcSubscriptions,
+        MAX_PENDING_IPC_CONTROL_EVENTS, MAX_PENDING_IPC_REQUESTS,
     },
     layout::{LayoutEngine, LayoutItem, LayoutState, Rect},
     protocol::{
@@ -68,6 +68,7 @@ pub struct Compositor {
     ipc_events: WorkerRx<IpcEvent>,
     ipc_control_sender: WorkerTx<IpcControlEvent>,
     ipc_control_events: WorkerRx<IpcControlEvent>,
+    ipc_subscriptions: IpcSubscriptions,
     signal_event_sender: WorkerTx<SignalEvent>,
     signal_events: WorkerRx<SignalEvent>,
     signal_runtime: SignalRuntime,
@@ -188,6 +189,7 @@ impl Compositor {
             ipc_events,
             ipc_control_sender,
             ipc_control_events,
+            ipc_subscriptions: IpcSubscriptions::new(),
             signal_event_sender,
             signal_events,
             signal_runtime,
@@ -425,6 +427,7 @@ impl Compositor {
             ipc_events,
             ipc_control_sender,
             ipc_control_events,
+            mut ipc_subscriptions,
             signal_event_sender,
             signal_events,
             signal_runtime,
@@ -507,18 +510,26 @@ impl Compositor {
             #[cfg(feature = "tty")]
             drain_gpu_fence_events(&gpu_fence_events, state, &callback_stop, &callback_failure);
             drain_launch_outcomes(&launch_outcomes, state);
-            drain_config_reload_outcomes(&config_reload_outcomes, &mut config_transaction, state);
+            drain_config_reload_outcomes(
+                &config_reload_outcomes,
+                &mut config_transaction,
+                state,
+                &mut ipc_subscriptions,
+            );
             drain_ipc_events(
                 &ipc_events,
                 &ipc_control_events,
                 state,
-                &callback_stop,
-                &launch_submitter,
-                ConfigIpcContext {
-                    transaction: &config_transaction,
-                    reload: &config_reload_submitter,
+                IpcDrainContext {
+                    stop_signal: &callback_stop,
+                    launch_submitter: &launch_submitter,
+                    config: ConfigIpcContext {
+                        transaction: &config_transaction,
+                        reload: &config_reload_submitter,
+                    },
+                    subscriptions: &mut ipc_subscriptions,
+                    runtime_failure: &callback_failure,
                 },
-                &callback_failure,
             );
         })?;
         if let Some(message) = runtime_failure.borrow_mut().take() {

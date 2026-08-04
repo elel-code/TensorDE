@@ -34,8 +34,8 @@ pub struct ConfigDiagnosticMetadata {
 /// A KDL failure that retains its source and parser context for presentation.
 ///
 /// Keeping this value structured lets startup render a detailed terminal
-/// report now and gives a future reload worker enough information to lower a
-/// bounded diagnostic event for IPC without reparsing the document.
+/// report and lets the reload worker lower a bounded IPC event without
+/// reparsing the document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConfigDiagnostic {
     path: PathBuf,

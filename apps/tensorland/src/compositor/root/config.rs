@@ -8,6 +8,7 @@ use crate::{
         ConfigReloadOutcome, ConfigReloadResult, ConfigTransaction,
         MAX_PENDING_CONFIG_RELOAD_RESULTS,
     },
+    ipc::{ConfigReloadEvent, ConfigReloadEventResult, EventTopic, IpcSubscriptions, ServerEvent},
     protocol::RuntimeState,
 };
 
@@ -15,6 +16,7 @@ pub(super) fn drain_config_reload_outcomes(
     outcomes: &WorkerRx<ConfigReloadOutcome>,
     transaction: &mut ConfigTransaction,
     state: &mut RuntimeState,
+    subscriptions: &mut IpcSubscriptions,
 ) {
     outcomes.drain(MAX_PENDING_CONFIG_RELOAD_RESULTS, |outcome| {
         let request_id = outcome.request_id;
@@ -29,9 +31,14 @@ pub(super) fn drain_config_reload_outcomes(
             }
             Err(error) => transaction.apply_candidate(Err(error)),
         };
-        match result {
+        let event = match result {
             ConfigReloadResult::Applied { generation } => {
                 info!(request_id, generation, "configuration reload applied");
+                ConfigReloadEvent {
+                    request_id,
+                    generation,
+                    result: ConfigReloadEventResult::Applied,
+                }
             }
             ConfigReloadResult::Rejected(failure) => {
                 warn!(
@@ -41,7 +48,22 @@ pub(super) fn drain_config_reload_outcomes(
                     error = %failure.error,
                     "configuration reload rejected"
                 );
+                ConfigReloadEvent {
+                    request_id,
+                    generation: failure.generation,
+                    result: ConfigReloadEventResult::Rejected {
+                        diagnostic: failure.diagnostic,
+                    },
+                }
             }
+        };
+        let summary =
+            subscriptions.publish(EventTopic::ConfigReload, ServerEvent::ConfigReload(event));
+        if summary.dropped != 0 {
+            warn!(
+                dropped = summary.dropped,
+                "slow IPC configuration subscribers were disconnected"
+            );
         }
     });
 }
@@ -78,10 +100,24 @@ mod tests {
             })
             .unwrap();
 
-        drain_config_reload_outcomes(&outcomes, &mut transaction, &mut state);
+        let mut subscriptions = IpcSubscriptions::new();
+        let (subscription, mut events) =
+            crate::ipc::subscription_channel(vec![EventTopic::ConfigReload]);
+        subscriptions.register(subscription).unwrap();
+
+        drain_config_reload_outcomes(&outcomes, &mut transaction, &mut state, &mut subscriptions);
 
         assert_eq!(transaction.generation(), 1);
         assert_eq!(state.layout.kind(), LayoutKind::Spatial2D);
+        let applied = events.try_recv().unwrap();
+        assert_eq!(
+            applied.event,
+            ServerEvent::ConfigReload(ConfigReloadEvent {
+                request_id: 1,
+                generation: 1,
+                result: ConfigReloadEventResult::Applied,
+            })
+        );
 
         let mut restart_required = transaction.active().clone();
         restart_required.ipc_socket = PathBuf::from("/tmp/tensor-replaced.sock");
@@ -92,7 +128,7 @@ mod tests {
             })
             .unwrap();
 
-        drain_config_reload_outcomes(&outcomes, &mut transaction, &mut state);
+        drain_config_reload_outcomes(&outcomes, &mut transaction, &mut state, &mut subscriptions);
 
         assert_eq!(transaction.generation(), 1);
         assert_eq!(state.layout.kind(), LayoutKind::Spatial2D);
@@ -102,5 +138,13 @@ mod tests {
                 .map(|failure| failure.error_code.as_str()),
             Some("reload_requires_restart")
         );
+        let rejected = events.try_recv().unwrap();
+        let ServerEvent::ConfigReload(rejected) = rejected.event;
+        assert_eq!(rejected.request_id, 2);
+        assert_eq!(rejected.generation, 1);
+        assert!(matches!(
+            rejected.result,
+            ConfigReloadEventResult::Rejected { .. }
+        ));
     }
 }

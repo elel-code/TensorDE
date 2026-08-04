@@ -6,8 +6,9 @@ use crate::layout::LayoutKind;
 #[cfg(test)]
 mod tests;
 
-pub const IPC_PROTOCOL_VERSION: u16 = 6;
+pub const IPC_PROTOCOL_VERSION: u16 = 7;
 pub const MAX_OVERVIEW_VIEWS: usize = 2_048;
+pub const MAX_SUBSCRIPTION_TOPICS: usize = 8;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Request {
@@ -60,6 +61,10 @@ pub enum Command {
     GetConfigStatus,
     /// Queue an off-thread load of the configured KDL path.
     ReloadConfig,
+    /// Convert this connection into a server-event stream after the reply.
+    Subscribe {
+        events: Vec<EventTopic>,
+    },
     SetLayout {
         layout: LayoutKind,
     },
@@ -129,6 +134,58 @@ pub struct Response {
     pub version: u16,
     pub request_id: u64,
     pub result: ResultBody,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventTopic {
+    ConfigReload,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct EventMessage {
+    pub version: u16,
+    pub sequence: u64,
+    pub event: ServerEvent,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "body")]
+pub enum ServerMessage {
+    Response(Response),
+    Event(EventMessage),
+}
+
+impl EventMessage {
+    pub(crate) const fn new(sequence: u64, event: ServerEvent) -> Self {
+        Self {
+            version: IPC_PROTOCOL_VERSION,
+            sequence,
+            event,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum ServerEvent {
+    ConfigReload(ConfigReloadEvent),
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ConfigReloadEvent {
+    pub request_id: u64,
+    pub generation: u64,
+    pub result: ConfigReloadEventResult,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum ConfigReloadEventResult {
+    Applied,
+    Rejected {
+        diagnostic: ConfigDiagnosticMetadata,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

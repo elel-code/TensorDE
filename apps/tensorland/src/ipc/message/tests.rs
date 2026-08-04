@@ -41,3 +41,30 @@ fn maximum_overview_plan_fits_the_bounded_frame() {
 
     crate::ipc::encode(&response).expect("the declared overview prefix must fit one IPC frame");
 }
+
+#[test]
+fn response_and_event_envelopes_can_share_one_completed_read() {
+    let mut frames = crate::ipc::encode(&ServerMessage::Response(Response::new(
+        7,
+        ResultBody::Accepted,
+    )))
+    .unwrap();
+    frames.extend(
+        crate::ipc::encode(&ServerMessage::Event(EventMessage::new(
+            1,
+            ServerEvent::ConfigReload(ConfigReloadEvent {
+                request_id: 8,
+                generation: 2,
+                result: ConfigReloadEventResult::Applied,
+            }),
+        )))
+        .unwrap(),
+    );
+
+    let messages = crate::ipc::FrameDecoder::new()
+        .push::<ServerMessage>(&frames)
+        .unwrap();
+    assert_eq!(messages.len(), 2);
+    assert!(matches!(messages[0], ServerMessage::Response(_)));
+    assert!(matches!(messages[1], ServerMessage::Event(_)));
+}

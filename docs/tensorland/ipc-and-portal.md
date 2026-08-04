@@ -1,9 +1,11 @@
 # IPC and Portal Gates
 
-The compositor control protocol uses a Unix socket, a little-endian `u32` frame length, and a JSON
-envelope. Every request carries a protocol version and request ID. Frames are capped at 1 MiB, the
-socket is mode `0600`, bind never removes an existing path, and drop removes only the inode owned by
-that server instance.
+The compositor control protocol uses a Unix socket, a little-endian `u32` frame length, and JSON.
+Every request carries a protocol version and request ID. Version 7 wraps every server response or
+event in an explicit `response` / `event` envelope, so a completed read may safely contain the
+subscription acknowledgement and its first event. Frames are capped at 1 MiB, the socket is mode
+`0600`, bind never removes an existing path, and drop removes only the inode owned by that server
+instance.
 
 The server runs on a dedicated Compio runtime. The listener submits `accept`; each accepted client
 submits reads and `write_all`, and only completed operations produce value messages for the
@@ -13,8 +15,9 @@ compositor reply without blocking the runtime thread, so a slow IPC peer cannot 
 dispatch or grow compositor memory without limit. Runtime failure and graceful-shutdown completion
 use a reserved control slot that cannot be consumed by request load.
 `tensorctl` exposes `ping`, `get-state`, `get-outputs`, `get-workspaces`, `get-overview`,
-`get-config-status`, `reload-config`, layout/workspace/output controls, `minimize-focused`,
-`restore-minimized`, stable-view activation/movement/close, `spawn`, and `quit` using the same codec.
+`get-config-status`, `reload-config`, `watch-config`, layout/workspace/output controls,
+`minimize-focused`, `restore-minimized`, stable-view activation/movement/close, `spawn`, and `quit`
+using the same codec.
 
 `get-state` returns a value-only snapshot: active layout kind, view count on the active regular
 workspace, mapped output count, focused view ID, regular/hidden workspace counts, and minimized-view
@@ -29,7 +32,7 @@ retained protocol window and renderer resource identity rather than asking the c
 Restore reports `unknown_view` for a stale stable ID and `not_minimized` only for a live view that
 has no retained minimize origin.
 
-Version 6 `get-overview` returns a deterministic back-to-front plan for every regular workspace and
+Version 7 retains the deterministic `get-overview` plan for every regular workspace and
 each hidden workspace whose KDL policy permits overview display. The response names the primary
 work area, every workspace-card rectangle, and each view's current-or-last-valid source rectangle,
 transformed destination, and clip. Each view also names its root family, placement kind, focus state,
@@ -85,11 +88,19 @@ the last source-free bounded failure metadata. Filesystem changes reach that sam
 configuration watcher, and completed candidates commit on the compositor thread before the turn's
 IPC requests are answered.
 
-The current version-6 transport is still request/reply only. The next protocol slice is an explicit,
-versioned subscription/event extension rather than unsolicited frames to existing clients. A failed
-reload event is bounded to diagnostic category, path, error code, line, column, short summary, and a
+Version 7 adds an explicit `subscribe` request rather than sending unsolicited frames to ordinary
+request/reply clients. A subscription must be the final complete request in its read batch and names
+one to eight unique topics; after `accepted`, that connection is receive-only. The Compio task splits
+the Unix stream so one submitted read detects peer closure while the independent write half awaits
+events. The compositor owns at most 64 subscribers and each has an eight-event queue. Saturation
+disconnects only the slow subscriber and never blocks configuration commit or another client.
+
+The first topic, `config_reload`, publishes both applied and rejected transactions with a monotonic
+stream sequence, originating request ID, and resulting configuration generation. A rejected event
+contains only bounded diagnostic category, path, error code, line, column, short summary, and a
 config-validation command; the full KDL source remains in Tensorland's retained diagnostic and logs.
-`tensor-shell` consumes this future event and owns visual/accessibility notification.
+`tensorctl watch-config` consumes this stream. Tensor Shell will use the same value-only event while
+remaining the owner of visual and accessibility notification.
 
 XDP means xdg-desktop-portal in this repository. The future portal implementation is an optional
 D-Bus/PipeWire adapter for controlled capture and sharing. It follows the same command gate as IPC

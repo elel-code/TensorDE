@@ -42,6 +42,10 @@ impl IpcReply {
     pub(super) const fn should_stop_after_flush(&self) -> bool {
         self.stop_after_flush
     }
+
+    pub(crate) const fn is_accepted(&self) -> bool {
+        matches!(self.response.result, super::message::ResultBody::Accepted)
+    }
 }
 
 pub struct IpcServer {
@@ -154,7 +158,11 @@ pub enum IpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipc::{Command, FrameDecoder, Request, Response, ResultBody, encode};
+    use crate::ipc::{
+        Command, ConfigReloadEvent, ConfigReloadEventResult, EventMessage, EventTopic,
+        FrameDecoder, IpcSubscriptions, Request, Response, ResultBody, ServerEvent, ServerMessage,
+        encode,
+    };
     use std::{
         io::{Read, Write},
         os::unix::net::UnixStream,
@@ -204,6 +212,7 @@ mod tests {
         for IpcEvent {
             request,
             respond_to,
+            subscription: _,
         } in pending
         {
             let result = match request.command {
@@ -218,16 +227,7 @@ mod tests {
         client
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
-        let mut decoder = FrameDecoder::new();
-        let mut received = Vec::new();
-        let mut buffer = [0; 4096];
-        while received.len() < 2 {
-            let read = client.read(&mut buffer).expect("IPC response completion");
-            received.extend(decoder.push::<Response>(&buffer[..read]).unwrap());
-            if received.len() == 2 {
-                break;
-            }
-        }
+        let received = read_responses(&mut client, 2);
 
         assert_eq!(received.len(), 2);
         assert_eq!(received[0].request_id, 1);
@@ -256,6 +256,7 @@ mod tests {
             .try_send(IpcEvent {
                 request: Request::new(40, Command::Ping),
                 respond_to: held_response,
+                subscription: None,
             })
             .unwrap();
 
@@ -284,6 +285,7 @@ mod tests {
         let IpcEvent {
             request,
             respond_to,
+            subscription: _,
         } = received_requests
             .recv_timeout(Duration::from_secs(1))
             .unwrap();
@@ -391,6 +393,125 @@ mod tests {
     }
 
     #[test]
+    fn accepted_subscription_streams_bounded_server_events() {
+        let path = std::env::temp_dir().join(format!(
+            "tensor-ipc-subscription-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_file(&path);
+        let server = IpcServer::bind(&path).unwrap();
+        let (requests, received_requests) = WorkerBridge::bounded(MAX_PENDING_IPC_REQUESTS);
+        let (control, _) = WorkerBridge::bounded(MAX_PENDING_IPC_CONTROL_EVENTS);
+        let runtime = server.start(requests, control).unwrap();
+
+        let mut client = UnixStream::connect(&path).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        client
+            .write_all(
+                &encode(&Request::new(
+                    47,
+                    Command::Subscribe {
+                        events: vec![EventTopic::ConfigReload],
+                    },
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+
+        let event = received_requests
+            .recv_timeout(Duration::from_secs(1))
+            .expect("subscription request reaches the compositor bridge");
+        let mut subscriptions = IpcSubscriptions::new();
+        subscriptions.register(event.subscription.unwrap()).unwrap();
+        event
+            .respond_to
+            .send(IpcReply::new(Response::new(47, ResultBody::Accepted)))
+            .unwrap();
+        assert!(matches!(
+            read_one_response(&mut client).result,
+            ResultBody::Accepted
+        ));
+
+        let expected = ServerEvent::ConfigReload(ConfigReloadEvent {
+            request_id: 48,
+            generation: 3,
+            result: ConfigReloadEventResult::Applied,
+        });
+        let summary = subscriptions.publish(EventTopic::ConfigReload, expected.clone());
+        assert_eq!(summary.delivered, 1);
+        assert_eq!(read_one_event(&mut client).event, expected);
+
+        drop(client);
+        drop(runtime);
+        drop(server);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn subscription_must_end_on_a_complete_read_batch() {
+        let path = std::env::temp_dir().join(format!(
+            "tensor-ipc-subscription-order-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_file(&path);
+        let server = IpcServer::bind(&path).unwrap();
+        let (requests, received_requests) = WorkerBridge::bounded(MAX_PENDING_IPC_REQUESTS);
+        let (control, _) = WorkerBridge::bounded(MAX_PENDING_IPC_CONTROL_EVENTS);
+        let runtime = server.start(requests, control).unwrap();
+
+        let mut client = UnixStream::connect(&path).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut frames = encode(&Request::new(
+            49,
+            Command::Subscribe {
+                events: vec![EventTopic::ConfigReload],
+            },
+        ))
+        .unwrap();
+        frames.extend(encode(&Request::new(50, Command::Ping)).unwrap());
+        client.write_all(&frames).unwrap();
+
+        let subscribe = received_requests
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(subscribe.request.request_id, 49);
+        assert!(subscribe.subscription.is_none());
+        subscribe
+            .respond_to
+            .send(IpcReply::new(Response::error(
+                49,
+                "invalid_subscription",
+                "subscribe must end the completed read batch",
+            )))
+            .unwrap();
+        let ping = received_requests
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(ping.request.request_id, 50);
+        ping.respond_to
+            .send(IpcReply::new(Response::new(50, ResultBody::Pong)))
+            .unwrap();
+
+        let responses = read_responses(&mut client, 2);
+        let ResultBody::Error(error) = &responses[0].result else {
+            panic!("non-final subscription must be rejected");
+        };
+        assert_eq!(error.code, "invalid_subscription");
+        assert!(matches!(responses[1].result, ResultBody::Pong));
+
+        drop(client);
+        drop(runtime);
+        drop(server);
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn shutdown_signal_follows_the_accepted_response() {
         let path = PathBuf::from(format!("target/tensor-ipc-shutdown-{}", std::process::id()));
         let _ = fs::remove_file(&path);
@@ -413,6 +534,7 @@ mod tests {
         let IpcEvent {
             request,
             respond_to,
+            subscription: _,
         } = event;
         respond_to
             .send(IpcReply::stop_after_flush(Response::new(
@@ -421,14 +543,9 @@ mod tests {
             )))
             .expect("client waits for response");
 
-        let mut buffer = [0; 4096];
-        let read = client.read(&mut buffer).unwrap();
-        let responses = FrameDecoder::new()
-            .push::<Response>(&buffer[..read])
-            .unwrap();
-        assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0].request_id, 3);
-        assert!(matches!(responses[0].result, ResultBody::Accepted));
+        let response = read_one_response(&mut client);
+        assert_eq!(response.request_id, 3);
+        assert!(matches!(response.result, ResultBody::Accepted));
         assert!(matches!(
             received_control.recv_timeout(Duration::from_secs(1)),
             Ok(IpcControlEvent::ShutdownFlushed)
@@ -450,8 +567,37 @@ mod tests {
         while responses.len() < count {
             let read = client.read(&mut buffer).expect("IPC response completion");
             assert_ne!(read, 0, "IPC connection closed before its response");
-            responses.extend(decoder.push::<Response>(&buffer[..read]).unwrap());
+            responses.extend(
+                decoder
+                    .push::<ServerMessage>(&buffer[..read])
+                    .unwrap()
+                    .into_iter()
+                    .filter_map(|message| match message {
+                        ServerMessage::Response(response) => Some(response),
+                        ServerMessage::Event(_) => None,
+                    }),
+            );
         }
         responses
+    }
+
+    fn read_one_event(client: &mut UnixStream) -> EventMessage {
+        let mut decoder = FrameDecoder::new();
+        let mut buffer = [0; 4096];
+        loop {
+            let read = client.read(&mut buffer).expect("IPC event completion");
+            assert_ne!(read, 0, "IPC subscription closed before its event");
+            if let Some(event) = decoder
+                .push::<ServerMessage>(&buffer[..read])
+                .unwrap()
+                .into_iter()
+                .find_map(|message| match message {
+                    ServerMessage::Event(event) => Some(event),
+                    ServerMessage::Response(_) => None,
+                })
+            {
+                return event;
+            }
+        }
     }
 }

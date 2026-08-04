@@ -75,7 +75,11 @@ the decoded batch before EOF. Every complete frame decoded from one bounded read
 before the connection awaits the batch's one-shot completions; replies are still written in input
 order, so submission gains concurrency without making policy order completion-dependent. The frame
 decoder scans a completed-read batch linearly and compacts its retained fragmented tail once, rather
-than shifting the unread suffix after every decoded frame.
+than shifting the unread suffix after every decoded frame. Version 7 server frames share a tagged
+response/event envelope. An accepted `config_reload` subscription becomes a receive-only Compio
+stream with independent disconnect detection and event writes; the compositor registry and every
+subscriber queue are fixed-capacity, and a slow subscriber is disconnected instead of applying
+backpressure to compositor policy.
 
 Tensorland intentionally has no general-purpose network control plane: its compositor control
 protocol is local Unix IPC.
@@ -127,7 +131,7 @@ value-only outcome crosses back to the compositor turn. Layout, appearance, curs
 policy replace live state atomically. Startup-owned IPC, GPU/DRM, output, systemd, XWayland,
 environment, and autostart changes report `reload_requires_restart` until those resources have
 atomic swaps.
-The future IPC event carries location and summary metadata, not the complete source file;
+The version-7 IPC event carries location and summary metadata, not the complete source file;
 `tensor-shell` owns the short visual and accessible notification.
 
 Lua is intentionally not a compositor-core dependency and is not a second

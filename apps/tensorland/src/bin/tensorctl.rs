@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     env,
     io::{self, Read, Write},
     os::unix::net::UnixStream,
@@ -8,7 +9,10 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use tensorland::{
-    ipc::{Command, FrameDecoder, IPC_PROTOCOL_VERSION, Request, Response, ResultBody, encode},
+    ipc::{
+        Command, EventMessage, EventTopic, FrameDecoder, IPC_PROTOCOL_VERSION, Request, Response,
+        ResultBody, ServerMessage, encode,
+    },
     layout::LayoutKind,
 };
 use thiserror::Error;
@@ -34,6 +38,8 @@ enum CliCommand {
     GetOverview,
     GetConfigStatus,
     ReloadConfig,
+    /// Stream versioned configuration reload results until disconnected.
+    WatchConfig,
     SetLayout {
         layout: LayoutKind,
     },
@@ -108,6 +114,9 @@ impl From<CliCommand> for Command {
             CliCommand::GetOverview => Self::GetOverview,
             CliCommand::GetConfigStatus => Self::GetConfigStatus,
             CliCommand::ReloadConfig => Self::ReloadConfig,
+            CliCommand::WatchConfig => Self::Subscribe {
+                events: vec![EventTopic::ConfigReload],
+            },
             CliCommand::SetLayout { layout } => Self::SetLayout { layout },
             CliCommand::Spawn { argv } => Self::Spawn { argv },
             CliCommand::SetWorkspace { index } => Self::SetWorkspace { index },
@@ -158,13 +167,15 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<(), ClientError> {
     let socket = resolve_socket(cli.socket);
+    let watch_config = matches!(&cli.command, CliCommand::WatchConfig);
     let mut stream = UnixStream::connect(&socket).map_err(|source| ClientError::Connect {
         path: socket,
         source,
     })?;
     let request = Request::new(REQUEST_ID, cli.command.into());
     stream.write_all(&encode(&request)?)?;
-    let response = read_response(&mut stream)?;
+    let mut reader = ServerReader::new();
+    let response = reader.read_response(&mut stream)?;
 
     if response.version != IPC_PROTOCOL_VERSION {
         return Err(ClientError::ResponseVersion(response.version));
@@ -177,6 +188,18 @@ fn run(cli: Cli) -> Result<(), ClientError> {
             code: error.code.clone(),
             message: error.message.clone(),
         });
+    }
+
+    if watch_config {
+        let mut stdout = io::stdout().lock();
+        loop {
+            let event = reader.read_event(&mut stream)?;
+            if event.version != IPC_PROTOCOL_VERSION {
+                return Err(ClientError::EventVersion(event.version));
+            }
+            serde_json::to_writer(&mut stdout, &event)?;
+            writeln!(stdout)?;
+        }
     }
 
     serde_json::to_writer(io::stdout().lock(), &response.result)?;
@@ -194,20 +217,47 @@ fn resolve_socket(explicit: Option<PathBuf>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp/tensor.sock"))
 }
 
-fn read_response(stream: &mut UnixStream) -> Result<Response, ClientError> {
-    let mut decoder = FrameDecoder::new();
-    let mut buffer = [0; 16 * 1024];
-    loop {
-        let read = stream.read(&mut buffer)?;
-        if read == 0 {
-            return Err(ClientError::UnexpectedEof);
+struct ServerReader {
+    decoder: FrameDecoder,
+    pending: VecDeque<ServerMessage>,
+}
+
+impl ServerReader {
+    fn new() -> Self {
+        Self {
+            decoder: FrameDecoder::new(),
+            pending: VecDeque::new(),
         }
-        if let Some(response) = decoder
-            .push::<Response>(&buffer[..read])?
-            .into_iter()
-            .next()
-        {
-            return Ok(response);
+    }
+
+    fn read_response(&mut self, stream: &mut UnixStream) -> Result<Response, ClientError> {
+        match self.read_message(stream)? {
+            ServerMessage::Response(response) => Ok(response),
+            ServerMessage::Event(_) => Err(ClientError::UnexpectedMessage("event before response")),
+        }
+    }
+
+    fn read_event(&mut self, stream: &mut UnixStream) -> Result<EventMessage, ClientError> {
+        match self.read_message(stream)? {
+            ServerMessage::Event(event) => Ok(event),
+            ServerMessage::Response(_) => {
+                Err(ClientError::UnexpectedMessage("response on event stream"))
+            }
+        }
+    }
+
+    fn read_message(&mut self, stream: &mut UnixStream) -> Result<ServerMessage, ClientError> {
+        let mut buffer = [0; 16 * 1024];
+        loop {
+            if let Some(message) = self.pending.pop_front() {
+                return Ok(message);
+            }
+            let read = stream.read(&mut buffer)?;
+            if read == 0 {
+                return Err(ClientError::UnexpectedEof);
+            }
+            self.pending
+                .extend(self.decoder.push::<ServerMessage>(&buffer[..read])?);
         }
     }
 }
@@ -226,15 +276,20 @@ enum ClientError {
     UnexpectedEof,
     #[error("Tensor returned protocol version {0}; expected {IPC_PROTOCOL_VERSION}")]
     ResponseVersion(u16),
+    #[error("Tensor event used protocol version {0}; expected {IPC_PROTOCOL_VERSION}")]
+    EventVersion(u16),
     #[error("Tensor returned request ID {0}; expected {REQUEST_ID}")]
     RequestId(u64),
     #[error("Tensor IPC error {code}: {message}")]
     Server { code: String, message: String },
+    #[error("Tensor IPC sent an unexpected message: {0}")]
+    UnexpectedMessage(&'static str),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tensorland::ipc::{ConfigReloadEvent, ConfigReloadEventResult, ServerEvent};
 
     #[test]
     fn cli_commands_map_to_protocol_commands() {
@@ -250,6 +305,11 @@ mod tests {
         assert!(matches!(
             Command::from(CliCommand::ReloadConfig),
             Command::ReloadConfig
+        ));
+        assert!(matches!(
+            Command::from(CliCommand::WatchConfig),
+            Command::Subscribe { events }
+                if events == [EventTopic::ConfigReload]
         ));
         assert!(matches!(
             Command::from(CliCommand::SetLayout {
@@ -299,5 +359,34 @@ mod tests {
                 follow: true,
             }
         ));
+    }
+
+    #[test]
+    fn reader_retains_an_event_coalesced_with_the_subscription_response() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        let event = EventMessage {
+            version: IPC_PROTOCOL_VERSION,
+            sequence: 1,
+            event: ServerEvent::ConfigReload(ConfigReloadEvent {
+                request_id: 2,
+                generation: 3,
+                result: ConfigReloadEventResult::Applied,
+            }),
+        };
+        let mut frames = encode(&ServerMessage::Response(Response::new(
+            REQUEST_ID,
+            ResultBody::Accepted,
+        )))
+        .unwrap();
+        frames.extend(encode(&ServerMessage::Event(event.clone())).unwrap());
+        server.write_all(&frames).unwrap();
+
+        let mut reader = ServerReader::new();
+        assert!(matches!(
+            reader.read_response(&mut client).unwrap().result,
+            ResultBody::Accepted
+        ));
+        assert_eq!(reader.read_event(&mut client).unwrap().sequence, 1);
+        assert_eq!(reader.pending.len(), 0);
     }
 }

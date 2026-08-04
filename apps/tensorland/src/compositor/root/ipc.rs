@@ -9,8 +9,8 @@ use crate::{
     config::{ConfigReloadSubmitError, ConfigReloadSubmitter, ConfigTransaction},
     ipc::{
         Command as IpcCommand, ConfigStatusSnapshot, IPC_PROTOCOL_VERSION, IpcControlEvent,
-        IpcEvent, IpcReply, MAX_PENDING_IPC_CONTROL_EVENTS, MAX_PENDING_IPC_REQUESTS, Request,
-        Response, ResultBody,
+        IpcEvent, IpcReply, IpcSubscriptions, MAX_PENDING_IPC_CONTROL_EVENTS,
+        MAX_PENDING_IPC_REQUESTS, MAX_SUBSCRIPTION_TOPICS, Request, Response, ResultBody,
     },
     layout::LayoutEngine,
     protocol::{RuntimeState, ViewCloseError, ViewWorkspaceError},
@@ -21,20 +21,43 @@ pub(super) fn drain_ipc_events(
     requests: &WorkerRx<IpcEvent>,
     control: &WorkerRx<IpcControlEvent>,
     state: &mut RuntimeState,
-    stop_signal: &RuntimeStop,
-    launch_submitter: &LaunchSubmitter,
-    config: ConfigIpcContext<'_>,
-    runtime_failure: &Rc<RefCell<Option<String>>>,
+    context: IpcDrainContext<'_>,
 ) {
+    let IpcDrainContext {
+        stop_signal,
+        launch_submitter,
+        config,
+        subscriptions,
+        runtime_failure,
+    } = context;
     requests.drain(
         MAX_PENDING_IPC_REQUESTS,
         |IpcEvent {
              request,
              respond_to,
+             subscription,
          }| {
             let reflow = matches!(&request.command, crate::ipc::Command::SetLayout { .. });
-            let reply =
+            let subscription_request = matches!(&request.command, IpcCommand::Subscribe { .. });
+            let mut reply =
                 handle_ipc_request_with_config(request, state, launch_submitter, Some(config));
+            if subscription_request && reply.is_accepted() {
+                reply = match subscription {
+                    Some(subscription) => match subscriptions.register(subscription) {
+                        Ok(()) => reply,
+                        Err(()) => IpcReply::new(Response::error(
+                            reply.response.request_id,
+                            "queue_full",
+                            "IPC subscription registry is full",
+                        )),
+                    },
+                    None => IpcReply::new(Response::error(
+                        reply.response.request_id,
+                        "invalid_subscription",
+                        "subscribe must be the final complete request in its read batch",
+                    )),
+                };
+            }
             if reflow {
                 state.reflow_default_workspace();
             }
@@ -51,6 +74,14 @@ pub(super) fn drain_ipc_events(
             stop_signal.stop();
         }
     });
+}
+
+pub(super) struct IpcDrainContext<'a> {
+    pub(super) stop_signal: &'a RuntimeStop,
+    pub(super) launch_submitter: &'a LaunchSubmitter,
+    pub(super) config: ConfigIpcContext<'a>,
+    pub(super) subscriptions: &'a mut IpcSubscriptions,
+    pub(super) runtime_failure: &'a Rc<RefCell<Option<String>>>,
 }
 
 #[cfg(test)]
@@ -130,6 +161,27 @@ pub(super) fn handle_ipc_request_with_config(
                     ));
                 }
             }
+        }
+        IpcCommand::Subscribe { events } => {
+            if events.is_empty() || events.len() > MAX_SUBSCRIPTION_TOPICS {
+                return IpcReply::new(Response::error(
+                    request_id,
+                    "invalid_argument",
+                    format!("subscription requires 1..={MAX_SUBSCRIPTION_TOPICS} event topics"),
+                ));
+            }
+            if events
+                .iter()
+                .enumerate()
+                .any(|(index, topic)| events[..index].contains(topic))
+            {
+                return IpcReply::new(Response::error(
+                    request_id,
+                    "invalid_argument",
+                    "subscription event topics must be unique",
+                ));
+            }
+            ResultBody::Accepted
         }
         IpcCommand::SetLayout { layout: kind } => {
             state.layout = LayoutEngine::with_options(kind, state.layout.options());
@@ -367,6 +419,7 @@ mod tests {
         config::{
             Config, ConfigReloadWorker, ConfigTransaction, MAX_PENDING_CONFIG_RELOAD_RESULTS,
         },
+        ipc::EventTopic,
         layout::{LayoutEngine, LayoutKind},
         protocol::test_runtime_state,
         scene::SceneAppearance,
@@ -428,5 +481,46 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.request_id, 91);
         assert!(outcome.candidate.is_err());
+    }
+
+    #[test]
+    fn subscriptions_require_one_bounded_unique_topic_list() {
+        let (launch_outcomes, _) = WorkerBridge::bounded(1);
+        let launch_worker = LaunchWorker::new(
+            ProcessLauncher::with_systemd_detection(SystemdMode::Disabled, false),
+            launch_outcomes,
+        )
+        .unwrap();
+        let mut state = test_runtime_state(
+            LayoutEngine::new(LayoutKind::Scrolling1D),
+            SceneAppearance::default(),
+        );
+
+        for events in [
+            Vec::new(),
+            vec![EventTopic::ConfigReload, EventTopic::ConfigReload],
+        ] {
+            let reply = handle_ipc_request(
+                Request::new(92, IpcCommand::Subscribe { events }),
+                &mut state,
+                &launch_worker.submitter(),
+            );
+            let ResultBody::Error(error) = reply.response.result else {
+                panic!("invalid subscription must return a structured error");
+            };
+            assert_eq!(error.code, "invalid_argument");
+        }
+
+        let reply = handle_ipc_request(
+            Request::new(
+                93,
+                IpcCommand::Subscribe {
+                    events: vec![EventTopic::ConfigReload],
+                },
+            ),
+            &mut state,
+            &launch_worker.submitter(),
+        );
+        assert!(matches!(reply.response.result, ResultBody::Accepted));
     }
 }

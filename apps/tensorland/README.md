@@ -175,16 +175,19 @@ The module boundaries are deliberate ownership boundaries:
 
 ## IPC contract
 
-The control socket uses a little-endian `u32` length prefix followed by one JSON envelope. Frames
-are capped at 1 MiB, carry a protocol version and request ID, and return structured errors. The
+The version-7 control socket uses a little-endian `u32` length prefix followed by JSON. Requests
+carry a protocol version and request ID; server frames use a tagged response/event envelope. Frames
+are capped at 1 MiB and return structured errors. The
 server never removes an existing socket when binding fails, and its destructor removes only the
 socket inode it created. This is intentionally a new protocol surface; compatibility shims are not
 part of the initial design.
 
-`tensorctl` is the matching CLI for state/output/workspace/config queries, reload, layout/output/
-workspace controls, `spawn`, and graceful `quit`. Server accept/read/write operations complete on
-the dedicated Compio runtime; only decoded values cross to the compositor thread. The CLI uses the
-same framed protocol and never shells out.
+`tensorctl` is the matching CLI for state/output/workspace/config queries, reload, `watch-config`,
+layout/output/workspace controls, `spawn`, and graceful `quit`. Server accept/read/write operations
+complete on the dedicated Compio runtime; only decoded values cross to the compositor thread. The
+CLI uses the same framed protocol and never shells out. Accepted subscriptions are receive-only,
+globally bounded, and keep eight pending events per client; a slow client is disconnected without
+blocking the compositor.
 
 ## systemd (optional)
 

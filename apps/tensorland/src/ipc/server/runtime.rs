@@ -19,13 +19,20 @@ use compio::{
     io::{AsyncRead, AsyncWriteExt},
     net::{UnixListener, UnixStream},
 };
-use futures_channel::oneshot;
+use futures_channel::{mpsc, oneshot};
+use futures_util::{
+    StreamExt,
+    future::{Either, select},
+};
 use rustix::{net::sockopt::socket_peercred, process::geteuid};
 use tensor_runtime::{EventfdWake, TrySendError, WakeSink, WorkerTx, io_uring_runtime};
 use tracing::warn;
 
 use super::{IpcError, IpcReply};
-use crate::ipc::{FrameDecoder, Request, Response, encode};
+use crate::ipc::{
+    Command, EventMessage, FrameDecoder, IpcSubscriptionSink, Request, Response, ServerMessage,
+    encode, subscription_channel,
+};
 
 const READ_BUFFER_SIZE: usize = 16 * 1024;
 const MAX_IPC_CONNECTIONS: usize = 64;
@@ -36,6 +43,7 @@ pub(crate) const MAX_PENDING_IPC_CONTROL_EVENTS: usize = 1;
 pub(crate) struct IpcEvent {
     pub(crate) request: Request,
     pub(crate) respond_to: oneshot::Sender<IpcReply>,
+    pub(crate) subscription: Option<IpcSubscriptionSink>,
 }
 
 /// Critical completion state has a reserved slot separate from client load.
@@ -216,6 +224,7 @@ async fn handle_client(
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let mut pending = Vec::with_capacity(decoded_requests.len());
         let request_count = decoded_requests.len();
+        let batch_ends_on_frame_boundary = decoder.buffered_bytes() == 0;
         let mut bridge_stopped = false;
         for (index, request) in decoded_requests.into_iter().enumerate() {
             let request_id = request.request_id;
@@ -224,14 +233,25 @@ async fn handle_client(
                 pending.push(unavailable_reply(request_id, closes_batch));
                 continue;
             }
+            let (subscription, subscription_events) = if closes_batch
+                && batch_ends_on_frame_boundary
+                && let Command::Subscribe { events } = &request.command
+            {
+                let (sink, receiver) = subscription_channel(events.clone());
+                (Some(sink), Some(receiver))
+            } else {
+                (None, None)
+            };
             let (respond_to, response) = oneshot::channel();
             match requests.try_send(IpcEvent {
                 request,
                 respond_to,
+                subscription,
             }) {
                 Ok(()) => pending.push(PendingIpcReply::Compositor {
                     request_id,
                     response,
+                    subscription_events,
                 }),
                 Err(TrySendError::Full) => pending.push(PendingIpcReply::Ready {
                     reply: IpcReply::new(Response::error(
@@ -249,33 +269,77 @@ async fn handle_client(
         }
         let pending_count = pending.len();
         let mut compositor_stopped = false;
+        let mut subscription_events = None;
         for (index, pending_reply) in pending.into_iter().enumerate() {
             let closes_batch = index + 1 == pending_count;
             let request_id = pending_reply.request_id();
-            let (reply, close_after_flush) = if compositor_stopped {
-                (unavailable_response(request_id), closes_batch)
+            let (reply, close_after_flush, resolved_subscription) = if compositor_stopped {
+                (unavailable_response(request_id), closes_batch, None)
             } else {
                 match pending_reply.resolve().await {
                     Ok(resolved) => resolved,
                     Err(request_id) => {
                         compositor_stopped = true;
-                        (unavailable_response(request_id), closes_batch)
+                        (unavailable_response(request_id), closes_batch, None)
                     }
                 }
             };
+            let subscription_accepted = reply.is_accepted();
             let stop_after_flush = reply.should_stop_after_flush();
-            let frame = match encode(&reply.response) {
+            let frame = match encode(&ServerMessage::Response(reply.response)) {
                 Ok(frame) => frame,
                 Err(error) => return Err(io::Error::new(io::ErrorKind::InvalidData, error)),
             };
             let BufResult(result, _) = stream.write_all(frame).await;
             result?;
+            if subscription_accepted {
+                subscription_events = resolved_subscription;
+            }
             notify_shutdown_if_needed(stop_after_flush, &control);
             if close_after_flush {
                 return Ok(());
             }
         }
+        if let Some(events) = subscription_events {
+            return stream_subscription_events(stream, events).await;
+        }
     }
+}
+
+async fn stream_subscription_events(
+    stream: UnixStream,
+    events: mpsc::Receiver<EventMessage>,
+) -> io::Result<()> {
+    let (reader, writer) = stream.into_split();
+    let peer = Box::pin(wait_for_subscription_peer(reader));
+    let events = Box::pin(write_subscription_events(writer, events));
+    match select(peer, events).await {
+        Either::Left((result, _)) | Either::Right((result, _)) => result,
+    }
+}
+
+async fn wait_for_subscription_peer(mut stream: UnixStream) -> io::Result<()> {
+    let BufResult(result, _) = stream.read(Vec::with_capacity(1)).await;
+    match result? {
+        0 => Ok(()),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "IPC subscription connections are receive-only after acceptance",
+        )),
+    }
+}
+
+async fn write_subscription_events(
+    mut stream: UnixStream,
+    mut events: mpsc::Receiver<EventMessage>,
+) -> io::Result<()> {
+    while let Some(event) = events.next().await {
+        let frame = encode(&ServerMessage::Event(event))
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let BufResult(result, _) = stream.write_all(frame).await;
+        result?;
+    }
+    Ok(())
 }
 
 fn unavailable_reply(request_id: u64, close_after_flush: bool) -> PendingIpcReply {
@@ -297,6 +361,7 @@ enum PendingIpcReply {
     Compositor {
         request_id: u64,
         response: oneshot::Receiver<IpcReply>,
+        subscription_events: Option<mpsc::Receiver<EventMessage>>,
     },
     Ready {
         reply: IpcReply,
@@ -312,19 +377,20 @@ impl PendingIpcReply {
         }
     }
 
-    async fn resolve(self) -> Result<(IpcReply, bool), u64> {
+    async fn resolve(self) -> Result<(IpcReply, bool, Option<mpsc::Receiver<EventMessage>>), u64> {
         match self {
             Self::Compositor {
                 request_id,
                 response,
+                subscription_events,
             } => response
                 .await
-                .map(|reply| (reply, false))
+                .map(|reply| (reply, false, subscription_events))
                 .map_err(|_| request_id),
             Self::Ready {
                 reply,
                 close_after_flush,
-            } => Ok((reply, close_after_flush)),
+            } => Ok((reply, close_after_flush, None)),
         }
     }
 }

@@ -284,8 +284,8 @@ an atomic replacement path. Rejection preserves the old generation and live stat
 `tensorctl reload-config` for an explicit request and `tensorctl get-config-status` to inspect the
 active generation and last bounded failure.
 
-The current request/reply IPC never puts complete KDL source on the wire. A versioned event
-subscription is still required for unsolicited failure notification. `tensor-shell`, not the
-compositor renderer, will own that transient visual and accessible notification. This mirrors
-Niri's useful split: the on-screen notice is short while its `validate` command and logs carry the
-detailed miette report.
+IPC never puts complete KDL source on the wire. Version 7 `config_reload` subscriptions publish
+applied generations and bounded failure metadata; `tensorctl watch-config` exposes that stream.
+`tensor-shell`, not the compositor renderer, will own the transient visual and accessible
+notification. This mirrors Niri's useful split: the on-screen notice is short while its `validate`
+command and logs carry the detailed miette report.
