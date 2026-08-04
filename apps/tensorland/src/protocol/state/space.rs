@@ -269,6 +269,14 @@ impl WindowSpace {
         self.outputs.iter().map(|mapped| &mapped.output)
     }
 
+    pub(crate) fn output_geometries(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (&Output, LogicalRect<i32>)> {
+        self.outputs
+            .iter()
+            .filter_map(|mapped| mapped.geometry.map(|geometry| (&mapped.output, geometry)))
+    }
+
     pub(crate) fn unmap_output(&mut self, output: &Output, popups: &PopupManager) {
         let Some(position) = self
             .outputs

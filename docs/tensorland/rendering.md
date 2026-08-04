@@ -415,7 +415,9 @@ containing surface membership, owning view, and unioned visible bounds. Every
 output borrows that slice for primary-output selection instead of traversing
 the scene or allocating a temporary HashMap during presentation capture. Only
 the exact surface/view sets retained by the in-flight feedback owner allocate;
-the optimization does not coalesce callbacks or change FIFO lifetime.
+mapped output rectangles are streamed directly from retained `WindowSpace`
+geometry rather than collected per output frame. These optimizations do not
+coalesce callbacks or change FIFO lifetime.
 The resulting owner is keyed by both stable backend output ID and renderer timeline value. Renderer
 failure, missing `SYNC_FD`, atomic KMS failure, output replacement, disconnect, or session pause
 drops that owner and therefore sends `discarded`. Once atomic KMS accepts the frame, frame callbacks

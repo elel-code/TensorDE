@@ -230,13 +230,11 @@ impl RuntimeState {
         submitted: &[SceneSurfaceSubmission],
         cursor_surfaces: CursorSurfaces,
     ) -> CapturedPresentation {
-        let output_regions = self.output_regions();
         let mut submitted_surfaces = HashSet::with_capacity(submitted.len());
         let mut submitted_views = HashSet::with_capacity(submitted.len());
-        for surface in submitted
-            .iter()
-            .filter(|surface| primary_output(surface.bounds, &output_regions) == Some(output_id))
-        {
+        for surface in submitted.iter().filter(|surface| {
+            primary_output(surface.bounds, self.output_regions()) == Some(output_id)
+        }) {
             submitted_surfaces.insert(surface.surface_id);
             submitted_views.insert(surface.view_id);
         }
@@ -313,13 +311,12 @@ impl RuntimeState {
         }
     }
 
-    fn output_regions(&self) -> Vec<(BackendOutputId, Rect)> {
-        self.outputs
-            .iter()
-            .filter_map(|(id, managed)| {
-                let geometry = self.space.output_geometry(&managed.output)?;
+    fn output_regions(&self) -> impl Iterator<Item = (BackendOutputId, Rect)> + '_ {
+        self.space
+            .output_geometries()
+            .filter_map(|(output, geometry)| {
                 Some((
-                    *id,
+                    output.id(),
                     Rect::new(
                         geometry.loc.x,
                         geometry.loc.y,
@@ -328,7 +325,6 @@ impl RuntimeState {
                     ),
                 ))
             })
-            .collect()
     }
 
     /// Send frame callbacks once atomic KMS has accepted the submitted frame.
@@ -386,13 +382,16 @@ impl RuntimeState {
     }
 }
 
-fn primary_output(bounds: Rect, outputs: &[(BackendOutputId, Rect)]) -> Option<BackendOutputId> {
+fn primary_output(
+    bounds: Rect,
+    outputs: impl IntoIterator<Item = (BackendOutputId, Rect)>,
+) -> Option<BackendOutputId> {
     outputs
-        .iter()
+        .into_iter()
         .filter_map(|(id, output)| {
-            let overlap = bounds.intersection(*output)?;
+            let overlap = bounds.intersection(output)?;
             let area = u64::from(overlap.width) * u64::from(overlap.height);
-            Some((*id, area))
+            Some((id, area))
         })
         .min_by_key(|(id, area)| (Reverse(*area), *id))
         .map(|(id, _)| id)
@@ -512,11 +511,11 @@ mod tests {
         ];
 
         assert_eq!(
-            primary_output(Rect::new(80, 0, 80, 100), &outputs),
+            primary_output(Rect::new(80, 0, 80, 100), outputs.iter().copied()),
             Some(SECOND_OUTPUT)
         );
         assert_eq!(
-            primary_output(Rect::new(50, 0, 100, 100), &outputs),
+            primary_output(Rect::new(50, 0, 100, 100), outputs.iter().copied()),
             Some(OUTPUT)
         );
     }
