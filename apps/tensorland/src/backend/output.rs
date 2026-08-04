@@ -29,6 +29,7 @@ pub(crate) struct ConnectorSnapshot {
     pub(crate) id: BackendOutputId,
     pub(crate) name: String,
     pub(crate) state: ConnectorState,
+    pub(crate) non_desktop: bool,
     pub(crate) physical_size: (i32, i32),
     pub(crate) subpixel: SubpixelLayout,
     pub(crate) modes: Vec<PhysicalMode>,
@@ -144,6 +145,7 @@ fn to_drm_snapshot(c: &ConnectorSnapshot) -> DrmConnectorSnapshot {
         id: c.id,
         name: c.name.clone(),
         state: c.state,
+        non_desktop: c.non_desktop,
         physical_size_mm: c.physical_size,
         subpixel: c.subpixel,
         modes: c.modes.clone(),
@@ -240,6 +242,7 @@ mod tests {
             id: BackendOutputId::new(device_id, connector_id),
             name: format!("card-{device_id}-connector-{connector_id}"),
             state,
+            non_desktop: false,
             physical_size: (600, 340),
             subpixel: SubpixelLayout::HorizontalRgb,
             modes: mode.into_iter().collect(),
@@ -285,6 +288,14 @@ mod tests {
     fn policy_waits_for_native_format_negotiation() {
         let mut connector = connector(1, 1, ConnectorState::Connected, Some(7), Some(1920));
         connector.native_format = None;
+
+        assert!(OutputPolicy::default().plan([&connector]).is_empty());
+    }
+
+    #[test]
+    fn policy_excludes_non_desktop_connector_even_when_scanout_ready() {
+        let mut connector = connector(1, 1, ConnectorState::Connected, Some(7), Some(1920));
+        connector.non_desktop = true;
 
         assert!(OutputPolicy::default().plan([&connector]).is_empty());
     }

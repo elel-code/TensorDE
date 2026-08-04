@@ -20,11 +20,11 @@ use super::{BackendError, DrmDeviceFd, TtyBackend, device::DrmDevice};
 mod atomic;
 mod framebuffer;
 
-pub(super) use atomic::primary_plane_formats;
 use atomic::{
     AtomicError, AtomicSurface, AtomicSurfaceConfig, CursorPlaneCapabilities, CursorPlaneSelection,
     discover_cursor_planes, select_primary_plane,
 };
+pub(super) use atomic::{primary_plane_formats, select_lease_primary_plane};
 use framebuffer::{ScanoutFramebuffer, cursor_framebuffer_from_dmabuf, framebuffer_from_dmabuf};
 
 impl TtyBackend {

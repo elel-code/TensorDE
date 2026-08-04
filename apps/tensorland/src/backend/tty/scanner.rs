@@ -7,11 +7,12 @@
 
 use std::collections::HashMap;
 
-use drm::control::{Device as ControlDevice, connector, crtc};
+use drm::control::{Device as ControlDevice, connector, crtc, property};
 
 #[derive(Debug, Default)]
 pub(super) struct DrmScanner {
     connectors: HashMap<connector::Handle, connector::Info>,
+    non_desktop: HashMap<connector::Handle, bool>,
     crtcs: HashMap<connector::Handle, crtc::Handle>,
 }
 
@@ -29,14 +30,12 @@ impl DrmScanner {
             // only disappearance from resource_handles means removal.
             if let Ok(info) = drm.get_connector(handle, true) {
                 self.connectors.insert(handle, info);
+                self.non_desktop
+                    .insert(handle, connector_is_non_desktop(drm, handle));
             }
         }
-
-        self.crtcs.retain(|handle, _| {
-            self.connectors
-                .get(handle)
-                .is_some_and(|info| info.state() == connector::State::Connected)
-        });
+        self.non_desktop
+            .retain(|handle, _| self.connectors.contains_key(handle));
         self.assign_crtcs(drm, &resources);
         Ok(())
     }
@@ -49,57 +48,88 @@ impl DrmScanner {
         self.crtcs.get(connector).copied()
     }
 
+    pub(super) fn is_non_desktop(&self, connector: &connector::Handle) -> bool {
+        self.non_desktop.get(connector).copied().unwrap_or(false)
+    }
+
     fn assign_crtcs(
         &mut self,
         drm: &impl ControlDevice,
         resources: &drm::control::ResourceHandles,
     ) {
         let connectors = &self.connectors;
+        let non_desktop = &self.non_desktop;
         let crtcs = &mut self.crtcs;
+        crtcs.clear();
 
-        // Preserve the kernel's current assignment when it is still available.
-        for &handle in resources.connectors() {
-            let Some(info) = connectors.get(&handle) else {
-                continue;
-            };
-            if info.state() != connector::State::Connected || crtcs.contains_key(&handle) {
-                continue;
-            }
-            let Some(current) = info.current_encoder() else {
-                continue;
-            };
-            let Some(crtc) = drm
-                .get_encoder(current)
-                .ok()
-                .and_then(|encoder| encoder.crtc())
-            else {
-                continue;
-            };
-            if !crtc_is_taken(crtcs, crtc) {
-                crtcs.insert(handle, crtc);
+        // Desktop heads always claim compatible resources before lease-only
+        // heads, both when retaining kernel assignments and when selecting a
+        // fresh CRTC. This prevents an HMD from starving an ordinary output.
+        for lease_only in [false, true] {
+            for &handle in resources.connectors() {
+                let Some(info) = connectors.get(&handle) else {
+                    continue;
+                };
+                if info.state() != connector::State::Connected
+                    || non_desktop.get(&handle).copied().unwrap_or(false) != lease_only
+                {
+                    continue;
+                }
+                let Some(current) = info.current_encoder() else {
+                    continue;
+                };
+                let Some(crtc) = drm
+                    .get_encoder(current)
+                    .ok()
+                    .and_then(|encoder| encoder.crtc())
+                else {
+                    continue;
+                };
+                if !crtc_is_taken(crtcs, crtc) {
+                    crtcs.insert(handle, crtc);
+                }
             }
         }
 
-        // Assign remaining connectors from their encoder compatibility masks.
-        for &handle in resources.connectors() {
-            let Some(info) = connectors.get(&handle) else {
-                continue;
-            };
-            if info.state() != connector::State::Connected || crtcs.contains_key(&handle) {
-                continue;
-            }
-            let crtc = info.encoders().iter().find_map(|encoder| {
-                let encoder = drm.get_encoder(*encoder).ok()?;
-                resources
-                    .filter_crtcs(encoder.possible_crtcs())
-                    .into_iter()
-                    .find(|candidate| !crtc_is_taken(crtcs, *candidate))
-            });
-            if let Some(crtc) = crtc {
-                crtcs.insert(handle, crtc);
+        for lease_only in [false, true] {
+            for &handle in resources.connectors() {
+                let Some(info) = connectors.get(&handle) else {
+                    continue;
+                };
+                if info.state() != connector::State::Connected
+                    || crtcs.contains_key(&handle)
+                    || non_desktop.get(&handle).copied().unwrap_or(false) != lease_only
+                {
+                    continue;
+                }
+                let crtc = info.encoders().iter().find_map(|encoder| {
+                    let encoder = drm.get_encoder(*encoder).ok()?;
+                    resources
+                        .filter_crtcs(encoder.possible_crtcs())
+                        .into_iter()
+                        .find(|candidate| !crtc_is_taken(crtcs, *candidate))
+                });
+                if let Some(crtc) = crtc {
+                    crtcs.insert(handle, crtc);
+                }
             }
         }
     }
+}
+
+fn connector_is_non_desktop(drm: &impl ControlDevice, connector: connector::Handle) -> bool {
+    let Ok(properties) = drm.get_properties(connector) else {
+        return false;
+    };
+    properties.into_iter().any(|(handle, value)| {
+        drm.get_property(handle).ok().is_some_and(|info| {
+            info.name().to_bytes() == b"non-desktop"
+                && matches!(
+                    info.value_type().convert_value(value),
+                    property::Value::Boolean(true)
+                )
+        })
+    })
 }
 
 fn crtc_is_taken(

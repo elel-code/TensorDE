@@ -28,6 +28,7 @@ mod completion;
 mod device;
 mod gamma;
 mod kms;
+mod lease;
 mod libinput;
 mod management;
 mod scanner;
@@ -37,6 +38,7 @@ mod udev;
 
 use device::DrmDevice;
 pub(crate) use device::{DrmDeviceFd, WeakDrmDeviceFd};
+pub(crate) use lease::{DrmLeaseDeviceSnapshot, DrmLeaseError};
 pub(crate) use libinput::LibinputEvent;
 use libinput::LibinputSource;
 use scanner::DrmScanner;
@@ -74,6 +76,7 @@ pub(crate) struct TtyBackend {
     renderer_formats: Vec<VulkanFormatCapability>,
     outputs: OutputPlan,
     pending_outputs: Vec<BackendOutputEvent>,
+    pending_lease_revocations: Vec<tensor_drm::LeaseRevocation>,
     topology_generation: u64,
 }
 
@@ -87,6 +90,7 @@ struct OpenDevice {
     native_targets: BTreeMap<super::BackendOutputId, kms::KmsOutput>,
     /// Per-output gamma LUT state (atomic blob or legacy). Not on the flip path.
     gamma: BTreeMap<super::BackendOutputId, gamma::OutputGamma>,
+    lease_registry: tensor_drm::LeaseRegistry,
 }
 
 impl Drop for OpenDevice {
@@ -189,6 +193,7 @@ impl TtyBackend {
             renderer_formats: config.renderer_formats.clone(),
             outputs: OutputPlan::new(),
             pending_outputs: Vec::new(),
+            pending_lease_revocations: Vec::new(),
             topology_generation: 0,
         };
 
@@ -328,7 +333,9 @@ impl TtyBackend {
             tensor_host::SessionEvent::Paused => {
                 debug!("pausing tty session");
                 self.libinput.suspend();
-                for device in self.devices.values_mut() {
+                for (device_id, device) in &mut self.devices {
+                    self.pending_lease_revocations
+                        .extend(lease::suspend(*device_id, device));
                     device.drm.pause();
                 }
             }
@@ -345,6 +352,7 @@ impl TtyBackend {
                             continue;
                         }
                     }
+                    lease::resume(device);
                     for gamma in device.gamma.values_mut() {
                         gamma.restore_after_session_resume(&device.drm);
                     }
@@ -454,6 +462,7 @@ impl TtyBackend {
                 output_formats: BTreeMap::new(),
                 native_targets: BTreeMap::new(),
                 gamma: BTreeMap::new(),
+                lease_registry: tensor_drm::LeaseRegistry::new(),
             },
         );
         self.topology_generation = self.topology_generation.wrapping_add(1);
@@ -466,9 +475,11 @@ impl TtyBackend {
     }
 
     fn remove_device(&mut self, device_id: u64) {
-        let Some(_device) = self.devices.remove(&device_id) else {
+        let Some(mut device) = self.devices.remove(&device_id) else {
             return;
         };
+        self.pending_lease_revocations
+            .extend(lease::suspend(device_id, &mut device));
         self.topology_generation = self.topology_generation.wrapping_add(1);
         self.reconcile_outputs();
         info!(device_id, "DRM/GBM device removed");
@@ -476,7 +487,7 @@ impl TtyBackend {
 
     fn rescan_device(&mut self, device_id: u64) -> Result<(), BackendError> {
         let renderer_formats = &self.renderer_formats;
-        let changed = {
+        let (changed, lease_revocations) = {
             let device = self
                 .devices
                 .get_mut(&device_id)
@@ -492,12 +503,13 @@ impl TtyBackend {
             let mut current = device
                 .scanner
                 .connectors()
-                .values()
-                .map(|connector| {
+                .iter()
+                .map(|(handle, connector)| {
                     describe_connector(
                         device_id,
                         connector,
                         device.scanner.crtc_for_connector(&connector.handle()),
+                        device.scanner.is_non_desktop(handle),
                     )
                 })
                 .map(|connector| (connector.id, connector))
@@ -510,8 +522,9 @@ impl TtyBackend {
                     .expect("format negotiation returned an unknown output")
                     .native_format = formats.first().copied();
             }
+            let lease_revocations = lease::reconcile_catalog(device_id, device, &current)?;
             if current == device.connectors && output_formats == device.output_formats {
-                false
+                (false, lease_revocations)
             } else {
                 let unchanged = current
                     .iter()
@@ -523,9 +536,11 @@ impl TtyBackend {
                 device.gamma.retain(|id, _| unchanged.contains(id));
                 device.connectors = current;
                 device.output_formats = output_formats;
-                true
+                (true, lease_revocations)
             }
         };
+
+        self.pending_lease_revocations.extend(lease_revocations);
 
         if changed {
             self.topology_generation = self.topology_generation.wrapping_add(1);
@@ -577,6 +592,7 @@ fn negotiate_device_output_formats(
     let mut negotiated = BTreeMap::new();
     for output in connectors.values().filter(|connector| {
         connector.state == ConnectorState::Connected
+            && !connector.non_desktop
             && connector.preferred_mode.is_some()
             && connector.mapped_crtc.is_some()
     }) {
@@ -642,6 +658,7 @@ fn describe_connector(
     device_id: u64,
     connector: &drm::control::connector::Info,
     crtc: Option<drm::control::crtc::Handle>,
+    non_desktop: bool,
 ) -> ConnectorSnapshot {
     let modes = connector
         .modes()
@@ -670,6 +687,7 @@ fn describe_connector(
             drm::control::connector::State::Disconnected => ConnectorState::Disconnected,
             drm::control::connector::State::Unknown => ConnectorState::Unknown,
         },
+        non_desktop,
         physical_size: (physical_size.0 as i32, physical_size.1 as i32),
         subpixel: subpixel_from_drm(connector.subpixel()),
         modes,
@@ -749,6 +767,8 @@ pub(crate) enum BackendError {
     UnknownOutput(super::BackendOutputId),
     #[error("failed to scan DRM connectors for device {device_id}: {message}")]
     ConnectorScan { device_id: u64, message: String },
+    #[error("failed to reconcile DRM lease topology for device {device_id}: {message}")]
+    LeaseTopology { device_id: u64, message: String },
     #[error("failed to negotiate a native output format for {output}: {message}")]
     OutputFormats { output: String, message: String },
     #[error("failed to install native output buffers for {output}: {message}")]

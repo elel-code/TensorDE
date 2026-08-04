@@ -9,6 +9,9 @@ pub struct ConnectorSnapshot {
     pub id: ConnectorId,
     pub name: String,
     pub state: ConnectorState,
+    /// Kernel `non-desktop` property. These heads are reserved for DRM lease
+    /// offers and must never enter the ordinary desktop output plan.
+    pub non_desktop: bool,
     pub physical_size_mm: (i32, i32),
     pub subpixel: SubpixelLayout,
     pub modes: Vec<PhysicalMode>,

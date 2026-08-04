@@ -10,7 +10,10 @@ pub(crate) use host_map::physical_mode_from_drm;
 #[cfg(feature = "tty")]
 pub(crate) use output::{BackendOutputEvent, BackendOutputId, OutputDescriptor};
 #[cfg(feature = "tty")]
-pub(crate) use tty::{DrmDeviceFd, LibinputEvent, TtyBackend, UdevEvent, WeakDrmDeviceFd};
+pub(crate) use tty::{
+    DrmDeviceFd, DrmLeaseDeviceSnapshot, DrmLeaseError, LibinputEvent, TtyBackend, UdevEvent,
+    WeakDrmDeviceFd,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BackendConfig {

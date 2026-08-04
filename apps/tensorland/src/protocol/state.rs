@@ -343,8 +343,8 @@ impl RuntimeState {
         self.protocol_globals
             .update_syncobj(&self.display_handle, device);
         self.backend = Some(backend);
+        self.refresh_drm_lease_device();
     }
-
     #[cfg(feature = "tty")]
     pub(crate) fn refresh_syncobj_device(&mut self) {
         let device = self.backend.as_ref().and_then(TtyBackend::syncobj_device);

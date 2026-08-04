@@ -697,6 +697,7 @@ impl RuntimeState {
         backend.handle_udev_event(event);
         self.backend = Some(backend);
         self.refresh_syncobj_device();
+        self.refresh_drm_lease_device();
         let events = self
             .backend
             .as_mut()
@@ -728,6 +729,7 @@ impl RuntimeState {
         backend.handle_session_event(event);
         self.backend = Some(backend);
         self.refresh_syncobj_device();
+        self.refresh_drm_lease_device();
         let events = self
             .backend
             .as_mut()

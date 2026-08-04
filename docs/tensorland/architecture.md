@@ -385,6 +385,17 @@ Vulkanalia only produces renderable buffers and completion synchronization for i
 adapter scans connector resources in place and preserves connector-to-CRTC mappings across startup,
 udev hotplug, delayed mode discovery, DP-MST removal, and session resume.
 
+DRM leasing stays at this same native boundary. The scanner reads the kernel
+`non-desktop` property and allocates CRTCs to desktop heads first. Shared
+`tensor-drm` policy retains only bounded connector identities and lease tokens;
+Tensorland's compositor thread retains the DRM fd, Wayland resources, and real
+create/revoke ioctls. A lease contains the connector, its assigned CRTC, and a
+unique compatible primary plane. The direct `wp_drm_lease_v1` owner follows
+the authoritative Vulkan-selected primary node, opens a separate verified
+non-master FD for each bound client, and removes a leased/non-desktop head from
+ordinary output planning without teaching ECS or `vulkan-renderer` about DRM
+leases.
+
 The scanner is an adapter, not Tensorland's output model. Every connector is copied into a complete
 device-local snapshot, including connected connectors that do not yet have a mode or CRTC. One
 backend-wide `OutputPolicy` consumes snapshots from every DRM device and produces an ordered

@@ -193,6 +193,11 @@ pub const PROTOCOL_CATALOG: &[ProtocolCapabilityRef] = &[
         tier: ProtocolTier::StagingExt,
         prefer_over_community: false,
     },
+    ProtocolCapabilityRef {
+        name: "wp-drm-lease",
+        tier: ProtocolTier::StagingExt,
+        prefer_over_community: false,
+    },
     // Tier 3 — unstable (still common)
     ProtocolCapabilityRef {
         name: "pointer-gestures",

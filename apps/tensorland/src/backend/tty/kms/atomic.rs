@@ -34,8 +34,8 @@ use present::PresentRequest;
 pub(in crate::backend::tty::kms) use cursor::{
     CursorPlaneCapabilities, CursorPlaneSelection, discover_cursor_planes,
 };
-pub(in crate::backend::tty) use formats::primary_plane_formats;
 pub(super) use formats::select_primary_plane;
+pub(in crate::backend::tty) use formats::{primary_plane_formats, select_lease_primary_plane};
 
 #[derive(Debug)]
 pub(super) struct AtomicSurface {

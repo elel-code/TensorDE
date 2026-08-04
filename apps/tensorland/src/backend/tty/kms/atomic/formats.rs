@@ -42,6 +42,50 @@ pub(in crate::backend::tty::kms) fn select_primary_plane(
         .ok_or(AtomicError::NoPrimaryPlaneForFormat { crtc, format })
 }
 
+pub(in crate::backend::tty) fn select_lease_primary_plane(
+    device: &impl ControlDevice,
+    crtc: crtc::Handle,
+    claimed: &[plane::Handle],
+) -> Result<plane::Handle, AtomicError> {
+    primary_plane_handles(device, crtc)?
+        .into_iter()
+        .find(|handle| !claimed.contains(handle))
+        .ok_or(AtomicError::NoPrimaryPlane(crtc))
+}
+
+fn primary_plane_handles(
+    device: &impl ControlDevice,
+    crtc: crtc::Handle,
+) -> Result<Vec<plane::Handle>, AtomicError> {
+    let resources = device.resource_handles().map_err(AtomicError::Resources)?;
+    let handles = device.plane_handles().map_err(AtomicError::Planes)?;
+    let mut primary = Vec::new();
+    for handle in handles {
+        let info = device.get_plane(handle).map_err(AtomicError::Plane)?;
+        if !resources
+            .filter_crtcs(info.possible_crtcs())
+            .contains(&crtc)
+        {
+            continue;
+        }
+        let properties = PropertySnapshot::load(device, handle)?;
+        let (_, plane_type) = properties.optional("type", PropertyKind::Enum)?.ok_or(
+            AtomicError::MissingProperty {
+                object: u32::from(handle),
+                name: "type",
+            },
+        )?;
+        if plane_type == PlaneType::Primary as u32 as u64 {
+            primary.push(handle);
+        }
+    }
+    primary.sort_unstable_by_key(|handle| u32::from(*handle));
+    if primary.is_empty() {
+        return Err(AtomicError::NoPrimaryPlane(crtc));
+    }
+    Ok(primary)
+}
+
 fn primary_planes(
     device: &impl ControlDevice,
     crtc: crtc::Handle,

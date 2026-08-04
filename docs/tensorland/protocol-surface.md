@@ -85,6 +85,7 @@ commit-timing, pointer-warp, idle-notify, security-context, text-input-v3,
 **ext-session-lock**, **ext-foreign-toplevel-list**, **ext-data-control**,
 **ext-background-effect**, **ext-image-capture-source**, **ext-image-copy-capture** (TTY output and single-output toplevel capture use a retained GPU region tap plus deferred timeline SHM readback; headless capture keeps bounded idle SHM composition),
 **ext-workspace**,
+**wp-drm-lease** (completion-gated to real TTY non-desktop connectors),
 xdg-foreign, xdg-system-bell, xdg-toplevel-icon/tag, …
 
 `xdg-dialog` is a direct ancillary-object implementation with one live dialog object per
@@ -216,8 +217,10 @@ change notifications are complete.
    output feedback, formats, tone mapping, and KMS metadata. Parametric image
    descriptions, fixed SDR feedback, and surface commit state are implemented
    behind the completion gate; production output/HDR ownership remains.
-9. **wp DRM lease** (tier 2): non-desktop connector advertisement, lease FD,
-   revocation, hotplug, session, and output-plan exclusion.
+9. ~~**wp DRM lease** (tier 2)~~: completion-gated non-desktop connector
+   advertisement, verified non-master device FD, real kernel lease FD,
+   connector/CRTC/primary-plane reservation, revocation on destroy, hotplug,
+   session pause and device removal, plus ordinary output-plan exclusion.
 10. Finish already-advertised protocol depth: live output mode replacement,
     cross-output capture, cursor-only GPU capture, multi-plane/YUV dma-buf,
     implicit reservation-fence policy, and atomic cursor planes. Tablet cursor

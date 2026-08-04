@@ -110,7 +110,7 @@ pipeline remains branch-free. Live output color selection and change events,
 HDR output post-encoding, KMS metadata/reset ownership, ICC limits, and native
 HDR evidence remain before the combined slice is complete.
 
-### 4. DRM leasing
+### 4. DRM leasing — implemented
 
 Implement `wp_drm_lease_v1` only for non-desktop connectors on the authoritative
 Vulkan-selected DRM device. Tensorland owns connector enumeration, lease file
@@ -122,6 +122,21 @@ Completion requires connector/object lifetime and duplicate-connector errors,
 request rejection across DRM devices, lease-FD delivery, revoke-on-destroy,
 hot-unplug and session-pause revocation, output-plan exclusion, and optional
 TTY evidence with a real lease-capable connector.
+
+The implemented path reads the kernel `non-desktop` property during connector
+discovery, assigns desktop CRTCs before lease-only heads, and excludes every
+non-desktop connector from ordinary format negotiation and output planning.
+The authoritative Vulkan-selected primary DRM device owns a bounded lease
+catalog. Each accepted request reserves connector, CRTC, and a unique primary
+plane before issuing the real `DRM_IOCTL_MODE_CREATE_LEASE`; no placeholder FD
+or advertised-only path exists. Destroy, hot-unplug, resource reassignment,
+device removal, and VT/session pause issue `DRM_IOCTL_MODE_REVOKE_LEASE` and
+finish the matching Wayland object. The global is installed only after a real
+TTY owner exposes a leasable connector and a separately opened DRM FD can be
+verified and stripped of master state. Wire tests cover metadata grouping,
+release/released, and the protocol-defined empty, duplicate, and wrong-device
+errors. Native HMD evidence remains optional because it requires lease-capable
+hardware; its absence does not weaken the deterministic policy and wire gates.
 
 ### 5. Existing protocol depth
 

@@ -39,7 +39,7 @@ pub fn plan_outputs(rules: &OutputRuleTable, connectors: &[ConnectorSnapshot]) -
 }
 
 fn plan_one(rules: &OutputRuleTable, connector: &ConnectorSnapshot) -> Option<OutputDescriptor> {
-    if connector.state != ConnectorState::Connected {
+    if connector.state != ConnectorState::Connected || connector.non_desktop {
         return None;
     }
     let rule = rules.get(&connector.name);
@@ -111,6 +111,7 @@ mod tests {
             id: ConnectorId::new(device, conn),
             name: format!("card-{device}-connector-{conn}"),
             state,
+            non_desktop: false,
             physical_size_mm: (600, 340),
             subpixel: SubpixelLayout::HorizontalRgb,
             modes: mode.into_iter().collect(),
@@ -139,6 +140,14 @@ mod tests {
         let plan = plan_outputs(&OutputRuleTable::default(), &connectors);
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[&ConnectorId::new(1, 1)].crtc, 7);
+    }
+
+    #[test]
+    fn plan_never_claims_non_desktop_connectors() {
+        let mut connector = snap(1, 1, ConnectorState::Connected, Some(7), Some(1920), true);
+        connector.non_desktop = true;
+
+        assert!(plan_outputs(&OutputRuleTable::default(), &[connector]).is_empty());
     }
 
     #[test]

@@ -17,6 +17,8 @@ pub(in crate::protocol) mod cursor_shape;
 pub(in crate::protocol) mod desktop_controls;
 #[cfg(feature = "tty")]
 pub(in crate::protocol) mod dmabuf;
+#[cfg(feature = "tty")]
+pub(in crate::protocol) mod drm_lease;
 pub(in crate::protocol) mod foreign_toplevel;
 pub(in crate::protocol) mod fractional_scale;
 pub(in crate::protocol) mod idle_inhibit;
@@ -62,6 +64,8 @@ use cursor_shape::CursorShapeProtocol;
 use desktop_controls::DesktopControls;
 #[cfg(feature = "tty")]
 use dmabuf::DmabufProtocol;
+#[cfg(feature = "tty")]
+use drm_lease::DrmLeaseProtocol;
 use foreign_toplevel::ForeignToplevelListState;
 use fractional_scale::FractionalScaleProtocol;
 use idle_inhibit::IdleInhibitProtocol;
@@ -150,6 +154,8 @@ pub(crate) struct ProtocolGlobals {
     #[cfg(feature = "tty")]
     dmabuf: DmabufProtocol,
     #[cfg(feature = "tty")]
+    pub(super) drm_lease: DrmLeaseProtocol,
+    #[cfg(feature = "tty")]
     syncobj: DrmSyncobjProtocol,
 }
 
@@ -221,6 +227,8 @@ impl ProtocolGlobals {
             #[cfg(feature = "tty")]
             dmabuf: DmabufProtocol::new(),
             #[cfg(feature = "tty")]
+            drm_lease: DrmLeaseProtocol::default(),
+            #[cfg(feature = "tty")]
             syncobj: DrmSyncobjProtocol::new(),
         }
     }
@@ -281,6 +289,16 @@ impl ProtocolGlobals {
         device: Option<crate::backend::DrmDeviceFd>,
     ) {
         self.syncobj.update(display, device);
+    }
+
+    #[cfg(feature = "tty")]
+    pub(crate) fn update_drm_lease(
+        &mut self,
+        display: &DisplayHandle,
+        device: Option<crate::backend::DrmLeaseDeviceSnapshot>,
+        revocations: Vec<tensor_drm::LeaseRevocation>,
+    ) {
+        self.drm_lease.update(display, device, revocations);
     }
 
     #[cfg(feature = "tty")]
@@ -421,6 +439,8 @@ impl ProtocolGlobals {
             #[cfg(feature = "tty")]
             linux_dmabuf: self.dmabuf.advertised(),
             #[cfg(feature = "tty")]
+            drm_lease: self.drm_lease.advertised(),
+            #[cfg(feature = "tty")]
             linux_drm_syncobj: self.syncobj.advertised(),
             #[cfg(feature = "tty")]
             linux_drm_syncobj_active: self.syncobj.active(),
@@ -480,6 +500,8 @@ pub(crate) struct ProtocolCapabilities {
     pub(crate) tablet_v2: bool,
     #[cfg(feature = "tty")]
     pub(crate) linux_dmabuf: bool,
+    #[cfg(feature = "tty")]
+    pub(crate) drm_lease: bool,
     #[cfg(feature = "tty")]
     pub(crate) linux_drm_syncobj: bool,
     #[cfg(feature = "tty")]
@@ -568,6 +590,8 @@ mod tests {
                 tablet_v2: true,
                 #[cfg(feature = "tty")]
                 linux_dmabuf: false,
+                #[cfg(feature = "tty")]
+                drm_lease: false,
                 #[cfg(feature = "tty")]
                 linux_drm_syncobj: false,
                 #[cfg(feature = "tty")]
