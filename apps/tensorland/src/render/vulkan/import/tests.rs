@@ -59,3 +59,35 @@ fn shm_staging_size_uses_tightly_packed_rgba_rows() {
     assert_eq!(shm_staging_len(Size::new(640, 480)).unwrap(), 640 * 480 * 4);
     assert!(shm_staging_len(Size::new(u32::MAX, u32::MAX)).is_err());
 }
+
+#[test]
+fn eight_bit_client_formats_expose_encoded_and_srgb_views() {
+    let bgra = client_view_formats(Fourcc::ARGB8888).unwrap();
+    assert_eq!(bgra.encoded, TextureFormat::Bgra8Unorm);
+    assert_eq!(bgra.srgb, Some(TextureFormat::Bgra8Srgb));
+    assert_eq!(
+        bgra.select(SourceImageViewEncoding::Encoded, Fourcc::ARGB8888)
+            .unwrap(),
+        TextureFormat::Bgra8Unorm
+    );
+    assert_eq!(
+        bgra.select(SourceImageViewEncoding::SrgbDecoded, Fourcc::ARGB8888)
+            .unwrap(),
+        TextureFormat::Bgra8Srgb
+    );
+}
+
+#[test]
+fn ten_bit_client_format_fails_closed_without_an_srgb_view() {
+    let formats = client_view_formats(Fourcc::ARGB2101010).unwrap();
+    assert_eq!(
+        formats
+            .select(SourceImageViewEncoding::Encoded, Fourcc::ARGB2101010)
+            .unwrap(),
+        TextureFormat::A2R10G10B10UnormPack32
+    );
+    assert!(matches!(
+        formats.select(SourceImageViewEncoding::SrgbDecoded, Fourcc::ARGB2101010),
+        Err(ClientImportError::MissingSrgbView(Fourcc::ARGB2101010))
+    ));
+}

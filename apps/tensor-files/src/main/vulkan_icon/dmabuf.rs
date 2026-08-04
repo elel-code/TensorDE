@@ -26,6 +26,7 @@ impl VulkanIconRenderer {
             }],
             usage: TextureUsages::SAMPLED,
             components,
+            view_formats: vec![format],
         };
         let imported = device
             .import_dma_buf_image(&descriptor, &source.plane.fd)

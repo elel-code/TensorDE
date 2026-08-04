@@ -14,6 +14,29 @@ impl MemoryAllocator {
     /// Creates an image from an image-only memory pool. Optimal, linear, and
     /// buffer allocations never share a block.
     pub fn create_image(&self, descriptor: &ImageDescriptor) -> Result<Image> {
+        self.create_image_inner(descriptor, None)
+    }
+
+    /// Creates an image whose storage may be reinterpreted through an
+    /// explicit, compatible set of view formats.
+    ///
+    /// The base format must be present in `view_formats`. Vulkan's mutable
+    /// format flag and image-format-list pNext are kept behind this typed
+    /// boundary so applications never construct raw image create info.
+    pub fn create_image_with_view_formats(
+        &self,
+        descriptor: &ImageDescriptor,
+        view_formats: &[crate::TextureFormat],
+    ) -> Result<Image> {
+        validate_view_formats(descriptor.format, view_formats)?;
+        self.create_image_inner(descriptor, Some(view_formats.into()))
+    }
+
+    fn create_image_inner(
+        &self,
+        descriptor: &ImageDescriptor,
+        view_formats: Option<Box<[crate::TextureFormat]>>,
+    ) -> Result<Image> {
         descriptor
             .validate()
             .map_err(|error| Error::Validation(error.to_string()))?;
@@ -28,9 +51,23 @@ impl MemoryAllocator {
             .usage(descriptor.usage.to_vk())
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
-        let image = unsafe { self.owner.device.create_image(&create, None) }
-            .map_err(|source| Error::vulkan("vkCreateImage", source))?;
-        match self.bind_image(image, descriptor) {
+        let image = if let Some(view_formats) = view_formats.as_deref() {
+            let raw_formats = view_formats
+                .iter()
+                .copied()
+                .map(crate::TextureFormat::to_vk)
+                .collect::<Vec<_>>();
+            let mut format_list =
+                vk::ImageFormatListCreateInfo::builder().view_formats(&raw_formats);
+            let create = create
+                .flags(vk::ImageCreateFlags::MUTABLE_FORMAT)
+                .push_next(&mut format_list);
+            unsafe { self.owner.device.create_image(&create, None) }
+        } else {
+            unsafe { self.owner.device.create_image(&create, None) }
+        }
+        .map_err(|source| Error::vulkan("vkCreateImage", source))?;
+        match self.bind_image(image, descriptor, view_formats) {
             Ok(image) => Ok(image),
             Err(error) => {
                 unsafe { self.owner.device.destroy_image(image, None) };
@@ -39,7 +76,12 @@ impl MemoryAllocator {
         }
     }
 
-    fn bind_image(&self, image: vk::Image, descriptor: &ImageDescriptor) -> Result<Image> {
+    fn bind_image(
+        &self,
+        image: vk::Image,
+        descriptor: &ImageDescriptor,
+        view_formats: Option<Box<[crate::TextureFormat]>>,
+    ) -> Result<Image> {
         let (requirements, dedicated_requirements) = image_memory_requirements(&self.owner, image);
         let selection = MemoryTypeSelector::new(self.memory_types.iter().copied())
             .select(
@@ -68,7 +110,13 @@ impl MemoryAllocator {
                 if block.compatible(class, descriptor.memory, selection.memory_type_index)
                     && let Some(range) = block.allocate(requirements.size, requirements.alignment)
                 {
-                    return self.finish_image(image, descriptor, Arc::clone(block), range);
+                    return self.finish_image(
+                        image,
+                        descriptor,
+                        Arc::clone(block),
+                        range,
+                        view_formats,
+                    );
                 }
             }
         }
@@ -115,7 +163,7 @@ impl MemoryAllocator {
                 Error::Validation("new image memory block cannot satisfy allocation".into())
             })?;
         blocks.push(Arc::clone(&block));
-        self.finish_image(image, descriptor, block, range)
+        self.finish_image(image, descriptor, block, range, view_formats)
     }
 
     fn finish_image(
@@ -124,6 +172,7 @@ impl MemoryAllocator {
         descriptor: &ImageDescriptor,
         block: Arc<MemoryBlock>,
         range: Range<u64>,
+        view_formats: Option<Box<[crate::TextureFormat]>>,
     ) -> Result<Image> {
         let bind = vk::BindImageMemoryInfo::builder()
             .image(image)
@@ -147,6 +196,7 @@ impl MemoryAllocator {
                 array_layers: descriptor.array_layers,
                 samples: descriptor.samples,
                 usage: descriptor.usage,
+                view_formats,
                 label: descriptor.label.clone(),
             }),
         })
@@ -235,7 +285,13 @@ impl Image {
     }
 
     pub fn create_view(&self, descriptor: &ImageViewDescriptor) -> Result<ImageView> {
-        if descriptor.format != self.inner.format {
+        if descriptor.format != self.inner.format
+            && !self
+                .inner
+                .view_formats
+                .as_deref()
+                .is_some_and(|formats| formats.contains(&descriptor.format))
+        {
             return Err(Error::Validation(
                 "image view format reinterpretation is not enabled for this image".into(),
             ));
@@ -292,6 +348,7 @@ struct ImageInner {
     array_layers: u32,
     samples: crate::SampleCount,
     usage: crate::TextureUsages,
+    view_formats: Option<Box<[crate::TextureFormat]>>,
     label: Option<String>,
 }
 
@@ -392,6 +449,27 @@ impl Drop for ImageViewInner {
     }
 }
 
+fn validate_view_formats(
+    base: crate::TextureFormat,
+    formats: &[crate::TextureFormat],
+) -> Result<()> {
+    if formats.is_empty() || !formats.contains(&base) {
+        return Err(Error::Validation(
+            "mutable image view formats must be non-empty and include the base format".into(),
+        ));
+    }
+    if formats
+        .iter()
+        .copied()
+        .any(|format| !base.is_view_compatible_with(format))
+    {
+        return Err(Error::Validation(
+            "mutable image view formats must belong to one Vulkan compatibility class".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_subresource_range(
     range: TextureSubresourceRange,
     mip_levels: u32,
@@ -431,4 +509,31 @@ fn image_memory_requirements(
             .get_image_memory_requirements2(&info, &mut requirements)
     };
     (requirements.memory_requirements, dedicated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TextureFormat;
+
+    #[test]
+    fn mutable_views_require_the_base_and_one_compatibility_class() {
+        assert!(
+            validate_view_formats(
+                TextureFormat::Bgra8Unorm,
+                &[TextureFormat::Bgra8Unorm, TextureFormat::Bgra8Srgb]
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_view_formats(TextureFormat::Bgra8Unorm, &[TextureFormat::Bgra8Srgb]).is_err()
+        );
+        assert!(
+            validate_view_formats(
+                TextureFormat::Bgra8Unorm,
+                &[TextureFormat::Bgra8Unorm, TextureFormat::Rgba8Srgb]
+            )
+            .is_err()
+        );
+    }
 }

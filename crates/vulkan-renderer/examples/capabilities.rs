@@ -112,6 +112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .collect(),
                     usage: external_usage,
                     components: ComponentMapping::IDENTITY,
+                    view_formats: vec![image.format()],
                 },
                 fd,
             )?,

@@ -19,7 +19,7 @@ use crate::render::{
 
 use super::{
     capture::{CaptureReadbackManager, PreparedCaptureTap},
-    import::{ClientImageCache, ClientImageInfo},
+    import::{ClientImageCache, ClientImageInfo, ClientImportError},
     pipeline::{
         BackdropFilterPipeline, ClientImagePipeline, CursorPipeline, FocusRingPipeline,
         ManagedClientImagePipeline, ShadowPipeline, TensorPipelineError,
@@ -206,10 +206,11 @@ impl VulkanFrameExecutor {
         }
         self.resolved_client_images.clear();
         self.resolved_client_images.reserve(client_ids.len());
-        for id in client_ids {
+        for descriptor in client_ids {
             let image = client_image_cache
-                .image_info(*id)
-                .ok_or(VulkanFrameError::MissingClientImage(*id))?;
+                .image_info(descriptor.buffer_id, descriptor.view_encoding)
+                .map_err(VulkanFrameError::ClientImageView)?
+                .ok_or(VulkanFrameError::MissingClientImage(descriptor.buffer_id))?;
             self.resolved_client_images.push(image);
         }
         let Some(slot) = self
@@ -714,6 +715,8 @@ pub(super) enum VulkanFrameError {
     DescriptorImageCountMismatch { expected: u32, found: usize },
     #[error("scene references client image {0:?}, but its Vulkan import is unavailable")]
     MissingClientImage(crate::ecs::SurfaceBufferId),
+    #[error("client image has no view compatible with its committed color state: {0}")]
+    ClientImageView(#[source] ClientImportError),
     #[error("shared renderer rejected Tensor's frame queue submission: {0}")]
     SharedSubmit(#[source] RendererError),
     #[error(

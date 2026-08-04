@@ -22,6 +22,8 @@ pub(crate) use pass::BackdropRegionSpan;
 pub(crate) use pass::{
     BACKDROP_INTERMEDIATE_LANE_COUNT, BackdropPass, CompositionPath, FramePassPlan, OutputLoad,
 };
+#[cfg(test)]
+pub(crate) use plan::ClientImageDescriptor;
 use plan::FrameDrawPlan;
 pub(crate) use plan::SceneDrawCommand;
 pub(in crate::render) use plan::ShadowDraw;

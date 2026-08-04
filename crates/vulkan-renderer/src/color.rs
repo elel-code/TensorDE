@@ -9,6 +9,19 @@ use crate::TextureFormat;
 mod shader;
 pub use shader::{ColorShaderEncoding, ColorTransformShaderData};
 
+/// Transfer interpretation required from a sampled client image view.
+///
+/// This is deliberately independent of any compositor buffer identity. A
+/// host may cache both compatible views for one image and include this value
+/// in its descriptor key.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum SourceImageViewEncoding {
+    /// The view returns the stored channel values without transfer decoding.
+    Encoded,
+    /// An sRGB view performs the source transfer decode while sampling.
+    SrgbDecoded,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Chromaticity {
     pub x_millionths: i32,
@@ -286,6 +299,39 @@ impl ColorTransformPlan {
             && !self.encode_from_linear
     }
 
+    /// Selects the source view needed for mathematically ordered color work.
+    ///
+    /// Identity SDR composition keeps the hardware sRGB fast path. Managed
+    /// electrical-alpha and limited-range inputs must expose encoded values so
+    /// unpremultiplication/range expansion happens before transfer decoding.
+    /// Non-sRGB transfer functions likewise require an encoded view so the
+    /// managed shader owns their decode.
+    pub fn source_view_encoding(self) -> SourceImageViewEncoding {
+        if self.is_identity() {
+            return SourceImageViewEncoding::SrgbDecoded;
+        }
+        let encoded_range = matches!(
+            self.source.encoding,
+            PixelEncoding::Rgb {
+                range: ColorRange::Limited
+            }
+        );
+        if encoded_range
+            || matches!(
+                self.source.alpha_mode,
+                ColorAlphaMode::PremultipliedElectrical
+            )
+            || !matches!(
+                self.source.volume.transfer_function,
+                ColorTransferFunction::Srgb
+            )
+        {
+            SourceImageViewEncoding::Encoded
+        } else {
+            SourceImageViewEncoding::SrgbDecoded
+        }
+    }
+
     /// Linear-light source-RGB to target-RGB matrix selected on the cold
     /// planning path. The fixed-point storage keeps the retained plan fully
     /// comparable while frame lowering only performs nine integer-to-float
@@ -447,6 +493,10 @@ mod tests {
         assert!(plan.is_identity());
         assert_eq!(plan.working_format, TextureFormat::Bgra8Srgb);
         assert!(!plan.publish_hdr_metadata);
+        assert_eq!(
+            plan.source_view_encoding(),
+            SourceImageViewEncoding::SrgbDecoded
+        );
     }
 
     #[test]
@@ -486,6 +536,49 @@ mod tests {
             }
         );
         assert!(!plan.publish_hdr_metadata);
+        assert_eq!(
+            plan.source_view_encoding(),
+            SourceImageViewEncoding::Encoded
+        );
+    }
+
+    #[test]
+    fn limited_rgb_and_managed_electrical_alpha_preserve_encoded_samples() {
+        let target = TargetColorDescriptor {
+            volume: ColorVolume::SDR_SRGB,
+            format: TextureFormat::Bgra8Srgb,
+            hdr_metadata_supported: false,
+        };
+        let limited = ColorTransformPlan::build(
+            SourceColorDescriptor {
+                encoding: PixelEncoding::Rgb {
+                    range: ColorRange::Limited,
+                },
+                ..SourceColorDescriptor::default()
+            },
+            target,
+        )
+        .unwrap();
+        assert_eq!(
+            limited.source_view_encoding(),
+            SourceImageViewEncoding::Encoded
+        );
+
+        let electrical = ColorTransformPlan::build(
+            SourceColorDescriptor {
+                volume: ColorVolume {
+                    primaries: ColorPrimaries::BT2020,
+                    ..ColorVolume::SDR_SRGB
+                },
+                ..SourceColorDescriptor::default()
+            },
+            target,
+        )
+        .unwrap();
+        assert_eq!(
+            electrical.source_view_encoding(),
+            SourceImageViewEncoding::Encoded
+        );
     }
 
     #[test]

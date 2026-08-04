@@ -144,6 +144,11 @@ from a sampler heap owned by the same logical device as its `ImageView`.
    exact descriptor byte offset (`heapIndexStride = 1`). The value MUST come
    from `SampledTextureBinding::push_index_heap_offsets` so an offset beyond
    the mapping's 32-bit representation fails instead of truncating.
+6. Images sampled through more than one transfer interpretation MUST declare
+   the complete compatible view-format list at image creation. The renderer
+   owns `MUTABLE_FORMAT` and `VkImageFormatListCreateInfo`; callers select only
+   typed formats from that retained list. A host descriptor cache MUST include
+   view format or encoding in addition to backing-image identity.
 
 ### Shader binding mapping
 

@@ -123,6 +123,10 @@ pub struct DmaBufImageDescriptor {
     pub planes: Vec<DmaBufPlaneLayout>,
     pub usage: TextureUsages,
     pub components: ComponentMapping,
+    /// Complete compatible image-view format set, including `format`.
+    /// Multiple entries opt the imported image into Vulkan mutable-format
+    /// storage and are materialized once on the import cold path.
+    pub view_formats: Vec<TextureFormat>,
 }
 
 impl DmaBufImageDescriptor {
@@ -152,6 +156,7 @@ impl DmaBufImageDescriptor {
                 "dma-buf image usage must be non-empty".into(),
             ));
         }
+        validate_import_view_formats(self.format, &self.view_formats)?;
         Ok(())
     }
 }
@@ -179,7 +184,7 @@ impl fmt::Debug for ImportedDmaBufImage {
             .debug_struct("ImportedDmaBufImage")
             .field("label", &self.inner.label)
             .field("image", &self.inner.image)
-            .field("view", &self.inner.view)
+            .field("view_formats", &self.inner.views.len())
             .field("format", &self.inner.format)
             .field("extent", &self.inner.extent)
             .field("modifier", &self.inner.modifier)
@@ -188,9 +193,32 @@ impl fmt::Debug for ImportedDmaBufImage {
     }
 }
 
+fn validate_import_view_formats(base: TextureFormat, formats: &[TextureFormat]) -> Result<()> {
+    if formats.is_empty() || !formats.contains(&base) {
+        return Err(Error::Validation(
+            "dma-buf view formats must be non-empty and include the base format".into(),
+        ));
+    }
+    if formats
+        .iter()
+        .copied()
+        .any(|format| !base.is_view_compatible_with(format))
+    {
+        return Err(Error::Validation(
+            "dma-buf view formats must belong to one Vulkan compatibility class".into(),
+        ));
+    }
+    Ok(())
+}
+
 impl ImportedDmaBufImage {
     pub(crate) fn view(&self) -> vk::ImageView {
-        self.inner.view
+        self.inner
+            .views
+            .iter()
+            .find(|view| view.format == self.inner.format)
+            .expect("validated imported image retains its base-format view")
+            .view
     }
 
     pub fn format(&self) -> TextureFormat {
@@ -220,13 +248,26 @@ impl ImportedDmaBufImage {
     /// Reconstructs the create-info consumed by `VK_EXT_descriptor_heap` image
     /// descriptor writes. The returned value borrows no temporary pNext data.
     pub(crate) fn view_create_info(&self) -> vk::ImageViewCreateInfo {
-        vk::ImageViewCreateInfo::builder()
+        self.view_create_info_for_format(self.inner.format)
+            .expect("validated imported image retains its base-format view")
+    }
+
+    pub(crate) fn view_create_info_for_format(
+        &self,
+        format: TextureFormat,
+    ) -> Result<vk::ImageViewCreateInfo> {
+        if !self.inner.views.iter().any(|view| view.format == format) {
+            return Err(Error::Validation(format!(
+                "imported dma-buf image has no {format:?} compatible view"
+            )));
+        }
+        Ok(vk::ImageViewCreateInfo::builder()
             .image(self.inner.image)
             .view_type(vk::ImageViewType::_2D)
-            .format(self.inner.format.to_vk())
+            .format(format.to_vk())
             .components(self.inner.components.to_vk())
             .subresource_range(self.subresource_range().to_vk())
-            .build()
+            .build())
     }
 
     /// Creates the typed binding used to resolve this image in a render graph.
@@ -249,7 +290,7 @@ struct ImportedDmaBufImageInner {
     owner: Arc<DeviceOwner>,
     image: vk::Image,
     memories: Vec<vk::DeviceMemory>,
-    view: vk::ImageView,
+    views: Vec<ImportedDmaBufView>,
     format: TextureFormat,
     extent: Extent2D,
     modifier: u64,
@@ -258,10 +299,17 @@ struct ImportedDmaBufImageInner {
     label: Option<String>,
 }
 
+struct ImportedDmaBufView {
+    format: TextureFormat,
+    view: vk::ImageView,
+}
+
 impl Drop for ImportedDmaBufImageInner {
     fn drop(&mut self) {
         unsafe {
-            self.owner.device.destroy_image_view(self.view, None);
+            for view in &self.views {
+                self.owner.device.destroy_image_view(view.view, None);
+            }
             self.owner.device.destroy_image(self.image, None);
             for memory in &self.memories {
                 self.owner.device.free_memory(*memory, None);
@@ -645,6 +693,7 @@ mod tests {
             }],
             usage: TextureUsages::SAMPLED,
             components: ComponentMapping::default(),
+            view_formats: vec![TextureFormat::Bgra8Unorm],
         }
     }
 
@@ -672,6 +721,18 @@ mod tests {
             offset: 16_384,
             row_pitch: 512,
         });
+        assert!(descriptor.validate().is_err());
+    }
+
+    #[test]
+    fn dma_buf_descriptor_accepts_only_explicit_compatible_view_formats() {
+        let mut descriptor = descriptor();
+        descriptor.view_formats = vec![TextureFormat::Bgra8Unorm, TextureFormat::Bgra8Srgb];
+        assert!(descriptor.validate().is_ok());
+
+        descriptor.view_formats = vec![TextureFormat::Bgra8Srgb];
+        assert!(descriptor.validate().is_err());
+        descriptor.view_formats = vec![TextureFormat::Bgra8Unorm, TextureFormat::Rgba16Float];
         assert!(descriptor.validate().is_err());
     }
 

@@ -96,8 +96,11 @@ Imported client dma-bufs and compositor-owned output images use separate lifetim
 protocol owner builds Tensorland's generic `Dmabuf` description directly before calling the renderer.
 A client cache entry is keyed by the compositor-assigned stable buffer
 identity and retains the validated format, modifier, dimensions, plane offsets, and strides from
-that value description; an fd number is never an identity. Buffer reuse waits for the renderer
-timeline and Wayland release path before the Vulkan image is destroyed.
+that value description; an fd number is never an identity. Frame-local sampled descriptors use
+the stricter `(buffer identity, view encoding)` key, so one buffer may safely appear through both
+an encoded/UNORM view and a hardware-sRGB-decoding view. Compatible views are created once on the
+import cold path through the shared renderer's mutable-format image contract. Buffer reuse waits
+for the renderer timeline and Wayland release path before the Vulkan image is destroyed.
 
 SHM client snapshots use the same shared allocator rather than a Tensorland-local Vulkan image,
 memory, view, staging-buffer, or mapping lifecycle. Their optimal sampled image and persistently

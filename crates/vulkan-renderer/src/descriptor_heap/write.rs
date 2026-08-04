@@ -30,6 +30,16 @@ impl SampledImageDescriptor {
         }
     }
 
+    /// Selects one explicitly declared compatible view of an imported image.
+    pub fn from_imported_dma_buf_format(
+        image: &ImportedDmaBufImage,
+        format: crate::TextureFormat,
+    ) -> Result<Self> {
+        Ok(Self {
+            view: image.view_create_info_for_format(format)?,
+        })
+    }
+
     pub fn from_exported_dma_buf(image: &ExportedDmaBufImage) -> Self {
         Self {
             view: image.view_create_info(),

@@ -79,12 +79,14 @@ gated: wire tests bind a test-only global, while normal Tensorland does not
 advertise it until the output color owner is installed. Shader execution now
 has a distinct retained managed-color pipeline: non-identity draws append a
 fixed 64-byte transfer/matrix/tone-map lane, while SDR identity draws retain
-the original 64-byte shader and command path. Production advertisement still
-waits for encoded-versus-sRGB client view selection, so limited-range and
-electrical-alpha transforms cannot be applied after an implicit hardware sRGB
-decode. The first production capability will be RGB identity coefficients
-with full and limited range; multi-plane YCbCr stays unadvertised until its
-import and conversion path is complete.
+the original 64-byte shader and command path. Client imports now retain
+compatible encoded/UNORM and sRGB views, and frame descriptor identity is the
+pair of stable buffer identity plus required view encoding. Limited-range,
+non-sRGB transfer, and managed electrical-alpha draws therefore reach the
+shader before hardware transfer decoding, while ordinary SDR identity draws
+keep hardware sRGB sampling. The first production capability will be RGB
+identity coefficients with full and limited range; multi-plane YCbCr stays
+unadvertised until its import and conversion path is complete.
 
 The shared renderer now has an allocation-free typed color planner. Matching
 SDR remains a direct identity draw; transforms use an R16G16B16A16 floating
@@ -94,8 +96,8 @@ exist. The plan now retains a fixed-point source-to-target gamut matrix and
 lowers allocation-free into the managed shader ABI; Tensorland records that
 ABI in both direct and region-local multi-pass scene segments. The identity
 pipeline remains branch-free. `wp_color_management_v1` image creators, output
-feedback, encoded client views, HDR output post-encoding, and KMS metadata
-ownership remain before the combined slice is complete.
+feedback, HDR output post-encoding, and KMS metadata ownership remain before
+the combined slice is complete.
 
 ### 4. DRM leasing
 

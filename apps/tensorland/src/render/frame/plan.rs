@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use tensor_util::Rect;
 
 use crate::{
-    ecs::{SurfaceBufferId, SurfaceId, ViewId},
+    ecs::{SurfaceId, ViewId},
     render::{CursorOverlay, CursorOverlays, cursor::MAX_CURSOR_OVERLAYS},
     scene::{
         ContentRevision, EffectStyle, LinearRgba16, SceneSnapshot, SurfaceAlpha, SurfaceLayer,
@@ -15,8 +15,11 @@ use super::{FrameError, NativeOutputTarget};
 use crate::render::color::{plan_surface_color, sdr_output_target};
 
 mod geometry;
+mod image;
 mod shadow;
 use geometry::{focus_ring_draw, texture_format};
+pub(crate) use image::ClientImageDescriptor;
+use image::image_descriptor_for;
 pub(in crate::render) use shadow::ShadowDraw;
 use shadow::shadow_draw;
 
@@ -26,7 +29,7 @@ use shadow::shadow_draw;
 /// native output image.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FrameDrawPlan {
-    images: Vec<SurfaceBufferId>,
+    images: Vec<ClientImageDescriptor>,
     draws: Vec<SurfaceDraw>,
     shadows: Vec<ShadowDraw>,
     focus_rings: Vec<FocusRingDraw>,
@@ -162,15 +165,24 @@ impl FrameDrawPlan {
                 else {
                     continue;
                 };
-                let image_descriptor = match image_descriptors.get(&content.buffer_id) {
+                let color = plan_surface_color(content.color, sdr_output_target(output_format))
+                    .map_err(|reason| FrameError::UnsupportedSurfaceColor {
+                        surface: content.surface_id,
+                        reason,
+                    })?;
+                let client_image = ClientImageDescriptor {
+                    buffer_id: content.buffer_id,
+                    view_encoding: color.source_view_encoding(),
+                };
+                let image_descriptor = match image_descriptors.get(&client_image) {
                     Some(index) => *index,
                     None => {
                         let index = u32::try_from(images.len())
                             .ok()
                             .and_then(|index| index.checked_add(1))
                             .ok_or(FrameError::DescriptorSizeOverflow)?;
-                        images.push(content.buffer_id);
-                        image_descriptors.insert(content.buffer_id, index);
+                        images.push(client_image);
+                        image_descriptors.insert(client_image, index);
                         index
                     }
                 };
@@ -183,11 +195,7 @@ impl FrameDrawPlan {
                     clip,
                     effects: node.effects,
                     alpha: content.alpha,
-                    color: plan_surface_color(content.color, sdr_output_target(output_format))
-                        .map_err(|reason| FrameError::UnsupportedSurfaceColor {
-                            surface: content.surface_id,
-                            reason,
-                        })?,
+                    color,
                     sample_transform: content.sample_transform,
                 });
                 scene_draws.push(SceneDrawCommand::Client(draws.len() - 1));
@@ -199,7 +207,11 @@ impl FrameDrawPlan {
             *descriptor = cursor
                 .texture
                 .map(|texture| {
-                    image_descriptor_for(texture.buffer_id, &mut images, &mut image_descriptors)
+                    image_descriptor_for(
+                        ClientImageDescriptor::srgb(texture.buffer_id),
+                        &mut images,
+                        &mut image_descriptors,
+                    )
                 })
                 .transpose()?;
         }
@@ -215,7 +227,7 @@ impl FrameDrawPlan {
         })
     }
 
-    pub(crate) fn images(&self) -> &[SurfaceBufferId] {
+    pub(crate) fn images(&self) -> &[ClientImageDescriptor] {
         &self.images
     }
 
@@ -258,23 +270,6 @@ impl FrameDrawPlan {
     pub(crate) fn cursor_image_descriptors(&self) -> &[Option<u32>] {
         &self.cursor_image_descriptors[..self.cursors.as_slice().len()]
     }
-}
-
-fn image_descriptor_for(
-    buffer: SurfaceBufferId,
-    images: &mut Vec<SurfaceBufferId>,
-    descriptors: &mut HashMap<SurfaceBufferId, u32>,
-) -> Result<u32, FrameError> {
-    if let Some(index) = descriptors.get(&buffer) {
-        return Ok(*index);
-    }
-    let index = u32::try_from(images.len())
-        .ok()
-        .and_then(|index| index.checked_add(1))
-        .ok_or(FrameError::DescriptorSizeOverflow)?;
-    images.push(buffer);
-    descriptors.insert(buffer, index);
-    Ok(index)
 }
 
 #[cfg(test)]
@@ -358,7 +353,10 @@ mod tests {
         );
 
         let plan = FrameDrawPlan::build(&scene, target(viewport, OutputScale::ONE)).unwrap();
-        assert_eq!(plan.images(), [SurfaceBufferId::new(9)]);
+        assert_eq!(
+            plan.images(),
+            [ClientImageDescriptor::srgb(SurfaceBufferId::new(9))]
+        );
         assert_eq!(plan.draws().len(), 2);
         assert!(plan.draws().iter().all(|draw| draw.image_descriptor == 1));
     }
@@ -446,6 +444,10 @@ mod tests {
         assert_eq!(
             color.working_format,
             vulkan_renderer::TextureFormat::Rgba16Float
+        );
+        assert_eq!(
+            plan.images()[0].view_encoding,
+            vulkan_renderer::SourceImageViewEncoding::Encoded
         );
     }
 

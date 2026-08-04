@@ -8,12 +8,10 @@ use vulkan_renderer::{
     Error as RendererError, Extent2D, Extent3D, Image, ImageDescriptor, ImageDimension,
     ImageTiling, ImageView, ImageViewDescriptor, ImageViewDimension, ImportedDmaBufImage,
     MemoryAllocator, MemoryLocation, ResourceBinding, SampleCount, SampledImageDescriptor,
-    TextureAspects, TextureUsages,
+    SourceImageViewEncoding, TextureAspects, TextureFormat, TextureUsages,
 };
 
 use crate::{ecs::SurfaceBufferId, render::Dmabuf};
-
-use super::texture_format_for_fourcc;
 
 /// Imported client images are kept separate from compositor-owned output images.
 /// The key is a compositor-assigned stable buffer identity, never a raw file
@@ -159,15 +157,25 @@ impl ClientImageCache {
         }
     }
 
-    pub(super) fn image_info(&self, id: SurfaceBufferId) -> Option<ClientImageInfo> {
-        self.active.get(&id).map(|image| ClientImageInfo {
-            backing: image.backing.clone(),
-            sampled_descriptor: image.sampled_descriptor(),
-            foreign_owned: image.foreign_owned,
-            needs_initial_acquire: !image.initialized,
-            upload_pending: image.upload_pending,
-            texture_format: image.texture_format,
-        })
+    pub(super) fn image_info(
+        &self,
+        id: SurfaceBufferId,
+        encoding: SourceImageViewEncoding,
+    ) -> Result<Option<ClientImageInfo>, ClientImportError> {
+        self.active
+            .get(&id)
+            .map(|image| {
+                let (sampled_descriptor, texture_format) = image.sampled_descriptor(encoding)?;
+                Ok(ClientImageInfo {
+                    backing: image.backing.clone(),
+                    sampled_descriptor,
+                    foreign_owned: image.foreign_owned,
+                    needs_initial_acquire: !image.initialized,
+                    upload_pending: image.upload_pending,
+                    texture_format,
+                })
+            })
+            .transpose()
     }
 
     /// Commit imported-image state after the queue accepted a frame.  This is
@@ -227,7 +235,8 @@ impl ClientImageBacking {
             Self::DmaBuf(image) => encoder.retain_resource(image),
             Self::Shm(image) => {
                 encoder.retain_resource(&image.image);
-                encoder.retain_resource(&image.view);
+                encoder.retain_resource(&image.encoded_view);
+                encoder.retain_resource(&image.srgb_view);
                 encoder.retain_resource(&image.staging);
             }
         }
@@ -237,7 +246,8 @@ impl ClientImageBacking {
 #[derive(Clone, Debug)]
 struct ShmClientImage {
     image: Image,
-    view: ImageView,
+    encoded_view: ImageView,
+    srgb_view: ImageView,
     staging: Buffer,
     staging_len: usize,
 }
@@ -246,7 +256,7 @@ struct ImportedClientImage {
     backing: ClientImageBacking,
     extent: Extent3D,
     format: Fourcc,
-    texture_format: vulkan_renderer::TextureFormat,
+    view_formats: ClientViewFormats,
     foreign_owned: bool,
     upload_pending: bool,
     initialized: bool,
@@ -260,7 +270,7 @@ impl ImportedClientImage {
     ) -> Result<Self, ClientImportError> {
         let format = dmabuf.format;
         let host_code = format.code;
-        let texture_format = texture_format_for_fourcc(host_code)
+        let view_formats = client_view_formats(host_code)
             .ok_or(ClientImportError::UnsupportedFourcc(host_code))?;
         let shape = validate_shape(dmabuf)?;
         let components = component_mapping(host_code);
@@ -269,7 +279,7 @@ impl ImportedClientImage {
             .import_dma_buf_image(
                 &DmaBufImageDescriptor {
                     label: Some("tensor-client-dmabuf".into()),
-                    format: texture_format,
+                    format: view_formats.encoded,
                     extent: Extent2D::new(shape.width, shape.height),
                     modifier: format.modifier.raw(),
                     planes: vec![DmaBufPlaneLayout {
@@ -278,6 +288,7 @@ impl ImportedClientImage {
                     }],
                     usage: TextureUsages::SAMPLED | TextureUsages::COPY_SOURCE,
                     components,
+                    view_formats: view_formats.all().to_vec(),
                 },
                 fd,
             )
@@ -287,7 +298,7 @@ impl ImportedClientImage {
             backing: ClientImageBacking::DmaBuf(shared_dma_buf),
             extent: Extent3D::new(shape.width, shape.height, 1),
             format: host_code,
-            texture_format,
+            view_formats,
             foreign_owned: true,
             upload_pending: false,
             initialized: false,
@@ -300,31 +311,45 @@ impl ImportedClientImage {
         size: tensor_util::Size,
         format: Fourcc,
     ) -> Result<Self, ClientImportError> {
-        let texture_format = texture_format_for_fourcc(format)
-            .ok_or(ClientImportError::UnsupportedFourcc(format))?;
+        let view_formats =
+            client_view_formats(format).ok_or(ClientImportError::UnsupportedFourcc(format))?;
         let extent = Extent3D::new(size.width, size.height, 1);
         if extent.is_empty() {
             return Err(ClientImportError::InvalidDimensions);
         }
         let image = allocator
-            .create_image(&ImageDescriptor {
-                label: Some("tensor-client-shm-image".into()),
-                dimension: ImageDimension::D2,
-                format: texture_format,
-                extent,
-                mip_levels: 1,
-                array_layers: 1,
-                samples: SampleCount::One,
-                tiling: ImageTiling::Optimal,
-                usage: TextureUsages::SAMPLED | TextureUsages::COPY_DESTINATION,
-                memory: MemoryLocation::Device,
+            .create_image_with_view_formats(
+                &ImageDescriptor {
+                    label: Some("tensor-client-shm-image".into()),
+                    dimension: ImageDimension::D2,
+                    format: view_formats.encoded,
+                    extent,
+                    mip_levels: 1,
+                    array_layers: 1,
+                    samples: SampleCount::One,
+                    tiling: ImageTiling::Optimal,
+                    usage: TextureUsages::SAMPLED | TextureUsages::COPY_DESTINATION,
+                    memory: MemoryLocation::Device,
+                },
+                view_formats.all(),
+            )
+            .map_err(|source| ClientImportError::SharedShm(source.to_string()))?;
+        let encoded_view = image
+            .create_view(&ImageViewDescriptor {
+                label: Some("tensor-client-shm-encoded-view".into()),
+                dimension: ImageViewDimension::D2,
+                format: view_formats.encoded,
+                components: component_mapping(format),
+                subresource_range: image.full_subresource_range(TextureAspects::COLOR),
             })
             .map_err(|source| ClientImportError::SharedShm(source.to_string()))?;
-        let view = image
+        let srgb_view = image
             .create_view(&ImageViewDescriptor {
-                label: Some("tensor-client-shm-view".into()),
+                label: Some("tensor-client-shm-srgb-view".into()),
                 dimension: ImageViewDimension::D2,
-                format: texture_format,
+                format: view_formats
+                    .srgb
+                    .ok_or(ClientImportError::MissingSrgbView(format))?,
                 components: component_mapping(format),
                 subresource_range: image.full_subresource_range(TextureAspects::COLOR),
             })
@@ -342,13 +367,14 @@ impl ImportedClientImage {
         Ok(Self {
             backing: ClientImageBacking::Shm(ShmClientImage {
                 image,
-                view,
+                encoded_view,
+                srgb_view,
                 staging,
                 staging_len,
             }),
             extent,
             format,
-            texture_format,
+            view_formats,
             foreign_owned: false,
             upload_pending: false,
             initialized: false,
@@ -382,13 +408,26 @@ impl ImportedClientImage {
         Ok(())
     }
 
-    fn sampled_descriptor(&self) -> SampledImageDescriptor {
-        match &self.backing {
+    fn sampled_descriptor(
+        &self,
+        encoding: SourceImageViewEncoding,
+    ) -> Result<(SampledImageDescriptor, TextureFormat), ClientImportError> {
+        let format = self.view_formats.select(encoding, self.format)?;
+        let descriptor = match &self.backing {
             ClientImageBacking::DmaBuf(image) => {
-                SampledImageDescriptor::from_imported_dma_buf(image)
+                SampledImageDescriptor::from_imported_dma_buf_format(image, format)
+                    .map_err(|source| ClientImportError::SharedDmaBuf(source.to_string()))?
             }
-            ClientImageBacking::Shm(image) => SampledImageDescriptor::from_image_view(&image.view),
-        }
+            ClientImageBacking::Shm(image) => match encoding {
+                SourceImageViewEncoding::Encoded => {
+                    SampledImageDescriptor::from_image_view(&image.encoded_view)
+                }
+                SourceImageViewEncoding::SrgbDecoded => {
+                    SampledImageDescriptor::from_image_view(&image.srgb_view)
+                }
+            },
+        };
+        Ok((descriptor, format))
     }
 }
 
@@ -402,6 +441,63 @@ fn component_mapping(format: Fourcc) -> ComponentMapping {
         } else {
             ComponentSwizzle::Identity
         },
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ClientViewFormats {
+    encoded: TextureFormat,
+    srgb: Option<TextureFormat>,
+}
+
+impl ClientViewFormats {
+    fn all(self) -> &'static [TextureFormat] {
+        const BGRA8: &[TextureFormat] = &[TextureFormat::Bgra8Unorm, TextureFormat::Bgra8Srgb];
+        const RGBA8: &[TextureFormat] = &[TextureFormat::Rgba8Unorm, TextureFormat::Rgba8Srgb];
+        const ARGB10: &[TextureFormat] = &[TextureFormat::A2R10G10B10UnormPack32];
+        const ABGR10: &[TextureFormat] = &[TextureFormat::A2B10G10R10UnormPack32];
+        match (self.encoded, self.srgb) {
+            (TextureFormat::Bgra8Unorm, Some(TextureFormat::Bgra8Srgb)) => BGRA8,
+            (TextureFormat::Rgba8Unorm, Some(TextureFormat::Rgba8Srgb)) => RGBA8,
+            (TextureFormat::A2R10G10B10UnormPack32, None) => ARGB10,
+            (TextureFormat::A2B10G10R10UnormPack32, None) => ABGR10,
+            _ => unreachable!("client view-format table is closed over supported DRM formats"),
+        }
+    }
+
+    fn select(
+        self,
+        encoding: SourceImageViewEncoding,
+        fourcc: Fourcc,
+    ) -> Result<TextureFormat, ClientImportError> {
+        match encoding {
+            SourceImageViewEncoding::Encoded => Ok(self.encoded),
+            SourceImageViewEncoding::SrgbDecoded => {
+                self.srgb.ok_or(ClientImportError::MissingSrgbView(fourcc))
+            }
+        }
+    }
+}
+
+fn client_view_formats(format: Fourcc) -> Option<ClientViewFormats> {
+    match format {
+        Fourcc::XRGB8888 | Fourcc::ARGB8888 => Some(ClientViewFormats {
+            encoded: TextureFormat::Bgra8Unorm,
+            srgb: Some(TextureFormat::Bgra8Srgb),
+        }),
+        Fourcc::XBGR8888 | Fourcc::ABGR8888 => Some(ClientViewFormats {
+            encoded: TextureFormat::Rgba8Unorm,
+            srgb: Some(TextureFormat::Rgba8Srgb),
+        }),
+        Fourcc::XRGB2101010 | Fourcc::ARGB2101010 => Some(ClientViewFormats {
+            encoded: TextureFormat::A2R10G10B10UnormPack32,
+            srgb: None,
+        }),
+        Fourcc::XBGR2101010 | Fourcc::ABGR2101010 => Some(ClientViewFormats {
+            encoded: TextureFormat::A2B10G10R10UnormPack32,
+            srgb: None,
+        }),
+        _ => None,
     }
 }
 
@@ -474,6 +570,8 @@ pub(super) enum ClientImportError {
     SharedDmaBuf(String),
     #[error("shared renderer failed to create or update a client SHM image: {0}")]
     SharedShm(String),
+    #[error("DRM fourcc {0} has no hardware sRGB-decoding image view")]
+    MissingSrgbView(Fourcc),
     #[error("renderer image is not backed by SHM staging memory")]
     NotShmImage,
     #[error("failed to read client SHM pixels: {0}")]

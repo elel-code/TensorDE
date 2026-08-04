@@ -179,7 +179,10 @@ fn cursor_images_share_the_scene_descriptor_table_without_duplicates() {
 
     assert_eq!(
         plan.images(),
-        [SurfaceBufferId::new(1), SurfaceBufferId::new(9)]
+        [
+            ClientImageDescriptor::srgb(SurfaceBufferId::new(1)),
+            ClientImageDescriptor::srgb(SurfaceBufferId::new(9)),
+        ]
     );
     assert_eq!(plan.cursor_image_descriptors(), [Some(1), Some(2)]);
 }

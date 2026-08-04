@@ -236,6 +236,19 @@ pub enum TextureFormat {
 }
 
 impl TextureFormat {
+    /// Reports Vulkan image-view format compatibility for the typed formats
+    /// currently exposed by this renderer.
+    pub fn is_view_compatible_with(self, other: Self) -> bool {
+        self == other
+            || matches!(
+                (self, other),
+                (Self::Rgba8Unorm, Self::Rgba8Srgb)
+                    | (Self::Rgba8Srgb, Self::Rgba8Unorm)
+                    | (Self::Bgra8Unorm, Self::Bgra8Srgb)
+                    | (Self::Bgra8Srgb, Self::Bgra8Unorm)
+            )
+    }
+
     pub(crate) const fn from_vk(format: vk::Format) -> Option<Self> {
         match format {
             vk::Format::R8_UNORM => Some(Self::R8Unorm),

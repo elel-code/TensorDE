@@ -50,7 +50,7 @@ pub use color::{
     ChromaOffset, Chromaticity as ColorChromaticity, ColorAlphaMode, ColorPlanError,
     ColorPrimaries, ColorRange as PixelColorRange, ColorShaderEncoding, ColorTransferFunction,
     ColorTransformPlan, ColorTransformShaderData, ColorVolume, GamutMap, PixelEncoding,
-    SourceColorDescriptor, TargetColorDescriptor, ToneMap, YcbcrMatrix,
+    SourceColorDescriptor, SourceImageViewEncoding, TargetColorDescriptor, ToneMap, YcbcrMatrix,
 };
 pub use command::{
     AttachmentView, BufferCopy, BufferImageCopy, BufferState, ColorAttachment,

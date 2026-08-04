@@ -10,7 +10,7 @@ use crate::backend::DeviceOwner;
 use crate::{Error, Result};
 
 use super::{
-    DmaBufImageDescriptor, ImportedDmaBufImage, ImportedDmaBufImageInner,
+    DmaBufImageDescriptor, ImportedDmaBufImage, ImportedDmaBufImageInner, ImportedDmaBufView,
     choose_import_memory_type, color_subresource_range,
 };
 
@@ -20,30 +20,36 @@ pub(super) fn finish_imported_image(
     memories: Vec<vk::DeviceMemory>,
     descriptor: &DmaBufImageDescriptor,
 ) -> Result<ImportedDmaBufImage> {
-    let view_info = vk::ImageViewCreateInfo::builder()
-        .image(image)
-        .view_type(vk::ImageViewType::_2D)
-        .format(descriptor.format.to_vk())
-        .components(descriptor.components.to_vk())
-        .subresource_range(color_subresource_range().to_vk());
-    let view = match unsafe { owner.device.create_image_view(&view_info, None) } {
-        Ok(view) => view,
-        Err(source) => {
-            unsafe {
-                owner.device.destroy_image(image, None);
-                for memory in &memories {
-                    owner.device.free_memory(*memory, None);
+    let mut views = Vec::with_capacity(descriptor.view_formats.len());
+    for format in descriptor.view_formats.iter().copied() {
+        let view_info = vk::ImageViewCreateInfo::builder()
+            .image(image)
+            .view_type(vk::ImageViewType::_2D)
+            .format(format.to_vk())
+            .components(descriptor.components.to_vk())
+            .subresource_range(color_subresource_range().to_vk());
+        match unsafe { owner.device.create_image_view(&view_info, None) } {
+            Ok(view) => views.push(ImportedDmaBufView { format, view }),
+            Err(source) => {
+                unsafe {
+                    for view in &views {
+                        owner.device.destroy_image_view(view.view, None);
+                    }
+                    owner.device.destroy_image(image, None);
+                    for memory in &memories {
+                        owner.device.free_memory(*memory, None);
+                    }
                 }
+                return Err(Error::vulkan("vkCreateImageView(import dma-buf)", source));
             }
-            return Err(Error::vulkan("vkCreateImageView(import dma-buf)", source));
         }
-    };
+    }
     Ok(ImportedDmaBufImage {
         inner: Arc::new(ImportedDmaBufImageInner {
             owner,
             image,
             memories,
-            view,
+            views,
             format: descriptor.format,
             extent: descriptor.extent,
             modifier: descriptor.modifier,
@@ -75,12 +81,16 @@ pub(super) fn create_import_image(
         .plane_layouts(&layouts);
     let mut external = vk::ExternalMemoryImageCreateInfo::builder()
         .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    let mut flags = if disjoint {
+        vk::ImageCreateFlags::DISJOINT
+    } else {
+        vk::ImageCreateFlags::empty()
+    };
+    if descriptor.view_formats.len() > 1 {
+        flags |= vk::ImageCreateFlags::MUTABLE_FORMAT;
+    }
     let create = vk::ImageCreateInfo::builder()
-        .flags(if disjoint {
-            vk::ImageCreateFlags::DISJOINT
-        } else {
-            vk::ImageCreateFlags::empty()
-        })
+        .flags(flags)
         .image_type(vk::ImageType::_2D)
         .format(descriptor.format.to_vk())
         .extent(vk::Extent3D {
@@ -97,8 +107,20 @@ pub(super) fn create_import_image(
         .initial_layout(vk::ImageLayout::UNDEFINED)
         .push_next(&mut modifier)
         .push_next(&mut external);
-    unsafe { owner.device.create_image(&create, None) }
-        .map_err(|source| Error::vulkan("vkCreateImage(import dma-buf)", source))
+    let image = if descriptor.view_formats.len() > 1 {
+        let formats = descriptor
+            .view_formats
+            .iter()
+            .copied()
+            .map(crate::TextureFormat::to_vk)
+            .collect::<Vec<_>>();
+        let mut format_list = vk::ImageFormatListCreateInfo::builder().view_formats(&formats);
+        let create = create.push_next(&mut format_list);
+        unsafe { owner.device.create_image(&create, None) }
+    } else {
+        unsafe { owner.device.create_image(&create, None) }
+    };
+    image.map_err(|source| Error::vulkan("vkCreateImage(import dma-buf)", source))
 }
 
 pub(super) fn allocate_import_memory(

@@ -618,8 +618,10 @@ impl VulkanRenderer {
                     self.frames.mark_device_lost();
                 }
                 if source.was_submitted() {
-                    self.client_images
-                        .mark_submitted(client_ids.iter().copied(), frame.timeline_value);
+                    self.client_images.mark_submitted(
+                        client_ids.iter().map(|image| image.buffer_id),
+                        frame.timeline_value,
+                    );
                     self.native_targets.mark_submitted(
                         output,
                         frame.output_slot,
@@ -646,8 +648,10 @@ impl VulkanRenderer {
             let kms_sync_fd = match completion.as_fd().try_clone_to_owned() {
                 Ok(fd) => fd,
                 Err(error) => {
-                    self.client_images
-                        .mark_submitted(client_ids.iter().copied(), frame.timeline_value);
+                    self.client_images.mark_submitted(
+                        client_ids.iter().map(|image| image.buffer_id),
+                        frame.timeline_value,
+                    );
                     self.native_targets.mark_submitted(
                         output,
                         frame.output_slot,
@@ -671,8 +675,10 @@ impl VulkanRenderer {
             };
             (Some(completion), kms_sync_fd)
         };
-        self.client_images
-            .mark_submitted(client_ids.iter().copied(), frame.timeline_value);
+        self.client_images.mark_submitted(
+            client_ids.iter().map(|image| image.buffer_id),
+            frame.timeline_value,
+        );
         self.native_targets
             .mark_submitted(output, frame.output_slot, frame.timeline_value);
         self.client_sync
