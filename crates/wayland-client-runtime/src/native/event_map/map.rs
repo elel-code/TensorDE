@@ -58,6 +58,8 @@ fn category(event: &NativeShellEvent) -> &'static str {
         PointerConstraint { .. }
         | OutputDone { .. }
         | OutputRemoved { .. }
+        | OutputPowerMode { .. }
+        | OutputPowerFailed { .. }
         | SeatAdded { .. }
         | SeatChanged { .. }
         | SeatRemoved { .. }

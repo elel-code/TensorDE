@@ -224,6 +224,34 @@ fn maps_surface_output_enter_leave() {
 }
 
 #[test]
+fn maps_output_power_mode_and_failure() {
+    use crate::{OutputId, OutputPowerEvent, OutputPowerMode};
+
+    let mut map = SurfaceIdMap::new();
+    let mode = map_native_event(
+        NativeShellEvent::OutputPowerMode {
+            output: 9,
+            mode: OutputPowerMode::Off,
+        },
+        &mut map,
+    );
+    assert!(matches!(
+        mode,
+        Some(Event::OutputPower(OutputPowerEvent::Mode {
+            output,
+            mode: OutputPowerMode::Off,
+        })) if output == OutputId::from_raw(9)
+    ));
+
+    let failed = map_native_event(NativeShellEvent::OutputPowerFailed { output: 9 }, &mut map);
+    assert!(matches!(
+        failed,
+        Some(Event::OutputPower(OutputPowerEvent::Failed { output }))
+            if output == OutputId::from_raw(9)
+    ));
+}
+
+#[test]
 fn maps_touch_shape_and_orientation() {
     let mut map = SurfaceIdMap::new();
     let mut map_state = NativeEventMapState::default();

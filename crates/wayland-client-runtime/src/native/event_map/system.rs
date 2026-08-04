@@ -67,6 +67,17 @@ pub(crate) fn map(
         NativeShellEvent::OutputRemoved { output } => Some(Event::Output(OutputEvent::Removed(
             OutputId::from_raw(output),
         ))),
+        NativeShellEvent::OutputPowerMode { output, mode } => {
+            Some(Event::OutputPower(crate::OutputPowerEvent::Mode {
+                output: OutputId::from_raw(output),
+                mode,
+            }))
+        }
+        NativeShellEvent::OutputPowerFailed { output } => {
+            Some(Event::OutputPower(crate::OutputPowerEvent::Failed {
+                output: OutputId::from_raw(output),
+            }))
+        }
         NativeShellEvent::SeatAdded {
             seat,
             name,

@@ -100,6 +100,17 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for NativeShellState 
             }
             wl_registry::Event::GlobalRemove { name } => {
                 if state.outputs.remove(&name).is_some() {
+                    if state.output_powers.contains_key(&name) {
+                        if let Some((_, retain_failed)) = state
+                            .pending_output_power_destroy
+                            .iter_mut()
+                            .find(|(output, _)| *output == name)
+                        {
+                            *retain_failed = false;
+                        } else {
+                            state.pending_output_power_destroy.push((name, false));
+                        }
+                    }
                     state.output_proxies.remove(&name);
                     state.output_objects.retain(|_, n| *n != name);
                     state.push(NativeShellEvent::OutputRemoved { output: name });

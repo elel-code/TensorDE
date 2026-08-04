@@ -83,6 +83,8 @@ pub struct NativeCapabilities {
     pub idle_notify: bool,
     /// `ext_idle_notifier_v1` version ≥ 2 (`get_input_idle_notification`).
     pub idle_notify_input: bool,
+    /// `zwlr_output_power_manager_v1` (per-output DPMS control).
+    pub output_power: bool,
     /// `zxdg_exporter_v2` / `zxdg_importer_v2` (cross-client surface handles).
     pub xdg_foreign: bool,
     /// `zwp_linux_dmabuf_v1` (GPU zero-copy buffers).
@@ -161,6 +163,14 @@ pub(crate) struct OutputRecord {
     /// Current mode refresh in millihertz (`wl_output.mode.refresh`).
     pub(crate) mode_refresh_mhz: i32,
     pub(crate) done: bool,
+}
+
+pub(crate) struct OutputPowerRecord {
+    pub(crate) power: Option<
+        wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_v1::ZwlrOutputPowerV1,
+    >,
+    pub(crate) mode: Option<crate::output::OutputPowerMode>,
+    pub(crate) failed: bool,
 }
 
 pub(crate) struct ToplevelRecord {

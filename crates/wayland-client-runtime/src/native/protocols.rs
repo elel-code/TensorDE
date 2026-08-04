@@ -219,6 +219,11 @@ pub const PROTOCOL_MATRIX: &[ProtocolSpec] = &[
         class: ProtocolClass::Community,
         min_version: 1,
     },
+    ProtocolSpec {
+        interface: "zwlr_output_power_manager_v1",
+        class: ProtocolClass::Community,
+        min_version: 1,
+    },
 ];
 
 /// Filter the matrix by class (for phased implementation).
@@ -252,6 +257,9 @@ mod tests {
                 |s| s.interface == "zwlr_layer_shell_v1" && s.class == ProtocolClass::Community
             )
         );
+        assert!(PROTOCOL_MATRIX.iter().any(|s| {
+            s.interface == "zwlr_output_power_manager_v1" && s.class == ProtocolClass::Community
+        }));
         assert!(
             PROTOCOL_MATRIX
                 .iter()

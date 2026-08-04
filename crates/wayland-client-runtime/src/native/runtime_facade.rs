@@ -108,6 +108,7 @@ impl NativeRuntime {
                 idle_inhibit: caps.idle_inhibit,
                 idle_notify: caps.idle_notify,
                 idle_notify_input: caps.idle_notify_input,
+                output_power: caps.output_power,
                 xdg_foreign: caps.xdg_foreign,
                 linux_dmabuf: caps.linux_dmabuf,
                 linux_dmabuf_version: caps.linux_dmabuf_version,

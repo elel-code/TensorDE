@@ -183,6 +183,18 @@ pub struct NativeShellState {
     >,
     pub(crate) idle_notification_objects: HashMap<u32, u64>,
     pub(crate) next_idle_notification_id: u64,
+    pub(crate) output_power_manager: Option<
+        wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1,
+    >,
+    /// Output registry global name → retained power control and latest state.
+    pub(crate) output_powers: HashMap<u32, super::types::OutputPowerRecord>,
+    /// `zwlr_output_power_v1` protocol id → output registry global name.
+    pub(crate) output_power_objects: HashMap<u32, u32>,
+    /// Controls whose destructor must run after dispatch.
+    ///
+    /// The bool retains a failed-state tombstone for diagnostics; output
+    /// removal uses `false` and drops the record completely.
+    pub(crate) pending_output_power_destroy: Vec<(u32, bool)>,
     pub(crate) xdg_exporter: Option<
         wayland_protocols::xdg::foreign::zv2::client::zxdg_exporter_v2::ZxdgExporterV2,
     >,
@@ -386,6 +398,10 @@ impl Default for NativeShellState {
             idle_notifications: HashMap::new(),
             idle_notification_objects: HashMap::new(),
             next_idle_notification_id: 1,
+            output_power_manager: None,
+            output_powers: HashMap::new(),
+            output_power_objects: HashMap::new(),
+            pending_output_power_destroy: Vec::new(),
             xdg_exporter: None,
             xdg_importer: None,
             foreign_exports: HashMap::new(),
@@ -453,4 +469,3 @@ impl Default for NativeShellState {
         }
     }
 }
-

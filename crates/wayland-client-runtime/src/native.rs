@@ -39,6 +39,8 @@ mod runtime_interaction;
 #[cfg(feature = "compio")]
 mod runtime_layer;
 #[cfg(feature = "compio")]
+mod runtime_output_power;
+#[cfg(feature = "compio")]
 mod runtime_seats;
 #[cfg(feature = "compio")]
 mod runtime_transfer;

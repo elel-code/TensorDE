@@ -48,3 +48,24 @@ pub enum OutputEvent {
     Updated(OutputInfo),
     Removed(OutputId),
 }
+
+/// Power-management mode for an output that remains in the compositor space.
+///
+/// This is deliberately separate from output enablement: `Off` requests DPMS
+/// power saving without removing the output from the desktop topology.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum OutputPowerMode {
+    Off,
+    On,
+}
+
+/// `zwlr_output_power_v1` state and lifecycle events.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum OutputPowerEvent {
+    Mode {
+        output: OutputId,
+        mode: OutputPowerMode,
+    },
+    /// The compositor can no longer control this output's power state.
+    Failed { output: OutputId },
+}

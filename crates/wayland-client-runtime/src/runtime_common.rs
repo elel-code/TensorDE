@@ -48,6 +48,8 @@ pub struct RuntimeCapabilities {
     pub idle_notify: bool,
     /// `ext_idle_notifier_v1` v2 input-only idle tracking.
     pub idle_notify_input: bool,
+    /// `zwlr_output_power_manager_v1` (per-output DPMS control).
+    pub output_power: bool,
     /// `zxdg_exporter_v2` + `zxdg_importer_v2`.
     pub xdg_foreign: bool,
     /// `zwp_linux_dmabuf_v1` (GPU zero-copy buffers).

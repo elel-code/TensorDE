@@ -156,6 +156,14 @@ impl NativeShell {
         {
             state.idle_notifier = Some(notifier);
         }
+        if let Ok(manager) = globals.bind::<
+            wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1,
+            _,
+            _,
+        >(&qh, 1..=1, ())
+        {
+            state.output_power_manager = Some(manager);
+        }
         if let Ok(exporter) = globals.bind::<
             wayland_protocols::xdg::foreign::zv2::client::zxdg_exporter_v2::ZxdgExporterV2,
             _,
@@ -395,6 +403,7 @@ impl NativeShell {
                 .idle_notifier
                 .as_ref()
                 .is_some_and(|n| n.version() >= 2),
+            output_power: self.state.output_power_manager.is_some(),
             xdg_foreign: self.state.xdg_exporter.is_some() && self.state.xdg_importer.is_some(),
             linux_dmabuf: self.state.linux_dmabuf.is_some(),
             linux_dmabuf_version: self.state.linux_dmabuf_version,
@@ -506,6 +515,7 @@ impl NativeShell {
             self.state.pending_primary_seat_rebind = false;
             self.rebind_primary_seat_devices();
         }
+        self.destroy_pending_output_powers();
         // Hotplugged seats may still lack transfer devices.
         if self
             .state

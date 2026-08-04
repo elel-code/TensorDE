@@ -189,6 +189,15 @@ pub enum NativeShellEvent {
     OutputRemoved {
         output: u32,
     },
+    /// `zwlr_output_power_v1.mode`.
+    OutputPowerMode {
+        output: u32,
+        mode: crate::output::OutputPowerMode,
+    },
+    /// `zwlr_output_power_v1.failed`; the control object has been destroyed.
+    OutputPowerFailed {
+        output: u32,
+    },
     /// A `wl_seat` was bound (hotplug or late global).
     SeatAdded {
         seat: u32,

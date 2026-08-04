@@ -146,7 +146,7 @@ pub use native::{
     ProtocolSpec, PumpStep, SurfaceIdMap, list_env_globals, map_native_event,
     map_native_event_full, map_native_key_text, native_key_text_pressed, specs_in_class,
 };
-pub use output::{OutputEvent, OutputId, OutputInfo};
+pub use output::{OutputEvent, OutputId, OutputInfo, OutputPowerEvent, OutputPowerMode};
 pub use pointer_axis::{PointerAxisDirection, PointerAxisSource, PointerAxisValue};
 pub use pointer_constraints::{
     PointerCaptureState, PointerConstraint, PointerConstraintError, PointerConstraintEvent,

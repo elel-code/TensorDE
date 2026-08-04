@@ -483,6 +483,29 @@ fn native_shell_idle_notify_and_foreign_api_when_present() {
 }
 
 #[test]
+fn native_shell_output_power_api_when_present() {
+    let Ok(mut shell) = NativeShell::connect_to_env() else {
+        return;
+    };
+    let _ = shell.dispatch_pending();
+    if !shell.capabilities().output_power {
+        return;
+    }
+    let Some(output) = shell.outputs().first().map(|info| info.id) else {
+        return;
+    };
+
+    assert!(shell.has_output_power());
+    shell
+        .create_output_power(output)
+        .expect("create output power control");
+    assert!(shell.create_output_power(output).is_err());
+    shell
+        .destroy_output_power(output)
+        .expect("destroy output power control");
+}
+
+#[test]
 fn native_shell_relative_pointer_enable_is_multiseat_safe() {
     let Ok(mut shell) = NativeShell::connect_to_env() else {
         return;

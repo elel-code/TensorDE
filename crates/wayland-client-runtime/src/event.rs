@@ -2,8 +2,9 @@ use bitflags::bitflags;
 
 use crate::{
     ActivationEvent, DndEvent, InputSerial, LayerSurfaceEvent, LogicalPosition, LogicalSize,
-    OutputEvent, OutputId, PointerAxisSource, PointerAxisValue, PointerConstraintEvent,
-    PointerGestureEvent, RelativePointerEvent, SeatEvent, SuggestedSize, SurfaceId, TextInputEvent,
+    OutputEvent, OutputId, OutputPowerEvent, PointerAxisSource, PointerAxisValue,
+    PointerConstraintEvent, PointerGestureEvent, RelativePointerEvent, SeatEvent, SuggestedSize,
+    SurfaceId, TextInputEvent,
 };
 
 bitflags! {
@@ -237,6 +238,8 @@ pub enum Event {
     Surface(SurfaceEvent),
     LayerSurface(LayerSurfaceEvent),
     Output(OutputEvent),
+    /// Per-output DPMS state (`zwlr_output_power_v1`).
+    OutputPower(OutputPowerEvent),
     /// Seat hotplug and capability updates (`wl_seat` lifecycle).
     Seat(SeatEvent),
     Activation(ActivationEvent),
