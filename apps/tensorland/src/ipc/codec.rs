@@ -5,16 +5,26 @@ pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
 const FRAME_HEADER_SIZE: usize = std::mem::size_of::<u32>();
 
 pub fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, CodecError> {
-    let payload = serde_json::to_vec(value).map_err(CodecError::Serialize)?;
-    let length = u32::try_from(payload.len()).map_err(|_| CodecError::FrameTooLarge)?;
-    if payload.len() > MAX_FRAME_SIZE {
+    let mut frame = Vec::new();
+    encode_into(value, &mut frame)?;
+    Ok(frame)
+}
+
+pub(crate) fn encode_into<T: Serialize>(value: &T, frame: &mut Vec<u8>) -> Result<(), CodecError> {
+    frame.clear();
+    frame.resize(FRAME_HEADER_SIZE, 0);
+    if let Err(error) = serde_json::to_writer(&mut *frame, value) {
+        frame.clear();
+        return Err(CodecError::Serialize(error));
+    }
+    let payload_len = frame.len() - FRAME_HEADER_SIZE;
+    if payload_len > MAX_FRAME_SIZE {
+        frame.clear();
         return Err(CodecError::FrameTooLarge);
     }
-
-    let mut frame = Vec::with_capacity(FRAME_HEADER_SIZE + payload.len());
-    frame.extend_from_slice(&length.to_le_bytes());
-    frame.extend_from_slice(&payload);
-    Ok(frame)
+    let length = u32::try_from(payload_len).map_err(|_| CodecError::FrameTooLarge)?;
+    frame[..FRAME_HEADER_SIZE].copy_from_slice(&length.to_le_bytes());
+    Ok(())
 }
 
 pub struct FrameDecoder {
@@ -27,8 +37,18 @@ impl FrameDecoder {
     }
 
     pub fn push<T: DeserializeOwned>(&mut self, bytes: &[u8]) -> Result<Vec<T>, CodecError> {
-        self.buffer.extend_from_slice(bytes);
         let mut values = Vec::new();
+        self.push_into(bytes, &mut values)?;
+        Ok(values)
+    }
+
+    pub(crate) fn push_into<T: DeserializeOwned>(
+        &mut self,
+        bytes: &[u8],
+        values: &mut Vec<T>,
+    ) -> Result<(), CodecError> {
+        values.clear();
+        self.buffer.extend_from_slice(bytes);
         let mut consumed = 0;
 
         loop {
@@ -57,7 +77,7 @@ impl FrameDecoder {
             self.buffer.drain(..consumed);
         }
 
-        Ok(values)
+        Ok(())
     }
 
     pub fn buffered_bytes(&self) -> usize {
@@ -144,5 +164,22 @@ mod tests {
         let error = FrameDecoder::new().push::<Request>(&length).unwrap_err();
 
         assert!(matches!(error, CodecError::FrameTooLarge));
+    }
+
+    #[test]
+    fn caller_owned_encode_and_decode_buffers_are_reused() {
+        let mut frame = Vec::with_capacity(256);
+        let frame_allocation = frame.as_ptr();
+        encode_into(&Request::new(70, Command::Ping), &mut frame).unwrap();
+        assert_eq!(frame.as_ptr(), frame_allocation);
+
+        let mut decoder = FrameDecoder::new();
+        let mut requests = Vec::<Request>::with_capacity(4);
+        let request_allocation = requests.as_ptr();
+        decoder.push_into(&frame, &mut requests).unwrap();
+
+        assert_eq!(requests.as_ptr(), request_allocation);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].request_id, 70);
     }
 }

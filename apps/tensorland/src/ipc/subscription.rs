@@ -6,6 +6,10 @@ use super::{EventMessage, EventTopic, ServerEvent};
 
 pub(crate) const MAX_IPC_SUBSCRIBERS: usize = 64;
 const MAX_PENDING_EVENTS_PER_SUBSCRIBER: usize = 8;
+// futures-mpsc grants every sender one guaranteed slot beyond this shared
+// buffer. Subscription sinks are never cloned, so seven plus that slot is the
+// exact public eight-event bound.
+const MPSC_SHARED_BUFFER_CAPACITY: usize = MAX_PENDING_EVENTS_PER_SUBSCRIBER - 1;
 
 pub(crate) struct IpcSubscriptionSink {
     topics: Vec<EventTopic>,
@@ -15,7 +19,7 @@ pub(crate) struct IpcSubscriptionSink {
 pub(crate) fn subscription_channel(
     topics: Vec<EventTopic>,
 ) -> (IpcSubscriptionSink, mpsc::Receiver<EventMessage>) {
-    let (events, receiver) = mpsc::channel(MAX_PENDING_EVENTS_PER_SUBSCRIBER);
+    let (events, receiver) = mpsc::channel(MPSC_SHARED_BUFFER_CAPACITY);
     (IpcSubscriptionSink { topics, events }, receiver)
 }
 
@@ -140,13 +144,22 @@ mod tests {
         let (sink, _receiver) = subscription_channel(vec![EventTopic::ConfigReload]);
         subscriptions.register(sink).unwrap();
 
-        let mut dropped = 0;
-        for request_id in 0..=(MAX_PENDING_EVENTS_PER_SUBSCRIBER as u64 + 1) {
-            dropped += subscriptions
-                .publish(EventTopic::ConfigReload, reload_event(request_id))
-                .dropped;
+        for request_id in 0..MAX_PENDING_EVENTS_PER_SUBSCRIBER as u64 {
+            assert_eq!(
+                subscriptions.publish(EventTopic::ConfigReload, reload_event(request_id)),
+                PublishSummary {
+                    delivered: 1,
+                    dropped: 0,
+                }
+            );
         }
-        assert_eq!(dropped, 1);
+        assert_eq!(
+            subscriptions.publish(EventTopic::ConfigReload, reload_event(8)),
+            PublishSummary {
+                delivered: 0,
+                dropped: 1,
+            }
+        );
         assert_eq!(
             subscriptions.publish(EventTopic::ConfigReload, reload_event(99)),
             PublishSummary::default()

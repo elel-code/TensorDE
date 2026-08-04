@@ -333,7 +333,8 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 The IPC tests cover fragmented and coalesced frames, multiple requests on one Compio-completed
 client, version rejection, layout mutation, graceful response-before-stop shutdown, bounded
 subscription registration/backpressure, response/event envelopes, peer disconnect, and applied or
-rejected configuration events. A running
+rejected configuration events. Codec tests also exercise caller-owned buffer reuse, and the slow
+subscriber test fills exactly eight pending events before the ninth disconnects it. A running
 session can be queried with
 `tensorctl --socket "$TENSOR_IPC_SOCKET" get-state`; use `tensorctl --socket "$TENSOR_IPC_SOCKET"
 quit` for a manual smoke-test shutdown.

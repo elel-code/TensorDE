@@ -79,7 +79,9 @@ than shifting the unread suffix after every decoded frame. Version 7 server fram
 response/event envelope. An accepted `config_reload` subscription becomes a receive-only Compio
 stream with independent disconnect detection and event writes; the compositor registry and every
 subscriber queue are fixed-capacity, and a slow subscriber is disconnected instead of applying
-backpressure to compositor policy.
+backpressure to compositor policy. Each connection retains and reuses its Compio read buffer,
+decoded-request vector, pending-reply vector, and response/event encode buffer after warm-up; the
+steady request loop does not allocate a fresh transport buffer for every completion.
 
 Tensorland intentionally has no general-purpose network control plane: its compositor control
 protocol is local Unix IPC.

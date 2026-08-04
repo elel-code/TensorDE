@@ -93,7 +93,10 @@ request/reply clients. A subscription must be the final complete request in its 
 one to eight unique topics; after `accepted`, that connection is receive-only. The Compio task splits
 the Unix stream so one submitted read detects peer closure while the independent write half awaits
 events. The compositor owns at most 64 subscribers and each has an eight-event queue. Saturation
-disconnects only the slow subscriber and never blocks configuration commit or another client.
+disconnects only the slow subscriber and never blocks configuration commit or another client. The
+eight-event limit includes the futures channel's sender reservation; it is an exact pending-message
+bound. Per-connection read, decode, pending-reply, and encode buffers are retained across completed
+operations rather than allocated once per request or event.
 
 The first topic, `config_reload`, publishes both applied and rejected transactions with a monotonic
 stream sequence, originating request ID, and resulting configuration generation. A rejected event

@@ -31,7 +31,7 @@ use tracing::warn;
 use super::{IpcError, IpcReply};
 use crate::ipc::{
     Command, EventMessage, FrameDecoder, IpcSubscriptionSink, Request, Response, ServerMessage,
-    encode, subscription_channel,
+    codec::encode_into, subscription_channel,
 };
 
 const READ_BUFFER_SIZE: usize = 16 * 1024;
@@ -213,20 +213,27 @@ async fn handle_client(
     control: WorkerTx<IpcControlEvent>,
 ) -> io::Result<()> {
     let mut decoder = FrameDecoder::new();
+    let mut read_buffer = Vec::with_capacity(READ_BUFFER_SIZE);
+    let mut decoded_requests = Vec::new();
+    let mut pending = Vec::new();
+    let mut write_buffer = Vec::new();
     loop {
-        let BufResult(result, buffer) = stream.read(Vec::with_capacity(READ_BUFFER_SIZE)).await;
+        read_buffer.clear();
+        let BufResult(result, buffer) = stream.read(read_buffer).await;
+        read_buffer = buffer;
         let read = result?;
         if read == 0 {
             return Ok(());
         }
-        let decoded_requests = decoder
-            .push::<Request>(&buffer[..read])
+        decoder
+            .push_into::<Request>(&read_buffer[..read], &mut decoded_requests)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let mut pending = Vec::with_capacity(decoded_requests.len());
         let request_count = decoded_requests.len();
+        pending.clear();
+        pending.reserve(request_count);
         let batch_ends_on_frame_boundary = decoder.buffered_bytes() == 0;
         let mut bridge_stopped = false;
-        for (index, request) in decoded_requests.into_iter().enumerate() {
+        for (index, request) in decoded_requests.drain(..).enumerate() {
             let request_id = request.request_id;
             let closes_batch = index + 1 == request_count;
             if bridge_stopped {
@@ -270,7 +277,11 @@ async fn handle_client(
         let pending_count = pending.len();
         let mut compositor_stopped = false;
         let mut subscription_events = None;
-        for (index, pending_reply) in pending.into_iter().enumerate() {
+        pending.reverse();
+        for index in 0..pending_count {
+            let pending_reply = pending
+                .pop()
+                .expect("pending reply count was captured after construction");
             let closes_batch = index + 1 == pending_count;
             let request_id = pending_reply.request_id();
             let (reply, close_after_flush, resolved_subscription) = if compositor_stopped {
@@ -286,11 +297,10 @@ async fn handle_client(
             };
             let subscription_accepted = reply.is_accepted();
             let stop_after_flush = reply.should_stop_after_flush();
-            let frame = match encode(&ServerMessage::Response(reply.response)) {
-                Ok(frame) => frame,
-                Err(error) => return Err(io::Error::new(io::ErrorKind::InvalidData, error)),
-            };
-            let BufResult(result, _) = stream.write_all(frame).await;
+            encode_into(&ServerMessage::Response(reply.response), &mut write_buffer)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let BufResult(result, buffer) = stream.write_all(write_buffer).await;
+            write_buffer = buffer;
             result?;
             if subscription_accepted {
                 subscription_events = resolved_subscription;
@@ -301,7 +311,7 @@ async fn handle_client(
             }
         }
         if let Some(events) = subscription_events {
-            return stream_subscription_events(stream, events).await;
+            return stream_subscription_events(stream, events, write_buffer).await;
         }
     }
 }
@@ -309,10 +319,11 @@ async fn handle_client(
 async fn stream_subscription_events(
     stream: UnixStream,
     events: mpsc::Receiver<EventMessage>,
+    write_buffer: Vec<u8>,
 ) -> io::Result<()> {
     let (reader, writer) = stream.into_split();
     let peer = Box::pin(wait_for_subscription_peer(reader));
-    let events = Box::pin(write_subscription_events(writer, events));
+    let events = Box::pin(write_subscription_events(writer, events, write_buffer));
     match select(peer, events).await {
         Either::Left((result, _)) | Either::Right((result, _)) => result,
     }
@@ -332,11 +343,13 @@ async fn wait_for_subscription_peer(mut stream: UnixStream) -> io::Result<()> {
 async fn write_subscription_events(
     mut stream: UnixStream,
     mut events: mpsc::Receiver<EventMessage>,
+    mut write_buffer: Vec<u8>,
 ) -> io::Result<()> {
     while let Some(event) = events.next().await {
-        let frame = encode(&ServerMessage::Event(event))
+        encode_into(&ServerMessage::Event(event), &mut write_buffer)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let BufResult(result, _) = stream.write_all(frame).await;
+        let BufResult(result, buffer) = stream.write_all(write_buffer).await;
+        write_buffer = buffer;
         result?;
     }
     Ok(())
