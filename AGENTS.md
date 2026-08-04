@@ -5,13 +5,18 @@ product-specific constraints and takes precedence within its directory.
 
 ## Repository boundaries
 
-- Keep product applications under `apps/`: `tensor-files`, `tensor-wallpaper`, `tensorland`, and
-  `tensor-shell`.
+- Keep product applications under `apps/`: `tensor-files`, `tensor-wallpaper`, `tensor-wm`,
+  `tensor-shell`, `tensor-launcher`, `tensor-greeter`, `tensor-settings`, `tensor-idle`,
+  `tensor-msg`, and `tensor-xdp`.
 - Keep reusable protocol, GPU, resource, and scheduling standards under
   `crates/`. Do not make a shared crate depend on an application.
 - Treat the DE shell as a product, not as application UI. Tensor Files' internal UI
-  belongs under `apps/tensor-files/src/ui`; panel, launcher, notification/OSD, control
-  center, overview, and lock surfaces belong under `apps/tensor-shell`.
+  belongs under `apps/tensor-files/src/ui`; panel, notification/OSD, control center,
+  overview, and lock surfaces belong under `apps/tensor-shell`. The standalone
+  launcher owns launcher catalog/query/UI while Tensor Shell owns its panel entry
+  and visibility coordination. The pre-session greeter belongs to `tensor-greeter`,
+  not the shell's `ext-session-lock` workflow. Settings pages belong to
+  `tensor-settings`; idle policy belongs to `tensor-idle` rather than Tensor Shell.
 - Use Rust 2024 same-name file/directory modules. Do not add `mod.rs`, numbered
   split files, or `__split` modules. Every Rust file must be at most 800 lines.
 
@@ -43,12 +48,15 @@ product-specific constraints and takes precedence within its directory.
   Never force add them. The Windows VM, qcow2 images, TPM state, Podman store,
   workshop corpus, and traces are durable development infrastructure, not
   disposable build output.
-- For Tensorland compositor work, read `apps/tensorland/AGENTS.md` and use
+- For Tensorland compositor work, read `apps/tensor-wm/AGENTS.md` and use
   `$tensor-compositor`. Keep Tensor's ignored evidence under
   `references/tensor/` and `artifacts/tensor/`, and its tracked design records
   under `docs/tensorland/`.
 - Use `target/` only for reproducible build output. Do not store irreplaceable
   evidence there.
+- Keep xdg-desktop-portal policy in `apps/tensor-xdp`. Portal adapters may use
+  bounded value IPC but must not own Tensorland Wayland, ECS, Vulkan, DRM/KMS,
+  or input objects; advertise only vertically complete portal interfaces.
 
 ## Worktree and structure discipline
 
