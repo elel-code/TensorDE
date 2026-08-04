@@ -5,8 +5,53 @@ use crate::parse::chars::{
     is_disallowed_literal, is_newline_char, is_non_identifier_char, is_unicode_space,
 };
 use crate::parse::reader::Parser;
-use crate::parse::simd::find_quote_or_escape_fast;
+use crate::parse::simd::{find_quote_fast, find_quote_or_escape_fast};
 use crate::value::KdlStr;
+
+/// Find the first exact raw-string closer without constructing a delimiter.
+///
+/// KDL closers are one or more quote bytes followed by the `#` count declared
+/// by their opener. Glaze scans strings directly with cursor/SWAR
+/// helpers (`include/glaze/util/parse.hpp`); building `\"` + `#`.repeat(...) for
+/// every KDL value was both an allocation and an avoidable second representation
+/// of the delimiter.
+#[inline]
+pub(super) fn find_string_closer(
+    bytes: &[u8],
+    mut index: usize,
+    end: usize,
+    quote_count: usize,
+    hashes: usize,
+) -> Option<(usize, usize)> {
+    if quote_count == 0 {
+        return None;
+    }
+    let end = end.min(bytes.len());
+    if index > end {
+        return None;
+    }
+
+    while index < end {
+        let quote_at = find_quote_fast(bytes, index, end);
+        if quote_at >= end {
+            return None;
+        }
+        let quotes_end = quote_at.checked_add(quote_count)?;
+        let closer_end = quotes_end.checked_add(hashes)?;
+        if closer_end <= end
+            && bytes[quote_at..quotes_end].iter().all(|&byte| byte == b'"')
+            && bytes[quotes_end..closer_end]
+                .iter()
+                .all(|&byte| byte == b'#')
+        {
+            return Some((quote_at, closer_end));
+        }
+        // An overlapping run of quotes can begin a valid closer at the next
+        // byte (for example `\"\"\"\"##` with a three-quote delimiter).
+        index = quote_at + 1;
+    }
+    None
+}
 
 impl<'a> Parser<'a> {
     pub(super) fn parse_identifier_string(&mut self) -> CtxResult<KdlStr<'a>> {
@@ -265,9 +310,10 @@ impl<'a> Parser<'a> {
         }
         self.bump_byte();
         let start = self.index;
-        let close = format!("\"{}", "#".repeat(hashes));
-        if let Some(rel) = self.input[start..].find(&close) {
-            let content = &self.input[start..start + rel];
+        if let Some((close_at, end_index)) =
+            find_string_closer(self.scan_bytes(), start, self.scan_end(), 1, hashes)
+        {
+            let content = &self.input[start..close_at];
             if content.chars().any(is_newline_char) {
                 return Err(self
                     .err_at(ErrorCode::Syntax, start)
@@ -276,11 +322,43 @@ impl<'a> Parser<'a> {
             if content.chars().any(is_disallowed_literal) {
                 return Err(self.err_at(ErrorCode::DisallowedCodePoint, start));
             }
-            self.index = start + rel + close.len();
+            self.index = end_index;
             return Ok(KdlStr::borrowed(content));
         }
         Err(self
             .err(ErrorCode::UnexpectedEof)
             .with_message("unclosed raw string"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_string_closer;
+
+    #[test]
+    fn closer_requires_the_exact_hash_count() {
+        let input = b"first\"# second\"## third\"###";
+        let close_at = input.len() - 4;
+        assert_eq!(
+            find_string_closer(input, 0, input.len(), 1, 3),
+            Some((close_at, input.len()))
+        );
+    }
+
+    #[test]
+    fn closer_handles_overlapping_multiline_quotes() {
+        let input = b"body\n\"\"\"# still body\n  \"\"\"##";
+        let close_at = input.len() - 5;
+        assert_eq!(
+            find_string_closer(input, 0, input.len(), 3, 2),
+            Some((close_at, input.len()))
+        );
+    }
+
+    #[test]
+    fn closer_rejects_incomplete_delimiter() {
+        let input = b"body\"##";
+        assert_eq!(find_string_closer(input, 0, input.len(), 1, 3), None);
+        assert_eq!(find_string_closer(input, 0, input.len(), 0, 0), None);
     }
 }

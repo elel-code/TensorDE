@@ -2,16 +2,20 @@ use vulkanalia::{prelude::v1_4::*, vk};
 
 use super::CommandEncoder;
 use crate::{
-    Buffer, BufferUsages, Error, Extent2D, Extent3D, Image, Origin2D, Origin3D, Result,
-    TextureLayout, TextureSubresourceLayers, TextureSubresourceRange,
+    AcquiredSurfaceTexture, Buffer, BufferUsages, Error, ExportedDmaBufImage, Extent2D, Extent3D,
+    Image, Origin2D, Origin3D, Result, TextureLayout, TextureSubresourceLayers,
+    TextureSubresourceRange,
 };
 
 mod validation;
 
 use validation::{
-    lower_color_image_copy, validate_buffer_copy, validate_buffer_image_copy,
-    validate_buffer_image_resources, validate_color_clear, validate_image_blit,
-    validate_image_blit_resources, validate_image_copy, validate_image_copy_resources,
+    lower_color_image_buffer_copy, lower_color_image_copy, validate_buffer_copy,
+    validate_buffer_image_copy, validate_buffer_image_resources, validate_color_clear,
+    validate_exported_image_copy, validate_exported_image_copy_resources, validate_image_blit,
+    validate_image_blit_resources, validate_image_buffer_copy_resources, validate_image_copy,
+    validate_image_copy_resources, validate_surface_image_copy,
+    validate_surface_image_copy_resources,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,6 +49,23 @@ pub struct ColorBufferImageCopy {
     pub destination_mip_level: u32,
     pub destination_base_array_layer: u32,
     pub destination_origin: Origin2D,
+    pub extent: Extent2D,
+    pub layer_count: u32,
+}
+
+/// Typed color-image readback region for one image-to-buffer copy.
+///
+/// The source is a color subresource. Row and image-height values of zero use
+/// Vulkan's tightly packed representation. Products can therefore describe a
+/// capture/readback tap without importing Vulkan copy structures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ColorImageBufferCopy {
+    pub buffer_offset: u64,
+    pub buffer_row_length: u32,
+    pub buffer_image_height: u32,
+    pub source_mip_level: u32,
+    pub source_base_array_layer: u32,
+    pub source_origin: Origin2D,
     pub extent: Extent2D,
     pub layer_count: u32,
 }
@@ -284,6 +305,78 @@ impl CommandEncoder {
         }
     }
 
+    /// Records an image-to-readback-buffer copy.
+    ///
+    /// # Safety
+    ///
+    /// The graph must transition `image` to `layout` with transfer-read access
+    /// and `destination` to transfer-destination access. Both resources are
+    /// retained automatically until the submission completes; CPU access must
+    /// additionally wait for that submission's timeline value.
+    pub unsafe fn copy_image_to_buffer(
+        &mut self,
+        image: &Image,
+        layout: TextureLayout,
+        destination: &Buffer,
+        regions: &[BufferImageCopy],
+    ) -> Result<()> {
+        validate_image_buffer_copy_resources(self, image, layout, destination)?;
+        let mut copies = Vec::with_capacity(regions.len());
+        for region in regions {
+            validate_buffer_image_copy(destination, image, *region)?;
+            copies.push(
+                vk::BufferImageCopy2::builder()
+                    .buffer_offset(region.buffer_offset)
+                    .buffer_row_length(region.buffer_row_length)
+                    .buffer_image_height(region.buffer_image_height)
+                    .image_subresource(region.image_subresource.to_vk())
+                    .image_offset(region.image_offset.to_vk())
+                    .image_extent(region.image_extent.to_vk())
+                    .build(),
+            );
+        }
+        if copies.is_empty() {
+            return Ok(());
+        }
+        let copy = vk::CopyImageToBufferInfo2::builder()
+            .src_image(image.raw())
+            .src_image_layout(layout.to_vk())
+            .dst_buffer(destination.raw())
+            .regions(&copies);
+        unsafe {
+            self.owner
+                .device
+                .cmd_copy_image_to_buffer2(self.raw(), &copy)
+        };
+        self.retain_resource(image);
+        self.retain_resource(destination);
+        Ok(())
+    }
+
+    /// Records a color-image readback without exposing subresource or Vulkan
+    /// layout structures. The source must already be transfer-readable.
+    ///
+    /// # Safety
+    ///
+    /// The caller must provide the image and buffer transitions described by
+    /// [`Self::copy_image_to_buffer`] and wait for timeline completion before
+    /// reading the destination.
+    pub unsafe fn copy_color_image_to_buffer(
+        &mut self,
+        image: &Image,
+        destination: &Buffer,
+        regions: &[ColorImageBufferCopy],
+    ) -> Result<()> {
+        let regions = regions
+            .iter()
+            .copied()
+            .map(lower_color_image_buffer_copy)
+            .collect::<Result<Vec<_>>>()?;
+        unsafe {
+            self.copy_image_to_buffer(image, TextureLayout::TransferSource, destination, &regions)
+        }
+    }
+
     /// Records exact-format image copies without CPU readback.
     ///
     /// # Safety
@@ -368,6 +461,113 @@ impl CommandEncoder {
                 &regions,
             )
         }
+    }
+
+    /// Copies an exported dma-buf color image into a renderer-owned image.
+    ///
+    /// This is the typed compositor/capture boundary for region-local GPU
+    /// dependencies. It does not expose raw external image handles or Vulkan
+    /// copy structures to product code.
+    ///
+    /// # Safety
+    ///
+    /// The caller must transition the exported source to
+    /// [`TextureLayout::TransferSource`] and the destination to
+    /// [`TextureLayout::TransferDestination`] before this command.
+    pub unsafe fn copy_exported_color_image_to_image(
+        &mut self,
+        source: &ExportedDmaBufImage,
+        destination: &Image,
+        regions: &[ColorImageCopy],
+    ) -> Result<()> {
+        validate_exported_image_copy_resources(self, source, destination)?;
+        let regions = regions
+            .iter()
+            .copied()
+            .map(lower_color_image_copy)
+            .collect::<Result<Vec<_>>>()?;
+        for region in &regions {
+            validate_exported_image_copy(source, destination, *region)?;
+        }
+        if regions.is_empty() {
+            return Ok(());
+        }
+        let copies = regions
+            .iter()
+            .map(|region| {
+                vk::ImageCopy2::builder()
+                    .src_subresource(region.source_subresource.to_vk())
+                    .src_offset(region.source_offset.to_vk())
+                    .dst_subresource(region.destination_subresource.to_vk())
+                    .dst_offset(region.destination_offset.to_vk())
+                    .extent(region.extent.to_vk())
+                    .build()
+            })
+            .collect::<Vec<_>>();
+        let copy = vk::CopyImageInfo2::builder()
+            .src_image(source.raw_image())
+            .src_image_layout(TextureLayout::TransferSource.to_vk())
+            .dst_image(destination.raw())
+            .dst_image_layout(TextureLayout::TransferDestination.to_vk())
+            .regions(&copies);
+        unsafe { self.owner.device.cmd_copy_image2(self.raw(), &copy) };
+        self.retain_resource(source);
+        self.retain_resource(destination);
+        Ok(())
+    }
+
+    /// Copies an acquired surface color image into a renderer-owned image.
+    ///
+    /// This is the generic WSI counterpart to
+    /// [`Self::copy_exported_color_image_to_image`]. Products may use it for
+    /// bounded local scene-color dependencies without moving effect policy
+    /// into the shared renderer.
+    ///
+    /// # Safety
+    ///
+    /// The swapchain must have been configured with `COPY_SOURCE`. The caller
+    /// must transition the acquired source to [`TextureLayout::TransferSource`]
+    /// and the destination to [`TextureLayout::TransferDestination`] before
+    /// recording this command.
+    pub unsafe fn copy_surface_color_image_to_image(
+        &mut self,
+        source: &AcquiredSurfaceTexture<'_>,
+        destination: &Image,
+        regions: &[ColorImageCopy],
+    ) -> Result<()> {
+        validate_surface_image_copy_resources(self, source, destination)?;
+        let regions = regions
+            .iter()
+            .copied()
+            .map(lower_color_image_copy)
+            .collect::<Result<Vec<_>>>()?;
+        for region in &regions {
+            validate_surface_image_copy(source, destination, *region)?;
+        }
+        if regions.is_empty() {
+            return Ok(());
+        }
+        let copies = regions
+            .iter()
+            .map(|region| {
+                vk::ImageCopy2::builder()
+                    .src_subresource(region.source_subresource.to_vk())
+                    .src_offset(region.source_offset.to_vk())
+                    .dst_subresource(region.destination_subresource.to_vk())
+                    .dst_offset(region.destination_offset.to_vk())
+                    .extent(region.extent.to_vk())
+                    .build()
+            })
+            .collect::<Vec<_>>();
+        let copy = vk::CopyImageInfo2::builder()
+            .src_image(source.image())
+            .src_image_layout(TextureLayout::TransferSource.to_vk())
+            .dst_image(destination.raw())
+            .dst_image_layout(TextureLayout::TransferDestination.to_vk())
+            .regions(&copies);
+        unsafe { self.owner.device.cmd_copy_image2(self.raw(), &copy) };
+        self.retain_resource(destination);
+        Ok(())
     }
 
     /// Clears color subresources without a render pass.

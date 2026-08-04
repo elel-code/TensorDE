@@ -1,0 +1,95 @@
+[package]
+name = "tensorland"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+default-run = "tensorland"
+description = "The Tensorland Wayland compositor using the shared Vulkan renderer"
+license = "MIT OR Apache-2.0"
+autobins = false
+
+[features]
+default = ["tty", "xwayland"]
+dmabuf-smoke = ["tty", "dep:wayland-client", "wayland-protocols/client"]
+systemd = ["dep:sd-notify", "dep:zbus"]
+tty = [
+    "dep:drm",
+    "dep:drm-ffi",
+    "dep:gbm",
+    "dep:libinput",
+    "dep:libseat",
+    "dep:tensor-drm",
+    "dep:udev",
+]
+xwayland = ["dep:x11rb", "rustix/pipe"]
+
+[dependencies]
+appendlist = "1"
+arc-swap = "1"
+bevy_ecs = { version = "0.19", default-features = false, features = ["std"] }
+bytemuck = "1"
+clap = { version = "4", features = ["derive"] }
+# Compio = completion model; Linux requires io_uring and fails closed if it is unavailable.
+compio = { version = "0.19", default-features = false, features = ["runtime", "async-fd", "io-uring", "fs", "net"] }
+cursor-icon = "1"
+drm = { version = "0.14", optional = true }
+drm-ffi = { version = "0.9", optional = true }
+futures-channel = "0.3"
+futures-util = "0.3"
+gbm = { version = "0.18", default-features = false, features = ["drm-support"], optional = true }
+# The crates.io `input` package is the Rust wrapper for system libinput.
+libinput = { package = "input", version = "0.10", default-features = false, optional = true, features = ["libinput_1_26", "udev"] }
+libseat = { version = "0.2", default-features = false, optional = true }
+miette = { version = "7", features = ["fancy-no-backtrace"] }
+notify = "8"
+rustix = { version = "1", features = ["fs", "mm", "net", "process", "rand", "runtime", "time"] }
+sd-notify = { version = "0.5", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+signal-hook-registry = "1"
+tensor-drm = { path = "../../crates/tensor-drm", optional = true }
+tensor-event = { path = "../../crates/tensor-event" }
+tensor-host = { path = "../../crates/tensor-host" }
+tensor-kdl = { path = "../../crates/tensor-kdl", features = ["diagnostics"] }
+tensor-present = { path = "../../crates/tensor-present" }
+tensor-protocol = { path = "../../crates/tensor-protocol" }
+tensor-runtime = { path = "../../crates/tensor-runtime" }
+tensor-util = { path = "../../crates/tensor-util" }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+udev = { version = "0.9", optional = true }
+vulkan-renderer = { path = "../../crates/vulkan-renderer" }
+wayland-client = { version = "0.31", optional = true }
+wayland-protocols = { version = "0.32", features = ["server", "staging", "unstable"] }
+wayland-protocols-misc = { version = "0.3", features = ["server"] }
+wayland-protocols-wlr = { version = "0.3", features = ["server"] }
+wayland-server = { version = "0.31", features = ["libwayland_1_22"] }
+xkbcommon = "0.9"
+x11rb = { version = "0.13", optional = true, features = ["composite"] }
+xcursor = "0.3"
+zbus = { version = "5", optional = true }
+
+[dev-dependencies]
+rustix = { version = "1", features = ["pipe", "thread"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+
+[[bin]]
+name = "tensorland"
+path = "src/main.rs"
+
+[[bin]]
+name = "tensorland-dmabuf-smoke"
+path = "src/bin/tensorland-dmabuf-smoke.rs"
+required-features = ["dmabuf-smoke"]
+
+[[bin]]
+name = "tensorctl"
+path = "src/bin/tensorctl.rs"
+
+[[bin]]
+name = "tensorland-session"
+path = "src/bin/tensorland-session.rs"

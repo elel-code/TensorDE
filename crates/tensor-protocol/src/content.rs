@@ -1,6 +1,6 @@
 use tensor_util::{Rect, Size};
 
-use crate::{SurfaceBufferId, SurfaceId};
+use crate::{SurfaceBufferId, SurfaceColorState, SurfaceId};
 
 /// Monotonic content generation for one surface.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -271,6 +271,8 @@ pub struct SurfaceContent {
     pub revision: ContentRevision,
     pub layer: SurfaceLayer,
     pub alpha: SurfaceAlpha,
+    /// Committed colorimetry and pixel representation for this exact surface.
+    pub color: SurfaceColorState,
     pub local_geometry: Rect,
     pub sample_transform: SurfaceSampleTransform,
 }

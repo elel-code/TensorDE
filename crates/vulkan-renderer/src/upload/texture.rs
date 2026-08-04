@@ -111,15 +111,39 @@ impl ImageUpload {
         extent: Extent3D,
         mip_level: u32,
     ) -> Result<Self> {
+        Self::color_mip_2d_with_source_storage_extent(format, extent, extent, mip_level)
+    }
+
+    /// Builds a color-mip upload whose source rows use `source_storage_extent`
+    /// while the image copy writes only `image_extent` texels.
+    ///
+    /// This retains padded source rows and compressed edge blocks without
+    /// changing the image's logical mip extent. The source extent may extend
+    /// past the right or bottom edge, but never be smaller than the copied
+    /// image region.
+    pub fn color_mip_2d_with_source_storage_extent(
+        format: TextureFormat,
+        image_extent: Extent3D,
+        source_storage_extent: Extent3D,
+        mip_level: u32,
+    ) -> Result<Self> {
+        if source_storage_extent.width < image_extent.width
+            || source_storage_extent.height < image_extent.height
+            || source_storage_extent.depth_or_layers != image_extent.depth_or_layers
+        {
+            return Err(Error::Validation(
+                "image upload source storage extent does not cover the image extent".into(),
+            ));
+        }
         let texel_block = TexelBlockLayout::for_format(format).ok_or_else(|| {
             Error::Validation(format!("{format:?} has no standard upload block layout"))
         })?;
         Ok(Self {
-            data_layout: ImageDataLayout::tightly_packed(extent, texel_block)?,
+            data_layout: ImageDataLayout::tightly_packed(source_storage_extent, texel_block)?,
             texel_block,
             image_subresource: TextureSubresourceLayers::color(mip_level, 0, 1),
             image_offset: Origin3D::default(),
-            image_extent: extent,
+            image_extent,
         })
     }
 
@@ -395,6 +419,22 @@ mod tests {
         assert_eq!(upload.image_subresource.mip_level, 3);
         assert_eq!(upload.image_extent, Extent3D::new(7, 5, 1));
         assert_eq!(upload.data_layout.bytes_per_row, 16);
+    }
+
+    #[test]
+    fn typed_color_mip_upload_keeps_padded_source_blocks_outside_logical_mip_extent() {
+        let upload = ImageUpload::color_mip_2d_with_source_storage_extent(
+            TextureFormat::Bc7RgbaUnorm,
+            Extent3D::new(321, 270, 1),
+            Extent3D::new(324, 272, 1),
+            2,
+        )
+        .expect("padded BC source layout");
+
+        assert_eq!(upload.image_extent, Extent3D::new(321, 270, 1));
+        assert_eq!(upload.data_layout.bytes_per_row, 81 * 16);
+        assert_eq!(upload.data_layout.rows_per_image, 272);
+        assert_eq!(required_footprint(upload).unwrap(), 81 * 68 * 16);
     }
 
     fn layers(count: u32) -> TextureSubresourceLayers {

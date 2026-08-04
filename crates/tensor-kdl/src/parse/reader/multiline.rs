@@ -2,6 +2,7 @@
 
 use crate::error::{CtxResult, ErrorCode};
 use crate::parse::chars::{is_disallowed_literal, is_newline_char, is_unicode_space};
+use crate::parse::reader::string::find_string_closer;
 use crate::value::KdlStr;
 
 use crate::parse::reader::Parser;
@@ -24,10 +25,9 @@ impl<'a> Parser<'a> {
                 .err(ErrorCode::Syntax)
                 .with_message("multiline string must start with a newline after \"\"\""));
         }
-        let closer = format!("\"\"\"{}", "#".repeat(hashes));
         let body_start = self.index;
         let (close_at, end_index) = self
-            .find_multiline_closer(body_start, &closer, raw)
+            .find_multiline_closer(body_start, hashes, raw)
             .ok_or_else(|| {
                 self.err(ErrorCode::UnexpectedEof)
                     .with_message("unclosed multiline string")
@@ -53,23 +53,21 @@ impl<'a> Parser<'a> {
     fn find_multiline_closer(
         &self,
         body_start: usize,
-        closer: &str,
+        hashes: usize,
         raw: bool,
     ) -> Option<(usize, usize)> {
         if raw {
             // Cut-point: first matching closer sequence ends the string.
-            return self.input[body_start..].find(closer).map(|rel| {
-                let at = body_start + rel;
-                (at, at + closer.len())
-            });
+            return find_string_closer(self.scan_bytes(), body_start, self.scan_end(), 3, hashes);
         }
 
         // Quoted multiline: a closer is valid if its line prefix is only
         // unicode-spaces and/or ws-escapes (`\` + space/newline runs).
         // Also skip `"""` that are escaped as `\"""` in the body.
         let mut pos = body_start;
-        while let Some(rel) = self.input[pos..].find(closer) {
-            let at = pos + rel;
+        while let Some((at, end_index)) =
+            find_string_closer(self.scan_bytes(), pos, self.scan_end(), 3, hashes)
+        {
             // Escaped delimiter: odd number of backslashes immediately before.
             if backslash_escape_count_before(self.input, at) % 2 == 1 {
                 pos = at + 1;
@@ -85,7 +83,7 @@ impl<'a> Parser<'a> {
             // If closer is on the first body line with no prior newline in body,
             // prefix is from body_start — still OK for empty indented `"""\n\t"""`.
             if closing_line_prefix_ok(prefix) {
-                return Some((at, at + closer.len()));
+                return Some((at, end_index));
             }
             pos = at + 1;
         }

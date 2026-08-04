@@ -244,32 +244,47 @@ orchestrator over those primitives, not the only supported rendering topology.
 8. A non-surface target extent is an explicit quality/render-scale policy. It
    MUST NOT silently replace the surface physical extent or be reported as
    native-resolution rendering.
-9. Future transient memory aliasing MUST require non-overlapping first/last-use
+9. Region-local intermediate targets MUST use explicit target-count, retained-byte, and maximum-
+   extent bounds. Exhaustion MUST be an error; it MUST NOT select a CPU or direct-render fallback.
+10. A retained target MUST NOT be reused or trimmed until its retirement timeline is at most the
+    completed device timeline. A matching but busy target does not satisfy an acquisition. An
+    acquisition made before submission MUST remain an explicit reservation: successful submission
+    retires it at that submission timeline, while an abandoned recording MUST release it without
+    assigning a timeline that will never signal.
+    The retirement value MUST be strictly newer than the completed timeline
+    observed at acquisition. Fixed-size batch acquire/retire/release MUST be
+    all-or-rollback at the reservation layer.
+11. Capacity or byte pressure MAY evict only retired entries. Selection SHOULD evict the least
+    recently used retired entry so frequently reused shapes remain resident.
+12. Intermediate pool keys contain only physical extent, format, and additional image usage.
+    Product semantics such as a Tensor view, backdrop blur, capture source, or scene node MUST NOT
+    enter the shared pool API.
+13. Future transient memory aliasing MUST require non-overlapping first/last-use
    intervals plus equal format, sample count, usage compatibility and queue
    ownership. It MAY reuse backing memory but MUST NOT fuse passes or erase
    barriers, copies, swaps, descriptor identity, history or external liveness.
-10. Target selection, acquire timing, and terminal sampling/alpha policy are
+14. Target selection, acquire timing, and terminal sampling/alpha policy are
    independent typed inputs. Products MAY force direct or offscreen behavior,
    but the shared renderer MUST reject an incompatible forced-direct request
    rather than silently changing graph semantics.
-11. When selected, `PresentationTransaction` MUST execute the chosen schedule
+15. When selected, `PresentationTransaction` MUST execute the chosen schedule
    rather than merely report it. Direct mode acquires, records/submits the sole
    surface pass, then presents. Offscreen `BeforeFrame` puts the offscreen and
    terminal command buffers in one submission after acquire;
    `AfterOffscreenSubmit` submits swapchain-independent work first, acquires
    second, then submits the terminal command buffer on the same graphics queue.
-12. The terminal command buffer MUST transition the acquired swapchain image
+16. The terminal command buffer MUST transition the acquired swapchain image
     from `UNDEFINED` on its first use or `PRESENT_SRC_KHR` after presentation to
     `ATTACHMENT_OPTIMAL`, allow the terminal dynamic-rendering phase to write it,
     and transition it directly back to `PRESENT_SRC_KHR`. No copy, blit,
     staging operation, CPU round trip, or additional image may follow the
     terminal surface phase.
-13. Acquire binary semaphores MUST be indexed by in-flight frame slot and MUST
+17. Acquire binary semaphores MUST be indexed by in-flight frame slot and MUST
     NOT be reused before that slot's surface submission timeline completes.
     Render-finished semaphores MUST be indexed by swapchain image; reacquiring
     the same image proves the prior presentation wait consumed its signal.
     Timeline completion alone does not prove presentation-engine consumption.
-14. Any recording, submission, or presentation failure after acquire MUST
+18. Any recording, submission, or presentation failure after acquire MUST
     poison the transaction. Continuing with an acquired image or an ambiguous
     binary-semaphore payload is forbidden; the transaction and swapchain MUST
     be recreated. Cold transaction destruction MUST wait for outstanding WSI
@@ -365,7 +380,11 @@ orchestrator over those primitives, not the only supported rendering topology.
    roll their cursor reservations back.
 4. Both retained bytes and chunk count MUST have explicit hard bounds.
    Exhaustion MUST fail visibly instead of growing process memory without a
-   bound or waiting for queue idle.
+   bound or waiting for queue idle. A cold producer MAY explicitly split a
+   bounded stream by submitting the current batch without blocking, then
+   waiting only for the oldest staging timeline when a later reservation still
+   needs reuse; this never permits queue/device idle or unbounded staging
+   growth.
 5. Upload copies and following rendering MAY share one command buffer. The
    caller remains responsible for exact synchronization2 transitions and
    texel/block packing; the implementation MUST NOT introduce CPU readback.

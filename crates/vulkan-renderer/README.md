@@ -175,6 +175,28 @@ transitions. The terminal shader writes the acquired swapchain image directly;
 no final copy or blit is inserted. Acquire semaphores are frame-slot owned,
 while render-finished semaphores are swapchain-image owned for safe WSI reuse.
 
+Region-local dependencies can use `RetainedColorTargetPool` independently of
+surface presentation. The pool has explicit target-count, byte, and extent
+limits; keys contain only extent, format, and image usage. A target remains
+busy until its retirement timeline completes. Matching retired targets are
+reused, pressure evicts only retired least-recently-used entries, and a fully
+busy pool fails before invoking the image allocator. Acquisition returns an
+explicit reservation: successful submission retires it at the frame timeline,
+while abandoned recording releases it immediately without inventing GPU work.
+Fixed-size batch acquisition is rollback-safe: if a later lane cannot be
+reserved, every earlier lane is released, and batch retire/release validates
+all tokens before mutating any entry.
+`CommandEncoder::copy_exported_color_image_to_image` provides the matching
+typed external/output-to-retained region copy without exposing Vulkan handles
+or product graph semantics. Its WSI peer,
+`copy_surface_color_image_to_image`, validates the acquired swapchain usage and
+supports the same bounded dependency for direct-surface products.
+`copy_color_image_to_buffer` completes the typed
+retained-image-to-readback leg; it retains both operands through submission,
+while `Buffer::read` remains valid only after the caller has observed the
+submission timeline. The shared API contains no compositor capture/session
+types and is equally usable by UI export, diagnostics, and scene products.
+
 ## Submission and resource lifetime
 
 The device owns a resettable graphics command pool and a timeline semaphore.
@@ -228,8 +250,12 @@ device-memory handle.
 persistently mapped staging chunks. A batch can stage buffer and image copies,
 record subsequent barriers/rendering into the same encoder, and submit once.
 Touched chunks are reused only after the returned timeline completes; failed
-or abandoned batches roll their cursors back. The default policy retains at
-most eight chunks and 32 MiB, and `trim` releases completed excess chunks.
+or abandoned batches roll their cursors back. A cold producer whose complete
+resource set exceeds that bound can explicitly `flush_for_reuse` without
+blocking, then call `wait_for_oldest_reuse` only if a later reservation still
+has no capacity; neither path uses queue/device idle. The default policy
+retains at most eight chunks and 32 MiB, and `trim` releases completed excess
+chunks.
 
 `UploadBatch::write_image_data` validates texel-block geometry, mip/array/3D
 footprints, row and image strides, compressed-format edge blocks, and exact

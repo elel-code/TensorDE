@@ -76,8 +76,6 @@ pub struct ProtocolSpec {
 ///
 /// Order is documentation / discovery only; bind order is decided by
 /// dependency (compositor before surface roles, seat before text-input, …).
-///
-/// Alias: [`FIKA_PROTOCOL_MATRIX`] (historical name kept for compatibility).
 pub const PROTOCOL_MATRIX: &[ProtocolSpec] = &[
     // —— core ——
     ProtocolSpec {
@@ -223,9 +221,6 @@ pub const PROTOCOL_MATRIX: &[ProtocolSpec] = &[
     },
 ];
 
-/// Historical alias for [`PROTOCOL_MATRIX`] (Fika workspace name).
-pub const FIKA_PROTOCOL_MATRIX: &[ProtocolSpec] = PROTOCOL_MATRIX;
-
 /// Filter the matrix by class (for phased implementation).
 pub fn specs_in_class(class: ProtocolClass) -> impl Iterator<Item = &'static ProtocolSpec> {
     PROTOCOL_MATRIX
@@ -267,8 +262,6 @@ mod tests {
                 .iter()
                 .any(|s| s.interface == "zxdg_exporter_v2" && s.class == ProtocolClass::Unstable)
         );
-        // Alias stays in lockstep.
-        assert_eq!(PROTOCOL_MATRIX.len(), FIKA_PROTOCOL_MATRIX.len());
     }
 
     #[test]

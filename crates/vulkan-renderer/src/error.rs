@@ -37,6 +37,13 @@ impl fmt::Display for VulkanFailure {
     }
 }
 
+/// The bounded upload-belt limit that prevented a staging allocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UploadBeltLimit {
+    ChunkCount(usize),
+    RetainedBytes(u64),
+}
+
 #[derive(Debug)]
 pub enum Error {
     LoadLibrary(String),
@@ -51,6 +58,9 @@ pub enum Error {
     },
     NoPhysicalDevice,
     NoCompatibleDevice(Vec<String>),
+    UploadBeltExhausted {
+        limit: UploadBeltLimit,
+    },
     Validation(String),
     VideoDecode(String),
     TimelineExhausted,
@@ -85,6 +95,12 @@ impl Error {
             }
         )
     }
+
+    /// True when a bounded staging allocation needs an explicit streamed
+    /// submission before it can be retried.
+    pub const fn is_upload_belt_exhausted(&self) -> bool {
+        matches!(self, Self::UploadBeltExhausted { .. })
+    }
 }
 
 impl fmt::Display for Error {
@@ -103,6 +119,18 @@ impl fmt::Display for Error {
                 "no compatible Vulkan device: {}",
                 rejections.join("; ")
             ),
+            Self::UploadBeltExhausted {
+                limit: UploadBeltLimit::ChunkCount(max_chunks),
+            } => write!(
+                formatter,
+                "upload belt exhausted its {max_chunks}-chunk memory bound"
+            ),
+            Self::UploadBeltExhausted {
+                limit: UploadBeltLimit::RetainedBytes(max_bytes),
+            } => write!(
+                formatter,
+                "upload belt exhausted its {max_bytes}-byte memory bound"
+            ),
             Self::Validation(message) => formatter.write_str(message),
             Self::VideoDecode(message) => write!(formatter, "video decode: {message}"),
             Self::TimelineExhausted => formatter.write_str("timeline value space exhausted"),
@@ -111,3 +139,21 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upload_belt_exhaustion_is_machine_classified() {
+        let error = Error::UploadBeltExhausted {
+            limit: UploadBeltLimit::ChunkCount(8),
+        };
+
+        assert!(error.is_upload_belt_exhausted());
+        assert_eq!(
+            error.to_string(),
+            "upload belt exhausted its 8-chunk memory bound"
+        );
+    }
+}

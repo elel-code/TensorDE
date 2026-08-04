@@ -48,9 +48,7 @@ pub use event_map::{
     NativeEventMapState, SurfaceIdMap, map_native_event, map_native_event_full,
     map_native_key_text, native_key_text_pressed,
 };
-pub use protocols::{
-    FIKA_PROTOCOL_MATRIX, PROTOCOL_MATRIX, ProtocolClass, ProtocolSpec, specs_in_class,
-};
+pub use protocols::{PROTOCOL_MATRIX, ProtocolClass, ProtocolSpec, specs_in_class};
 pub use pump::{NativePump, PumpStep};
 pub use registry::{GlobalAdvertisement, NativeRegistry, list_env_globals};
 pub use shell::{

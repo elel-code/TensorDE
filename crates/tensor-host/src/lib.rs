@@ -25,7 +25,7 @@ pub use format::{
     negotiate_output_formats,
 };
 pub use mode::PhysicalMode;
-pub use present::{PresentIntent, PresentSlot, PresentState};
+pub use present::{PresentIntent, PresentMode, PresentSlot, PresentState};
 pub use session::SessionEvent;
 pub use subpixel::SubpixelLayout;
 pub use vblank::{

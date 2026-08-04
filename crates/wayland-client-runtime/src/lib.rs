@@ -140,12 +140,11 @@ pub use layer_shell::{
 #[cfg(feature = "compio")]
 pub use native::NativeRuntime;
 pub use native::{
-    FIKA_PROTOCOL_MATRIX, GlobalAdvertisement, IdleNotifyKind, NativeCapabilities,
-    NativeConnection, NativeError, NativeEventMapState, NativePopupPositioner, NativePump,
-    NativeRegistry, NativeShell, NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId,
-    PROTOCOL_MATRIX, ProtocolClass, ProtocolSpec, PumpStep, SurfaceIdMap, list_env_globals,
-    map_native_event, map_native_event_full, map_native_key_text, native_key_text_pressed,
-    specs_in_class,
+    GlobalAdvertisement, IdleNotifyKind, NativeCapabilities, NativeConnection, NativeError,
+    NativeEventMapState, NativePopupPositioner, NativePump, NativeRegistry, NativeShell,
+    NativeShellEvent, NativeSurfaceHandle, NativeSurfaceId, PROTOCOL_MATRIX, ProtocolClass,
+    ProtocolSpec, PumpStep, SurfaceIdMap, list_env_globals, map_native_event,
+    map_native_event_full, map_native_key_text, native_key_text_pressed, specs_in_class,
 };
 pub use output::{OutputEvent, OutputId, OutputInfo};
 pub use pointer_axis::{PointerAxisDirection, PointerAxisSource, PointerAxisValue};

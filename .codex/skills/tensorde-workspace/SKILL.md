@@ -1,6 +1,6 @@
 ---
 name: tensorde-workspace
-description: Evolve and validate the native GPU-first TensorDE monorepo containing Fika, Gilder, Tensor, desktop-shell, shared tensor crates, vulkan-renderer, and wayland-client-runtime. Use when changing TensorDE repository structure, shared Vulkan or client-runtime standards, compositor and DE shell surfaces or services, cross-product APIs, Gilder VM/evidence infrastructure, Fika or Tensor integration, dependency ownership, performance paths, or monorepo-wide policy and validation.
+description: Evolve and validate the native GPU-first TensorDE monorepo containing Tensor Files, Gilder, Tensorland, Tensor Shell, shared tensor crates, vulkan-renderer, and wayland-client-runtime. Use when changing TensorDE repository structure, shared Vulkan or client-runtime standards, compositor and DE shell surfaces or services, cross-product APIs, Gilder VM/evidence infrastructure, Tensor Files or Tensorland integration, dependency ownership, performance paths, or monorepo-wide policy and validation.
 ---
 
 # TensorDE Workspace
@@ -21,15 +21,15 @@ description: Evolve and validate the native GPU-first TensorDE monorepo containi
 - For Gilder scene semantics, conversion, rendering graphs, shaders, or
   performance, also use `.codex/skills/gilder-scene-engine/` and read the
   relevant section of `docs/gilder/gilder-scene-engine-architecture.md`.
-- For Fika behavior, follow the Dolphin source call chain in
+- For Tensor Files behavior, follow the Dolphin source call chain in
   `references/fika/dolphin`; use screenshots only as diagnostics, never as
   the correctness source.
 - For DE shell work, keep panel, launcher, notifications/OSD, control center,
-  overview, and lock surfaces in `apps/desktop-shell`. Express strict surface
+  overview, and lock surfaces in `apps/tensor-shell`. Express strict surface
   plans before wiring protocol objects and GPU rendering.
 - For Tensor compositor, session, direct protocol, input, DRM/KMS, XWayland,
   ECS, or renderer work, also use `.codex/skills/tensor-compositor/` and read
-  `apps/tensor/AGENTS.md` plus the relevant record under `docs/tensor/`.
+  `apps/tensorland/AGENTS.md` plus the relevant record under `docs/tensorland/`.
 - For shared rendering work, evolve `crates/vulkan-renderer` through typed,
   WebGPU-style descriptors while preserving explicit Vulkan semantics.
 
@@ -51,7 +51,7 @@ description: Evolve and validate the native GPU-first TensorDE monorepo containi
 - Treat `docs/gilder`, `reverse-engineered/gilder`, `references/gilder`,
   `artifacts/gilder`, `references/tensor`, and `artifacts/tensor` as durable
   local state. Inventory and verify these paths before moving or deleting an
-  old checkout. Tensor's tracked design records remain under `docs/tensor`.
+  old checkout. Tensorland's tracked design records remain under `docs/tensorland`.
 - Before moving the Windows VM, confirm no QEMU/swtpm process or mount uses it.
   On the same filesystem prefer an atomic move; preserve qcow2 sparseness,
   ownership, TPM state, and Podman storage. Update every consumer to the final

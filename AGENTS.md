@@ -5,13 +5,13 @@ product-specific constraints and takes precedence within its directory.
 
 ## Repository boundaries
 
-- Keep product applications under `apps/`: `fika`, `gilder`, `tensor`, and
-  `desktop-shell`.
+- Keep product applications under `apps/`: `tensor-files`, `gilder`, `tensorland`, and
+  `tensor-shell`.
 - Keep reusable protocol, GPU, resource, and scheduling standards under
   `crates/`. Do not make a shared crate depend on an application.
-- Treat the DE shell as a product, not as application UI. Fika's internal UI
-  belongs under `apps/fika/src/ui`; panel, launcher, notification/OSD, control
-  center, overview, and lock surfaces belong under `apps/desktop-shell`.
+- Treat the DE shell as a product, not as application UI. Tensor Files' internal UI
+  belongs under `apps/tensor-files/src/ui`; panel, launcher, notification/OSD, control
+  center, overview, and lock surfaces belong under `apps/tensor-shell`.
 - Use Rust 2024 same-name file/directory modules. Do not add `mod.rs`, numbered
   split files, or `__split` modules. Every Rust file must be at most 800 lines.
 
@@ -27,12 +27,12 @@ product-specific constraints and takes precedence within its directory.
 - Keep cold parsing, tessellation, decoding setup, shader preparation, and
   resource discovery outside per-frame work. Retain GPU resources and bound
   memory; use timeline retirement and bounded caches.
-- Do not introduce new wgpu paths. Existing Fika wgpu code is migration debt;
+- Do not introduce new wgpu paths. Existing Tensor Files wgpu code is migration debt;
   replace it through `vulkan-renderer` without local backend patches.
 
 ## Correctness sources
 
-- For Fika file-manager behavior, trace the relevant Dolphin call chain under
+- For Tensor Files behavior, trace the relevant Dolphin call chain under
   `references/fika/dolphin`. Do not infer correctness from screenshots.
 - For Gilder scene behavior, read `apps/gilder/AGENTS.md` and use
   `$gilder-scene-engine`. Treat `reverse-engineered/gilder/` as the first
@@ -43,10 +43,10 @@ product-specific constraints and takes precedence within its directory.
   Never force add them. The Windows VM, qcow2 images, TPM state, Podman store,
   workshop corpus, and traces are durable development infrastructure, not
   disposable build output.
-- For Tensor compositor work, read `apps/tensor/AGENTS.md` and use
+- For Tensorland compositor work, read `apps/tensorland/AGENTS.md` and use
   `$tensor-compositor`. Keep Tensor's ignored evidence under
   `references/tensor/` and `artifacts/tensor/`, and its tracked design records
-  under `docs/tensor/`.
+  under `docs/tensorland/`.
 - Use `target/` only for reproducible build output. Do not store irreplaceable
   evidence there.
 

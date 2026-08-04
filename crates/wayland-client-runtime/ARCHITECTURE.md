@@ -79,7 +79,7 @@ src/native/
 ```
 
 `ProtocolClass`, `ProtocolSpec`, and `PROTOCOL_MATRIX` (alias
-`FIKA_PROTOCOL_MATRIX`) document which globals this crate understands.
+`PROTOCOL_MATRIX`) documents which globals this crate understands.
 Implementations live under `native/shell` with dispatch split by concern
 (`dispatch_*.rs`).
 

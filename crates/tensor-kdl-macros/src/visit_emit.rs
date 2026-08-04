@@ -27,6 +27,7 @@ pub(crate) fn emit_decode_from_visit(
     ty_generics: &TypeGenerics<'_>,
     where_clause: Option<&WhereClause>,
     fields: &[FieldInfo],
+    validate: Option<&Ident>,
 ) -> proc_macro2::TokenStream {
     if !visit_fill_supported(fields) {
         return quote! {};
@@ -59,7 +60,10 @@ pub(crate) fn emit_decode_from_visit(
                 // ty is Option<Inner>; DecodeScalar for Option handles values.
                 arg_arms.push(quote! {
                     #idx => {
-                        self.#id = ::tensor_kdl::DecodeScalar::decode_scalar(&value)?;
+                        self.#id = ::tensor_kdl::DecodeScalar::decode_scalar_at(
+                            &value,
+                            __entry_offset,
+                        )?;
                     }
                 });
                 finish.push(quote! { #id: self.#id });
@@ -72,7 +76,10 @@ pub(crate) fn emit_decode_from_visit(
                 arg_arms.push(quote! {
                     #idx => {
                         self.#id = ::std::option::Option::Some(
-                            ::tensor_kdl::DecodeScalar::decode_scalar(&value)?,
+                            ::tensor_kdl::DecodeScalar::decode_scalar_at(
+                                &value,
+                                __entry_offset,
+                            )?,
                         );
                     }
                 });
@@ -93,7 +100,10 @@ pub(crate) fn emit_decode_from_visit(
                     inits.push(quote! { #id: ::std::option::Option::None });
                     prop_keys.push(key.clone());
                     prop_bodies.push(quote! {
-                        self.#id = ::tensor_kdl::DecodeScalar::decode_scalar(&value)?;
+                        self.#id = ::tensor_kdl::DecodeScalar::decode_scalar_at(
+                            &value,
+                            __entry_offset,
+                        )?;
                         return ::std::result::Result::Ok(true);
                     });
                     finish.push(quote! { #id: self.#id });
@@ -103,7 +113,10 @@ pub(crate) fn emit_decode_from_visit(
                     prop_keys.push(key.clone());
                     prop_bodies.push(quote! {
                         self.#id = ::std::option::Option::Some(
-                            ::tensor_kdl::DecodeScalar::decode_scalar(&value)?,
+                            ::tensor_kdl::DecodeScalar::decode_scalar_at(
+                                &value,
+                                __entry_offset,
+                            )?,
                         );
                         return ::std::result::Result::Ok(true);
                     });
@@ -162,8 +175,8 @@ pub(crate) fn emit_decode_from_visit(
                         quote! {
                             {
                                 use ::tensor_kdl::{NestedFill as _, NestedProbe};
-                                (&&NestedProbe::<#nested_ty>::new()).fill_nested(
-                                    parser, opts, type_name, name,
+                                (&&NestedProbe::<#nested_ty>::new()).fill_nested_at(
+                                    parser, opts, __child_offset, type_name, name,
                                 )?
                             }
                         }
@@ -229,8 +242,8 @@ pub(crate) fn emit_decode_from_visit(
                         #filter => {
                             use ::tensor_kdl::{NestedFill as _, NestedProbe};
                             let __nested: #elem_ty =
-                                (&&NestedProbe::<#elem_ty>::new()).fill_nested(
-                                    parser, opts, type_name, name,
+                                (&&NestedProbe::<#elem_ty>::new()).fill_nested_at(
+                                    parser, opts, __child_offset, type_name, name,
                                 )?;
                             self.#id.push(__nested);
                             return ::std::result::Result::Ok(true);
@@ -248,8 +261,8 @@ pub(crate) fn emit_decode_from_visit(
                         _ if true => {
                             use ::tensor_kdl::{NestedFill as _, NestedProbe};
                             let __nested: #elem_ty =
-                                (&&NestedProbe::<#elem_ty>::new()).fill_nested(
-                                    parser, opts, type_name, name,
+                                (&&NestedProbe::<#elem_ty>::new()).fill_nested_at(
+                                    parser, opts, __child_offset, type_name, name,
                                 )?;
                             self.#id.push(__nested);
                             return ::std::result::Result::Ok(true);
@@ -309,7 +322,10 @@ pub(crate) fn emit_decode_from_visit(
         let start = arg_i;
         quote! {
             if __i >= #start {
-                let decoded = ::tensor_kdl::DecodeScalar::decode_scalar(&value)?;
+                let decoded = ::tensor_kdl::DecodeScalar::decode_scalar_at(
+                    &value,
+                    __entry_offset,
+                )?;
                 self.#id.push(decoded);
                 return ::std::result::Result::Ok(true);
             }
@@ -363,9 +379,70 @@ pub(crate) fn emit_decode_from_visit(
         child_fallback,
     );
 
+    let finish_body = if let Some(method) = validate {
+        quote! {
+            let __decoded = #name {
+                #(#finish,)*
+            };
+            __decoded.#method(self.__node_offset)?;
+            ::std::result::Result::Ok(__decoded)
+        }
+    } else {
+        quote! {
+            ::std::result::Result::Ok(#name {
+                #(#finish,)*
+            })
+        }
+    };
+
+    let (node_offset_decl, node_offset_init, header_methods) = if validate.is_some() {
+        (
+            quote! { __node_offset: usize, },
+            quote! { __node_offset: 0, },
+            quote! {
+                fn on_header(
+                    &mut self,
+                    type_name: ::std::option::Option<::tensor_kdl::KdlStr<'__kdl>>,
+                    name: ::tensor_kdl::KdlStr<'__kdl>,
+                ) -> ::tensor_kdl::CtxResult<()> {
+                    ::tensor_kdl::VisitBuilder::on_header_at(self, 0, type_name, name)
+                }
+
+                fn on_header_at(
+                    &mut self,
+                    __node_offset: usize,
+                    type_name: ::std::option::Option<::tensor_kdl::KdlStr<'__kdl>>,
+                    name: ::tensor_kdl::KdlStr<'__kdl>,
+                ) -> ::tensor_kdl::CtxResult<()> {
+                    self.__node_offset = __node_offset;
+                    #(#header_stmts)*
+                    let _ = (type_name, name);
+                    ::std::result::Result::Ok(())
+                }
+            },
+        )
+    } else {
+        (
+            quote! {},
+            quote! {},
+            quote! {
+                fn on_header(
+                    &mut self,
+                    type_name: ::std::option::Option<::tensor_kdl::KdlStr<'__kdl>>,
+                    name: ::tensor_kdl::KdlStr<'__kdl>,
+                ) -> ::tensor_kdl::CtxResult<()> {
+                    #(#header_stmts)*
+                    let _ = (type_name, name);
+                    ::std::result::Result::Ok(())
+                }
+            },
+        )
+    };
+
     quote! {
         struct #builder<'__kdl> {
             __arg_i: usize,
+            #node_offset_decl
             #(#decls,)*
             _p: ::std::marker::PhantomData<&'__kdl ()>,
         }
@@ -378,6 +455,7 @@ pub(crate) fn emit_decode_from_visit(
             fn start_visit() -> Self::Builder {
                 #builder {
                     __arg_i: 0,
+                    #node_offset_init
                     #(#inits,)*
                     _p: ::std::marker::PhantomData,
                 }
@@ -387,18 +465,19 @@ pub(crate) fn emit_decode_from_visit(
         impl<'__kdl> ::tensor_kdl::VisitBuilder<'__kdl> for #builder<'__kdl> {
             type Output = #name #ty_generics;
 
-            fn on_header(
-                &mut self,
-                type_name: ::std::option::Option<::tensor_kdl::KdlStr<'__kdl>>,
-                name: ::tensor_kdl::KdlStr<'__kdl>,
-            ) -> ::tensor_kdl::CtxResult<()> {
-                #(#header_stmts)*
-                let _ = (type_name, name);
-                ::std::result::Result::Ok(())
-            }
+            #header_methods
 
             fn on_argument(
                 &mut self,
+                type_name: ::std::option::Option<::tensor_kdl::KdlStr<'__kdl>>,
+                value: ::tensor_kdl::Value<'__kdl>,
+            ) -> ::tensor_kdl::CtxResult<bool> {
+                ::tensor_kdl::VisitBuilder::on_argument_at(self, 0, type_name, value)
+            }
+
+            fn on_argument_at(
+                &mut self,
+                __entry_offset: usize,
                 _type_name: ::std::option::Option<::tensor_kdl::KdlStr<'__kdl>>,
                 value: ::tensor_kdl::Value<'__kdl>,
             ) -> ::tensor_kdl::CtxResult<bool> {
@@ -416,6 +495,16 @@ pub(crate) fn emit_decode_from_visit(
 
             fn on_property(
                 &mut self,
+                key: ::tensor_kdl::KdlStr<'__kdl>,
+                type_name: ::std::option::Option<::tensor_kdl::KdlStr<'__kdl>>,
+                value: ::tensor_kdl::Value<'__kdl>,
+            ) -> ::tensor_kdl::CtxResult<bool> {
+                ::tensor_kdl::VisitBuilder::on_property_at(self, 0, key, type_name, value)
+            }
+
+            fn on_property_at(
+                &mut self,
+                __entry_offset: usize,
                 key: ::tensor_kdl::KdlStr<'__kdl>,
                 _type_name: ::std::option::Option<::tensor_kdl::KdlStr<'__kdl>>,
                 value: ::tensor_kdl::Value<'__kdl>,
@@ -444,6 +533,19 @@ pub(crate) fn emit_decode_from_visit(
                 type_name: ::std::option::Option<::tensor_kdl::KdlStr<'__kdl>>,
                 name: ::tensor_kdl::KdlStr<'__kdl>,
             ) -> ::tensor_kdl::CtxResult<bool> {
+                ::tensor_kdl::VisitBuilder::take_child_after_header_at(
+                    self, 0, parser, opts, type_name, name,
+                )
+            }
+
+            fn take_child_after_header_at(
+                &mut self,
+                __child_offset: usize,
+                parser: &mut ::tensor_kdl::Parser<'__kdl>,
+                opts: ::tensor_kdl::Opts,
+                type_name: ::std::option::Option<::tensor_kdl::KdlStr<'__kdl>>,
+                name: ::tensor_kdl::KdlStr<'__kdl>,
+            ) -> ::tensor_kdl::CtxResult<bool> {
                 match name.as_str() {
                     #(#take_child_arms)*
                     _ => {
@@ -454,9 +556,7 @@ pub(crate) fn emit_decode_from_visit(
             }
 
             fn finish(self) -> ::tensor_kdl::CtxResult<Self::Output> {
-                ::std::result::Result::Ok(#name {
-                    #(#finish,)*
-                })
+                #finish_body
             }
         }
     }

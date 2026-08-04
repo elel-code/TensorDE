@@ -250,6 +250,58 @@ fn bench_pg10_padded_and_mixed(c: &mut Criterion) {
     group.finish();
 }
 
+/// P-G15: allocation-free raw delimiter scan + reusable padded input.
+///
+/// Cite: Glaze's direct cursor/SWAR string scan (`util/parse.hpp`) and mutable
+/// input-buffer reuse guidance (`docs/optimizing-performance.md`). Each value
+/// includes insufficient `"#` / `"##` candidates so the exact closer check is
+/// exercised instead of only the first quote fast path.
+fn bench_pg15_raw_strings_and_buffer_reuse(c: &mut Criterion) {
+    use tensor_kdl::{PaddedInput, from_padded};
+
+    let source = {
+        let mut input = String::with_capacity(200 * 64);
+        for index in 0..200 {
+            input.push_str("row ###\"");
+            input.push_str("alpha \"# beta \"## gamma ");
+            input.push_str(&index.to_string());
+            input.push_str("\"###\n");
+        }
+        input
+    };
+
+    let mut group = c.benchmark_group("pg15_raw_strings");
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(4));
+    group.throughput(Throughput::Bytes(source.len() as u64));
+
+    group.bench_function("from_str_exact_delimiters_200", |b| {
+        b.iter(|| {
+            let doc = from_str(black_box(&source)).expect("parse raw strings");
+            black_box(doc.nodes.len())
+        })
+    });
+
+    group.bench_function("from_padded_new_200", |b| {
+        b.iter(|| {
+            let input = PaddedInput::new(black_box(&source));
+            let doc = from_padded(&input).expect("parse padded raw strings");
+            black_box(doc.nodes.len())
+        })
+    });
+
+    group.bench_function("from_padded_replace_reuse_200", |b| {
+        let mut input = PaddedInput::new(&source);
+        b.iter(|| {
+            input.replace(black_box(&source));
+            let doc = from_padded(&input).expect("parse replaced raw strings");
+            black_box(doc.nodes.len())
+        })
+    });
+
+    group.finish();
+}
+
 /// P-G13: monomorphized WriteSink dump (Glaze `to::op` / `util/dump.hpp`).
 ///
 /// Compares allocate-each-time `write` vs in-place `write_into` buffer reuse
@@ -354,12 +406,129 @@ fn bench_pg13_write_sink(c: &mut Criterion) {
     group.finish();
 }
 
+/// P-G16/P-G17: source positions and completion validation on typed streaming.
+///
+/// All three cases use the same parser and generated property dispatch. The
+/// second exercises a custom scalar validator whose relative errors are
+/// translated to the property entry, while the third explicitly retains that
+/// entry offset in each decoded value.
+fn bench_pg16_streaming_source_positions(c: &mut Criterion) {
+    use tensor_kdl::{
+        Context, CtxResult, DecodeScalar, ErrorCode, ErrorCtx, Located, Value,
+        read_nodes_into_visit,
+    };
+
+    #[derive(Debug, Decode)]
+    struct PlainRow {
+        #[kdl(property)]
+        count: u32,
+    }
+
+    #[derive(Debug)]
+    struct Positive(u32);
+
+    impl<'a> DecodeScalar<'a> for Positive {
+        fn decode_scalar(value: &Value<'a>) -> CtxResult<Self> {
+            let value = u32::decode_scalar(value)?;
+            if value == 0 {
+                return Err(ErrorCtx::new(ErrorCode::ExceededLimit, 0)
+                    .with_message("count must be positive"));
+            }
+            Ok(Self(value))
+        }
+    }
+
+    #[derive(Debug, Decode)]
+    struct ValidatedRow {
+        #[kdl(property)]
+        count: Positive,
+    }
+
+    #[derive(Debug, Decode)]
+    struct LocatedRow {
+        #[kdl(property)]
+        count: Located<u32>,
+    }
+
+    #[derive(Debug, Decode)]
+    #[kdl(validate = "validate_kdl")]
+    struct NodeValidatedRow {
+        #[kdl(property)]
+        count: u32,
+    }
+
+    impl NodeValidatedRow {
+        fn validate_kdl(&self, node_offset: usize) -> CtxResult<()> {
+            if self.count == 0 {
+                return Err(ErrorCtx::new(ErrorCode::ExceededLimit, node_offset)
+                    .with_message("count must be positive"));
+            }
+            Ok(())
+        }
+    }
+
+    let source: String = (1..=200)
+        .map(|count| format!("row count={count}\n"))
+        .collect();
+    let mut group = c.benchmark_group("pg16_streaming_source_positions");
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(4));
+    group.throughput(Throughput::Bytes(source.len() as u64));
+
+    group.bench_function("plain_scalar_200", |b| {
+        let mut rows = Vec::<PlainRow>::new();
+        let mut ctx = Context::new();
+        b.iter(|| {
+            let ec = read_nodes_into_visit(&mut rows, black_box(&source), &mut ctx, Opts::new());
+            assert!(!ec.is_err());
+            black_box(rows.last().map(|row| row.count))
+        })
+    });
+
+    group.bench_function("validated_scalar_200", |b| {
+        let mut rows = Vec::<ValidatedRow>::new();
+        let mut ctx = Context::new();
+        b.iter(|| {
+            let ec = read_nodes_into_visit(&mut rows, black_box(&source), &mut ctx, Opts::new());
+            assert!(!ec.is_err());
+            black_box(rows.last().map(|row| row.count.0))
+        })
+    });
+
+    group.bench_function("located_scalar_200", |b| {
+        let mut rows = Vec::<LocatedRow>::new();
+        let mut ctx = Context::new();
+        b.iter(|| {
+            let ec = read_nodes_into_visit(&mut rows, black_box(&source), &mut ctx, Opts::new());
+            assert!(!ec.is_err());
+            black_box(
+                rows.last()
+                    .map(|row| (*row.count.value(), row.count.offset())),
+            )
+        })
+    });
+
+    group.bench_function("node_validated_200", |b| {
+        let mut rows = Vec::<NodeValidatedRow>::new();
+        let mut ctx = Context::new();
+        b.iter(|| {
+            let ec = read_nodes_into_visit(&mut rows, black_box(&source), &mut ctx, Opts::new());
+            assert!(!ec.is_err());
+            black_box(rows.last().map(|row| row.count))
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_pg6_unique_index_props,
     bench_pg7_modular_hash_props,
     bench_pg8_single_node_and_quote_scan,
     bench_pg10_padded_and_mixed,
-    bench_pg13_write_sink
+    bench_pg15_raw_strings_and_buffer_reuse,
+    bench_pg13_write_sink,
+    bench_pg16_streaming_source_positions
 );
 criterion_main!(benches);

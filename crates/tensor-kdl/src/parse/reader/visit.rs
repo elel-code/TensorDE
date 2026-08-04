@@ -53,8 +53,9 @@ impl<'a> Parser<'a> {
         opts_bits: u8,
         visitor: &mut V,
     ) -> CtxResult<()> {
+        let node_offset = self.index;
         let (type_name, name) = self.parse_node_header()?;
-        visitor.on_header(type_name, name)?;
+        visitor.on_header_at(node_offset, type_name, name)?;
         self.visit_node_body_bits(opts_bits, visitor)
     }
 
@@ -177,22 +178,24 @@ impl<'a> Parser<'a> {
         opts_bits: u8,
         visitor: &mut V,
     ) -> CtxResult<()> {
+        let entry_offset = self.index;
         let entry = self.parse_prop_or_arg()?;
         match entry {
             Entry::Argument { type_name, value } => {
-                let _ = visitor.on_argument(type_name, value)?;
+                let _ = visitor.on_argument_at(entry_offset, type_name, value)?;
             }
             Entry::Property {
                 key,
                 type_name,
                 value,
             } => {
-                let handled = visitor.on_property(key, type_name, value)?;
+                let handled = visitor.on_property_at(entry_offset, key, type_name, value)?;
                 // Monomorphized when called via visit_node_const (opts_bits is const).
                 if !handled && flag_error_on_unknown(opts_bits) {
-                    return Err(self
-                        .err(ErrorCode::UnknownProperty)
-                        .with_message("property not recognized by visitor"));
+                    return Err(
+                        crate::ErrorCtx::new(ErrorCode::UnknownProperty, entry_offset)
+                            .with_message("property not recognized by visitor"),
+                    );
                 }
             }
         }
@@ -235,14 +238,21 @@ impl<'a> Parser<'a> {
                 // P-G3d: header then nested visit (Glaze nested from::op).
                 // DOM child materialization is feature `dom` only (Glaze: no tree
                 // on the typed path).
+                let node_offset = self.index;
                 let (type_name, name) = self.parse_node_header()?;
-                if visitor.take_child_after_header(self, opts, type_name.clone(), name.clone())? {
+                if visitor.take_child_after_header_at(
+                    node_offset,
+                    self,
+                    opts,
+                    type_name.clone(),
+                    name.clone(),
+                )? {
                     continue;
                 }
                 #[cfg(feature = "dom")]
                 {
                     let mut child_dom = DomNodeBuilder::default();
-                    child_dom.on_header(type_name, name)?;
+                    child_dom.on_header_at(node_offset, type_name, name)?;
                     self.visit_node_body_bits(opts_bits, &mut child_dom)?;
                     let child = child_dom.finish()?;
                     let _ = visitor.on_child(child)?;

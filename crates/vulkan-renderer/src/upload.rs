@@ -9,7 +9,7 @@ use crate::backend::DeviceOwner;
 use crate::{
     Backend, BinarySemaphore, Buffer, BufferCopy, BufferDescriptor, BufferImageCopy,
     CommandEncoder, CommandEncoderDescriptor, Error, FrameToken, Image, MemoryAllocator,
-    MemoryLocation, Queue, Result, SemaphoreWait, TextureLayout,
+    MemoryLocation, Queue, Result, SemaphoreWait, TextureLayout, UploadBeltLimit,
 };
 
 mod texture;
@@ -118,16 +118,11 @@ impl UploadBelt {
                 "upload queue was created by a different Device".into(),
             ));
         }
-        let completed = queue.completed_timeline()?;
-        for chunk in &mut self.chunks {
-            if chunk.retire_after != 0 && chunk.retire_after <= completed {
-                chunk.cursor = 0;
-                chunk.retire_after = 0;
-            }
-        }
+        self.reclaim_completed(queue)?;
         let encoder = CommandEncoder::new(Arc::clone(&self.owner), descriptor)?;
         Ok(UploadBatch {
             belt: self,
+            descriptor: descriptor.clone(),
             encoder: Some(encoder),
             touched: Vec::new(),
             submitted: false,
@@ -159,20 +154,24 @@ impl UploadBelt {
             ));
         }
         let completed = queue.completed_timeline()?;
+        Ok(self.trim_completed(completed))
+    }
+
+    fn trim_completed(&mut self, completed: u64) -> usize {
+        self.reclaim_completed_at(completed);
         let before = self.chunks.len();
         let mut kept_idle = false;
+        let ordinary_chunk_size = self.descriptor.chunk_size;
         self.chunks.retain(|chunk| {
-            if chunk.retire_after > completed {
-                return true;
-            }
-            if !kept_idle && chunk.buffer.size() == self.descriptor.chunk_size {
-                kept_idle = true;
-                true
-            } else {
-                false
-            }
+            retain_trimmed_chunk(
+                chunk.retire_after,
+                chunk.buffer.size(),
+                completed,
+                ordinary_chunk_size,
+                &mut kept_idle,
+            )
         });
-        Ok(before - self.chunks.len())
+        before - self.chunks.len()
     }
 
     fn reserve(&mut self, size: u64) -> Result<(usize, u64, u64)> {
@@ -194,10 +193,9 @@ impl UploadBelt {
             }
         }
         if self.chunks.len() >= self.descriptor.max_chunks {
-            return Err(Error::Validation(format!(
-                "upload belt exhausted its {}-chunk memory bound",
-                self.descriptor.max_chunks
-            )));
+            return Err(Error::UploadBeltExhausted {
+                limit: UploadBeltLimit::ChunkCount(self.descriptor.max_chunks),
+            });
         }
         let minimum = size.max(self.descriptor.chunk_size);
         let chunk_size = minimum
@@ -212,10 +210,9 @@ impl UploadBelt {
             .checked_add(chunk_size)
             .is_none_or(|total| total > self.descriptor.max_bytes)
         {
-            return Err(Error::Validation(format!(
-                "upload belt exhausted its {}-byte memory bound",
-                self.descriptor.max_bytes
-            )));
+            return Err(Error::UploadBeltExhausted {
+                limit: UploadBeltLimit::RetainedBytes(self.descriptor.max_bytes),
+            });
         }
         let buffer = self.allocator.create_buffer(&BufferDescriptor {
             label: Some(format!("upload-belt-chunk-{}", self.chunks.len())),
@@ -230,6 +227,29 @@ impl UploadBelt {
             retire_after: 0,
         });
         Ok((index, 0, 0))
+    }
+
+    fn reclaim_completed(&mut self, queue: &Queue) -> Result<()> {
+        let completed = queue.completed_timeline()?;
+        self.reclaim_completed_at(completed);
+        Ok(())
+    }
+
+    fn reclaim_completed_at(&mut self, completed: u64) {
+        for chunk in &mut self.chunks {
+            if chunk.retire_after != 0 && chunk.retire_after <= completed {
+                chunk.cursor = 0;
+                chunk.retire_after = 0;
+            }
+        }
+    }
+
+    fn oldest_pending_frame(&self) -> Option<FrameToken> {
+        self.chunks
+            .iter()
+            .filter_map(|chunk| (chunk.retire_after != 0).then_some(chunk.retire_after))
+            .min()
+            .map(FrameToken::from_value)
     }
 }
 
@@ -261,6 +281,7 @@ impl Drop for UploadBelt {
 /// submission marks touched chunks unavailable until its timeline completes.
 pub struct UploadBatch<'belt> {
     belt: &'belt mut UploadBelt,
+    descriptor: CommandEncoderDescriptor,
     encoder: Option<CommandEncoder>,
     touched: Vec<(usize, u64)>,
     submitted: bool,
@@ -404,6 +425,62 @@ impl UploadBatch<'_> {
         self.submit_retained(queue, waits, std::iter::empty())
     }
 
+    /// Submits the currently staged commands and begins a replacement encoder
+    /// without waiting for the GPU.
+    ///
+    /// This is the non-blocking half of a bounded cold-upload stream. The
+    /// caller may keep recording while any chunk remains available, then call
+    /// [`Self::wait_for_oldest_reuse`] only after a later allocation proves
+    /// backpressure is necessary. Queue order preserves transitions and copies
+    /// across the split submissions; this never calls a queue/device-idle API.
+    pub fn flush_for_reuse(
+        &mut self,
+        queue: &Queue,
+        waits: &[SemaphoreWait],
+    ) -> Result<FrameToken> {
+        self.validate_queue(queue)?;
+        if self.touched.is_empty() {
+            return Err(Error::Validation(
+                "cannot flush an upload batch with no staged ranges".into(),
+            ));
+        }
+        let encoder = self.encoder.take().expect("live upload batch encoder");
+        let command = encoder.finish()?;
+        let frame = queue.submit_retained([command], waits, std::iter::empty())?;
+        self.commit(frame);
+        self.touched.clear();
+        self.submitted = false;
+        self.encoder = Some(CommandEncoder::new(
+            Arc::clone(&self.belt.owner),
+            &self.descriptor,
+        )?);
+        Ok(frame)
+    }
+
+    /// Reclaims the least-recent completed cold-upload capacity, waiting only
+    /// when the oldest in-flight staging chunk has not completed yet.
+    ///
+    /// Call this after a failed reservation following [`Self::flush_for_reuse`].
+    /// It preserves the belt's byte/count limits, retains one ordinary chunk,
+    /// and discards stale size classes so a later large upload can reserve its
+    /// exact bounded chunk. It never waits for unrelated queue work.
+    pub fn wait_for_oldest_reuse(&mut self, queue: &Queue) -> Result<()> {
+        self.validate_queue(queue)?;
+        let completed = queue.completed_timeline()?;
+        self.belt.trim_completed(completed);
+        if let Some(frame) = self.belt.oldest_pending_frame() {
+            queue.wait_for(frame, u64::MAX)?;
+            self.belt.trim_completed(frame.value());
+        }
+        Ok(())
+    }
+
+    /// Whether this encoder has staged ranges that can be submitted to make
+    /// forward progress after a bounded-capacity failure.
+    pub fn has_staged_uploads(&self) -> bool {
+        !self.touched.is_empty()
+    }
+
     /// Finishes and submits this transaction while retaining leases until its
     /// timeline token completes.
     pub fn submit_retained<L>(
@@ -518,6 +595,24 @@ fn align_up(value: u64, alignment: u64) -> Option<u64> {
     value.checked_add(mask).map(|value| value & !mask)
 }
 
+fn retain_trimmed_chunk(
+    retire_after: u64,
+    size: u64,
+    completed: u64,
+    ordinary_chunk_size: u64,
+    kept_idle: &mut bool,
+) -> bool {
+    if retire_after > completed {
+        return true;
+    }
+    if !*kept_idle && size == ordinary_chunk_size {
+        *kept_idle = true;
+        true
+    } else {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,5 +636,24 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn trim_releases_completed_ordinary_slots_before_a_later_large_upload() {
+        let ordinary = 4 * 1024 * 1024;
+        let completed = 19;
+        let mut kept_idle = false;
+        let retained = (0..8)
+            .filter(|_| retain_trimmed_chunk(19, ordinary, completed, ordinary, &mut kept_idle))
+            .count();
+
+        assert_eq!(retained, 1);
+        assert!(retain_trimmed_chunk(
+            20,
+            16 * 1024 * 1024,
+            completed,
+            ordinary,
+            &mut kept_idle
+        ));
     }
 }

@@ -155,9 +155,14 @@ impl ErrorCtx {
 
     /// Line (1-based) and column (1-based) from `consumed` into `input`.
     ///
-    /// Mirrors `validate.hpp` `get_source_info` line/column calculation intent.
+    /// Unlike Glaze's text formatter, this remains useful at logical EOF: an
+    /// incomplete final line reports its insertion point, and input ending in a
+    /// newline reports the next empty line. This is used by structured tools
+    /// such as miette; [`format_error`] itself retains Glaze's exact EOF
+    /// `index N` spelling.
     pub fn line_col(&self, input: &str) -> (usize, usize) {
-        source_info(input, self.consumed).line_col()
+        let position = source_position(input, self.consumed);
+        (position.line, position.column)
     }
 }
 
@@ -185,43 +190,85 @@ struct SourceInfo {
     context: String,
     index: usize,
     front_truncation: usize,
-    #[allow(dead_code)]
     rear_truncation: usize,
 }
 
-impl SourceInfo {
-    fn line_col(&self) -> (usize, usize) {
-        (self.line, self.column)
+/// A safe byte position for source spans and user-facing line labels.
+///
+/// `ErrorCtx::consumed` is a byte count, like Glaze's `error_ctx::count`.
+/// Parser-produced offsets are UTF-8 boundaries, but callers can construct an
+/// `ErrorCtx` themselves. Normalizing only presentation spans keeps those
+/// callers from causing invalid Rust `str` slices while preserving the original
+/// count in Glaze-shaped text output.
+#[derive(Debug, Clone, Copy)]
+struct SourcePosition {
+    offset: usize,
+    line: usize,
+    column: usize,
+    line_start: usize,
+    #[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
+    line_end: usize,
+}
+
+fn floor_char_boundary(input: &str, mut offset: usize) -> usize {
+    offset = offset.min(input.len());
+    while offset > 0 && !input.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
+fn source_position(input: &str, index: usize) -> SourcePosition {
+    let offset = floor_char_boundary(input, index);
+    let prefix = &input[..offset];
+    let line = prefix.bytes().filter(|&byte| byte == b'\n').count() + 1;
+    let line_start = prefix.rfind('\n').map(|at| at + 1).unwrap_or(0);
+    let line_end = input[offset..]
+        .find('\n')
+        .map(|relative| offset + relative)
+        .unwrap_or(input.len());
+
+    SourcePosition {
+        offset,
+        line,
+        column: offset - line_start + 1,
+        line_start,
+        line_end,
     }
 }
 
-/// Glaze `detail::get_source_info` (char buffers).
+/// Glaze `detail::get_source_info` for UTF-8 Rust strings.
+///
+/// Glaze deliberately returns an empty context whenever `index >= buffer.size()`.
+/// Keep that exact contract for [`format_error`], rather than fabricating a
+/// caret on the final character. Structured diagnostics use [`source_position`]
+/// to retain a useful EOF insertion point.
 fn source_info(buffer: &str, index: usize) -> SourceInfo {
-    if index >= buffer.len() && buffer.is_empty() {
+    if index >= buffer.len() {
         return SourceInfo {
-            line: 1,
-            column: 1,
+            line: 0,
+            column: 0,
             context: String::new(),
             index,
             front_truncation: 0,
             rear_truncation: 0,
         };
     }
-    // If index == len (EOF), point at last byte for context when non-empty.
-    let probe = if index >= buffer.len() {
-        buffer.len().saturating_sub(1)
-    } else {
-        index
-    };
 
-    let prefix = &buffer[..probe.min(buffer.len())];
-    let line = prefix.bytes().filter(|&b| b == b'\n').count() + 1;
-    let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let column = probe.saturating_sub(line_start) + 1;
-
-    let line_end = buffer[probe.min(buffer.len())..]
+    let position = source_position(buffer, index);
+    let probe = position.offset;
+    let line_start = position.line_start;
+    // `validate.hpp` searches after the error byte. For UTF-8, move after the
+    // whole scalar instead of slicing through one of its continuation bytes.
+    let after_probe = probe
+        + buffer[probe..]
+            .chars()
+            .next()
+            .expect("probe is inside a non-empty source")
+            .len_utf8();
+    let line_end = buffer[after_probe..]
         .find('\n')
-        .map(|i| probe + i)
+        .map(|relative| after_probe + relative)
         .unwrap_or(buffer.len());
 
     let mut context_begin = line_start;
@@ -229,34 +276,32 @@ fn source_info(buffer: &str, index: usize) -> SourceInfo {
     let mut front_truncation = 0usize;
     let mut rear_truncation = 0usize;
 
-    // Glaze: if context length > 64, truncate around the column.
+    // Glaze: if context length > 64, truncate around the column. Keep every
+    // Rust slice on a UTF-8 boundary even if Glaze's byte window would split a
+    // multi-byte scalar.
     if context_end.saturating_sub(context_begin) > 64 {
-        if column <= 32 {
+        if position.column <= 32 {
             rear_truncation = 64;
-            context_end = context_begin + rear_truncation;
-            if context_end > buffer.len() {
-                context_end = buffer.len();
-            }
+            context_end = floor_char_boundary(buffer, (context_begin + 64).min(buffer.len()));
         } else {
-            front_truncation = column - 32;
-            context_begin = line_start + front_truncation;
+            let requested_begin = line_start + position.column - 32;
+            context_begin = floor_char_boundary(buffer, requested_begin);
+            front_truncation = context_begin - line_start;
             if context_end.saturating_sub(context_begin) > 64 {
                 rear_truncation = front_truncation + 64;
-                context_end = (line_start + rear_truncation).min(buffer.len());
+                context_end =
+                    floor_char_boundary(buffer, (line_start + rear_truncation).min(buffer.len()));
             }
         }
     }
 
-    let mut context: String = buffer
-        .get(context_begin..context_end)
-        .unwrap_or("")
-        .to_owned();
-    // Glaze convert_tabs_to_single_spaces (`validate.hpp`) — tab → single space.
+    let mut context = buffer[context_begin..context_end].to_owned();
+    // Glaze `convert_tabs_to_single_spaces` (`validate.hpp`).
     context = context.replace('\t', " ");
 
     SourceInfo {
-        line,
-        column,
+        line: position.line,
+        column: position.column,
         context,
         index,
         front_truncation,
@@ -269,34 +314,39 @@ pub fn format_error_code(err: &ErrorCtx) -> String {
     err.to_string()
 }
 
-/// Format an error against source text.
-///
-/// Glaze: `format_error(const error_ctx& pe, const auto& buffer)` uses **`pe.count`**
-/// as the source index (`reflect.hpp`). We use [`ErrorCtx::consumed`].
-pub fn format_error(err: &ErrorCtx, input: &str) -> String {
+fn append_error_type(out: &mut String, err: &ErrorCtx) {
+    out.push_str(err.code.as_str());
+    if let Some(expected) = err.expected {
+        out.push_str(" (expected ");
+        out.push_str(expected);
+        out.push(')');
+    }
+}
+
+fn format_error_with_name(err: &ErrorCtx, input: &str, name: &str) -> String {
     if err.code.is_none() {
         return String::new();
     }
     let info = source_info(input, err.consumed);
-    // Glaze generate_error_string shape:
-    //   line:column: <error>\n   <context>\n   <pad>^
-    let mut out = String::new();
+    // Glaze `generate_error_string` shape:
+    //   filename:line:column: <error>\n   <context>\n   <pad>^
+    let mut out =
+        String::with_capacity(name.len() + info.context.len() + err.code.as_str().len() + 128);
+    if !name.is_empty() {
+        out.push_str(name);
+        out.push(':');
+    }
     if info.context.is_empty() {
         out.push_str("index ");
         out.push_str(&info.index.to_string());
         out.push_str(": ");
-        out.push_str(err.code.as_str());
+        append_error_type(&mut out, err);
     } else {
         out.push_str(&info.line.to_string());
         out.push(':');
         out.push_str(&info.column.to_string());
         out.push_str(": ");
-        out.push_str(err.code.as_str());
-        if let Some(expected) = err.expected {
-            out.push_str(" (expected ");
-            out.push_str(expected);
-            out.push(')');
-        }
+        append_error_type(&mut out, err);
         out.push('\n');
         if info.front_truncation > 0 {
             out.push_str("...");
@@ -324,6 +374,23 @@ pub fn format_error(err: &ErrorCtx, input: &str) -> String {
     out
 }
 
+/// Format an error against source text.
+///
+/// Glaze: `format_error(const error_ctx& pe, const auto& buffer)` uses **`pe.count`**
+/// as the source index (`reflect.hpp`). We use [`ErrorCtx::consumed`].
+pub fn format_error(err: &ErrorCtx, input: &str) -> String {
+    format_error_with_name(err, input, "")
+}
+
+/// Format an error against source text with a filename or buffer identifier.
+///
+/// This mirrors Glaze `detail::generate_error_string(error, info, filename)`
+/// (`include/glaze/util/validate.hpp`). The filename prefixes both ordinary
+/// line/column diagnostics and exact-EOF `index N` diagnostics.
+pub fn format_error_named(err: &ErrorCtx, input: &str, name: &str) -> String {
+    format_error_with_name(err, input, name)
+}
+
 /// Public error type for `Result`-style APIs (Glaze `expected<T, error_ctx>` error arm).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
@@ -337,6 +404,11 @@ impl Error {
 
     pub fn format_with_source(&self, input: &str) -> String {
         format_error(&self.ctx, input)
+    }
+
+    /// Like [`Self::format_with_source`] with a filename or buffer identifier.
+    pub fn format_with_named_source(&self, input: &str, name: &str) -> String {
+        format_error_named(&self.ctx, input, name)
     }
 }
 
@@ -369,78 +441,68 @@ pub type CtxResult<T> = std::result::Result<T, ErrorCtx>;
 /// path is known (richer related spans).
 #[cfg(feature = "diagnostics")]
 pub fn report_error(err: &ErrorCtx, input: &str) -> miette::Report {
-    miette_support::report_from_ctx(err, input, "kdl")
+    miette_support::report_from_ctx(err, input, None)
 }
 
 /// Like [`report_error`] with an explicit source name (path or buffer id).
 #[cfg(feature = "diagnostics")]
 pub fn report_error_named(err: &ErrorCtx, input: &str, name: &str) -> miette::Report {
-    miette_support::report_from_ctx(err, input, name)
+    miette_support::report_from_ctx(err, input, Some(name))
 }
 
 #[cfg(feature = "diagnostics")]
 mod miette_support {
     use super::*;
-    use miette::{Diagnostic, LabeledSpan, SourceCode, SourceOffset, SourceSpan};
+    use miette::{Diagnostic, LabeledSpan, NamedSource, SourceCode, SourceOffset, SourceSpan};
     use std::sync::Arc;
 
-    /// Owned source + error for miette (spans need a named source).
+    /// Precomputed miette presentation for one KDL error.
     ///
     /// P-G9c: primary label at `consumed` (Glaze `count`); secondary label for
-    /// the current line snippet window (Glaze `get_source_info` context).
+    /// the current line snippet window (Glaze `get_source_info` context). The
+    /// actual source lives once in `NamedSource<Arc<String>>` on the report.
     #[derive(Debug)]
     struct KdlDiagnostic {
         ctx: ErrorCtx,
-        src: Arc<String>,
-        name: String,
+        formatted: String,
         line: usize,
         column: usize,
+        offset: usize,
+        primary_len: usize,
         line_start: usize,
         line_end: usize,
     }
 
     impl KdlDiagnostic {
-        fn from_ctx(ctx: ErrorCtx, input: &str, name: &str) -> Self {
-            let info = source_info(input, ctx.consumed);
-            let (line, column) = info.line_col();
-            // Recompute line byte range for related span (full line, not truncated).
-            let probe = if ctx.consumed >= input.len() && !input.is_empty() {
-                input.len().saturating_sub(1)
-            } else {
-                ctx.consumed
-                    .min(input.len().saturating_sub(1).min(ctx.consumed))
-            };
-            let probe = probe.min(
-                input
-                    .len()
-                    .saturating_sub(if input.is_empty() { 0 } else { 1 }),
+        fn from_ctx(ctx: ErrorCtx, input: &str, name: Option<&str>) -> Self {
+            let position = source_position(input, ctx.consumed);
+            let formatted = name.map_or_else(
+                || format_error(&ctx, input),
+                |source_name| format_error_named(&ctx, input, source_name),
             );
-            let prefix = &input[..probe.min(input.len())];
-            let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
-            let line_end = input[probe.min(input.len())..]
-                .find('\n')
-                .map(|i| probe + i)
-                .unwrap_or(input.len());
+            let primary_len = input[position.offset..]
+                .chars()
+                .next()
+                .map_or(0, char::len_utf8);
             Self {
                 ctx,
-                src: Arc::new(input.to_owned()),
-                name: name.to_owned(),
-                line,
-                column,
-                line_start,
-                line_end: line_end.max(line_start),
+                formatted,
+                line: position.line,
+                column: position.column,
+                offset: position.offset,
+                primary_len,
+                line_start: position.line_start,
+                line_end: position.line_end.max(position.line_start),
             }
         }
     }
 
     impl fmt::Display for KdlDiagnostic {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            // Prefer Glaze-shaped multi-line format when source is present.
-            let formatted = format_error(&self.ctx, self.src.as_str());
-            if formatted.is_empty() {
+            if self.formatted.is_empty() {
                 self.ctx.fmt(f)
             } else {
-                f.write_str(&formatted)
+                f.write_str(&self.formatted)
             }
         }
     }
@@ -473,17 +535,7 @@ mod miette_support {
             if self.ctx.code.is_none() {
                 return None;
             }
-            let offset = self.ctx.consumed.min(self.src.len());
-            let len = if offset < self.src.len() {
-                self.src[offset..]
-                    .chars()
-                    .next()
-                    .map(|c| c.len_utf8())
-                    .unwrap_or(1)
-            } else {
-                0
-            };
-            let primary = SourceSpan::new(SourceOffset::from(offset), len);
+            let primary = SourceSpan::new(SourceOffset::from(self.offset), self.primary_len);
             let primary_label = self
                 .ctx
                 .message
@@ -498,7 +550,7 @@ mod miette_support {
             )];
 
             // Related: whole source line (Glaze context window role).
-            if self.line_end > self.line_start && self.line_end <= self.src.len() {
+            if self.line_end > self.line_start {
                 let line_span = SourceSpan::new(
                     SourceOffset::from(self.line_start),
                     self.line_end - self.line_start,
@@ -513,7 +565,10 @@ mod miette_support {
         }
 
         fn source_code(&self) -> Option<&dyn SourceCode> {
-            Some(self.src.as_ref() as &dyn SourceCode)
+            // `Report::with_source_code(NamedSource<Arc<String>>)` below owns
+            // the one source copy. Returning `None` lets that named wrapper win
+            // instead of silently masking it with an unnamed inner source.
+            None
         }
 
         fn url<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
@@ -546,9 +601,58 @@ mod miette_support {
         }
     }
 
-    pub(super) fn report_from_ctx(err: &ErrorCtx, input: &str, name: &str) -> miette::Report {
+    pub(super) fn report_from_ctx(
+        err: &ErrorCtx,
+        input: &str,
+        name: Option<&str>,
+    ) -> miette::Report {
         let diag = KdlDiagnostic::from_ctx(err.clone(), input, name);
-        let _ = diag.name.as_str(); // keep name for NamedSource consumers
-        miette::Report::new(diag).with_source_code(Arc::new(input.to_owned()))
+        let source = Arc::new(input.to_owned());
+        let source_name = name.unwrap_or("kdl");
+        miette::Report::new(diag).with_source_code(NamedSource::new(source_name, source))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_error_uses_glaze_eof_index_without_a_fabricated_caret() {
+        let input = "ok\n";
+        let err = ErrorCtx::new(ErrorCode::UnexpectedEof, input.len())
+            .with_expected("`}`")
+            .with_message("missing closing brace");
+
+        assert_eq!(
+            format_error(&err, input),
+            "index 3: unexpected end of input (expected `}`) missing closing brace"
+        );
+        // Structured diagnostics still point to the intuitive insertion point.
+        assert_eq!(err.line_col(input), (2, 1));
+    }
+
+    #[test]
+    fn named_format_prefixes_line_and_eof_diagnostics() {
+        let source = "broken";
+        let syntax = ErrorCtx::new(ErrorCode::Syntax, 2);
+        assert!(format_error_named(&syntax, source, "config.kdl").starts_with("config.kdl:1:3:"),);
+
+        let eof = ErrorCtx::new(ErrorCode::UnexpectedEof, source.len());
+        assert_eq!(
+            format_error_named(&eof, source, "config.kdl"),
+            "config.kdl:index 6: unexpected end of input"
+        );
+    }
+
+    #[test]
+    fn presentation_normalizes_invalid_utf8_byte_offsets() {
+        let source = "éx\n";
+        // Byte 1 is inside `é`; public formatting must remain safe for callers
+        // constructing an ErrorCtx rather than coming from Parser.
+        let err = ErrorCtx::new(ErrorCode::Syntax, 1);
+
+        assert!(format_error(&err, source).contains("éx"));
+        assert_eq!(err.line_col(source), (1, 1));
     }
 }

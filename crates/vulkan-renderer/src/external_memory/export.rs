@@ -94,6 +94,10 @@ impl fmt::Debug for ExportedDmaBufImage {
 }
 
 impl ExportedDmaBufImage {
+    pub(crate) fn raw_image(&self) -> vk::Image {
+        self.inner.image
+    }
+
     pub(crate) fn view(&self) -> vk::ImageView {
         self.inner.view
     }

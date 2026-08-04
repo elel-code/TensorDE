@@ -14,12 +14,46 @@ pub trait NodeVisitor<'a> {
         Ok(())
     }
 
+    /// Header callback with the byte offset of the node start.
+    fn on_header_at(
+        &mut self,
+        offset: usize,
+        type_name: Option<KdlStr<'a>>,
+        name: KdlStr<'a>,
+    ) -> CtxResult<()> {
+        self.on_header(type_name, name).map_err(|mut error| {
+            if error.consumed == 0 {
+                error.consumed = offset;
+            }
+            error
+        })
+    }
+
     fn on_argument(
         &mut self,
         _type_name: Option<KdlStr<'a>>,
         _value: Value<'a>,
     ) -> CtxResult<bool> {
         Ok(true)
+    }
+
+    /// Argument callback with its document byte offset.
+    ///
+    /// Existing visitors remain source-compatible; their unresolved
+    /// zero-offset errors are anchored to this entry without affecting the
+    /// success path.
+    fn on_argument_at(
+        &mut self,
+        offset: usize,
+        type_name: Option<KdlStr<'a>>,
+        value: Value<'a>,
+    ) -> CtxResult<bool> {
+        self.on_argument(type_name, value).map_err(|mut error| {
+            if error.consumed == 0 {
+                error.consumed = offset;
+            }
+            error
+        })
     }
 
     fn on_property(
@@ -29,6 +63,23 @@ pub trait NodeVisitor<'a> {
         _value: Value<'a>,
     ) -> CtxResult<bool> {
         Ok(true)
+    }
+
+    /// Property callback with the byte offset of its key.
+    fn on_property_at(
+        &mut self,
+        offset: usize,
+        key: KdlStr<'a>,
+        type_name: Option<KdlStr<'a>>,
+        value: Value<'a>,
+    ) -> CtxResult<bool> {
+        self.on_property(key, type_name, value)
+            .map_err(|mut error| {
+                if error.consumed == 0 {
+                    error.consumed = offset;
+                }
+                error
+            })
     }
 
     /// Finished child as a [`Node`] (feature `dom` only).
@@ -49,6 +100,24 @@ pub trait NodeVisitor<'a> {
         _name: KdlStr<'a>,
     ) -> CtxResult<bool> {
         Ok(false)
+    }
+
+    /// Source-aware nested-child takeover after its header was parsed.
+    fn take_child_after_header_at(
+        &mut self,
+        offset: usize,
+        parser: &mut crate::Parser<'a>,
+        opts: crate::opts::Opts,
+        type_name: Option<KdlStr<'a>>,
+        name: KdlStr<'a>,
+    ) -> CtxResult<bool> {
+        self.take_child_after_header(parser, opts, type_name, name)
+            .map_err(|mut error| {
+                if error.consumed == 0 {
+                    error.consumed = offset;
+                }
+                error
+            })
     }
 
     fn on_children_begin(&mut self) -> CtxResult<()> {

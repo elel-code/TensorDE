@@ -63,6 +63,13 @@ Behavior to copy:
    `line:column: <error type>\n   <context>\n   <spaces>^`  
    then append custom message if present.
 5. Filename prefix optional (`filename:`).
+6. At `count >= buffer.size()`, emit Glaze's exact `index N: <error>` form;
+   do not manufacture a caret on the last character. Structured diagnostics may
+   separately expose the friendly logical EOF insertion point.
+7. Provide `format_error_named(error, input, filename)` for the public
+   `generate_error_string(..., filename)` counterpart. `report_error_named`
+   must forward the name through `miette::NamedSource`, not merely retain it in
+   an inner diagnostic field.
 
 Current `tensor_kdl::format_error` is a simplified variant; align toward
 `generate_error_string` before adding miette (miette is an *extra* presentation
@@ -130,6 +137,9 @@ For KDL that means:
 | **P-G12** document-root stream without `Node` | **Done** — named children-only `read_stream` uses `visit_document_at_nodes` + `NestedProbe` / peel helpers; `WriteSink` grow path reserves `WRITE_PADDING_BYTES` (Glaze `write_padding_bytes`); fixed buffers exact-size only (`util/dump.hpp`) |
 | **P-G13** nested unwrap + write dumpn + KQL | **Done** — visit `unwrap(argument\|property)` via peel in `take_child_after_header`; `WriteSink::push_byte_n` / grow-on-full dump; KQL `[name()]`/`[tag()]`, stacked matchers, `#inf`/`#-inf`/`#nan` RHS |
 | **P-G14** write_chars / itoa + ctx write | **Done** — stack `write_i128`/`write_u128`/`write_f64`/`\u{…}` (Glaze `write_chars`/`itoa`); peel property key borrowed; `write_into_with_context` / `write_node_into_with_context` |
+| **P-G15** raw delimiter / reusable input / named EOF diagnostics | **In progress** — allocation-free exact raw closer scan, `PaddedInput::replace`, Glaze EOF `index N` formatting, and `NamedSource` propagation |
+| **P-G16** source-aware typed scalar decode | **Done** — entry-offset visitor callbacks, `DecodeScalar::decode_scalar_at`, and opt-in `Located<T>` preserve exact argument/property origins without DOM or success-path allocation |
+| **P-G17** node completion validation | **Done** — node-start visitor callbacks plus `#[kdl(validate = "...")]` enforce cross-field invariants after typed fill; only opted-in builders retain one `usize` node offset |
 
 Do not claim “zero DOM anywhere” for every derive shape; claim Glaze primary path for visit-eligible structs + nested visit children + homogeneous `Vec` / single-collector / multi-named children-only roots + single-node non-children roots (+ optional sibling collector). Flatten on document roots still requires feature `dom` + `DecodePartial` (unknown free nodes).
 
@@ -140,6 +150,7 @@ Do not claim “zero DOM anywhere” for every derive shape; claim Glaze primary
 | `repeat_byte` / quote-escape scan | `util/parse.hpp` | Present (`parse/swar.rs`) |
 | Skip ASCII ws in chunks | `parse.hpp` `skip_ws` | **Done** — true 8-byte SWAR lane advance (P-G5) |
 | Pad buffer +16 for SWAR | `opts.hpp` `padding_bytes`, `read.hpp` resize | **Done** (P-G9a) — `PaddedInput` for owned buffers; `&str` path unchanged |
+| Reuse mutable input allocation | `docs/optimizing-performance.md` “Buffers” / “Reducing Memory Allocations” | **In progress** — `PaddedInput::replace` retains content capacity and restores its exact zero tail |
 | Reuse `ctx.scratch` | `context.hpp`, perf doc | Present; ensure hot decode reuses `Context` |
 | `error_on_unknown_keys` enables faster reject | perf doc | Policy present; unique-index / front_hash reject after miss |
 | Forced inline on hot helpers | `util/inline.hpp` | Use `#[inline(always)]` only on measured SWAR helpers |
@@ -204,9 +215,55 @@ SIMD remains **opt-in** (`--features simd`) with bench comparison under `pg8`.
     existence, stacked accessors, keyword float RHS.
 23. ~~P-G14 stack write_chars + write ctx~~ done — no heap on int/float
     dump; `write_into_with_context` mirrors Glaze `write(T, buffer, ctx)`.
-24. **Next (optional):** further KQL only with QUERY-SPEC citations;
+24. **P-G15 (in progress):** use Glaze's direct string-scan / mutable-buffer
+    mechanics for allocation-free raw delimiters and reusable `PaddedInput`;
+    make filename and EOF behavior match `validate.hpp` in both text and
+    miette output.
+25. ~~P-G16 source-aware typed scalar decode~~ done — parser entry offsets
+    flow through default-compatible visitor callbacks and
+    `DecodeScalar::decode_scalar_at`; `Located<T>` retains positions only when
+    requested. Typed streaming remains DOM-free and allocation-free.
+26. ~~P-G17 node completion validation~~ done — node offsets flow through
+    default-compatible header/child callbacks; derive invokes an inherent
+    validator after fill and stores the offset only for opted-in builders.
+27. **Next (optional):** further KQL only with QUERY-SPEC citations;
     SCHEMA-SPEC out of scope; optional minified / size opts like Glaze
     `opts_size` if binary size becomes a product constraint.
+
+### Stage benchmark (P-G16)
+
+```bash
+cargo bench -p tensor-kdl --bench advanced --features "dom,diagnostics" -- pg16 --quick
+```
+
+Host-local snapshot for 200 `row count=N` nodes with a reused `Context`:
+
+| Bench | time (approx) | retained source state |
+|-------|---------------|-----------------------|
+| `plain_scalar_200` | **~39.4 us** | none; normal source-aware callback path and no node-offset field |
+| `validated_scalar_200` | **~49.3 us** | none; custom scalar performs a positive-value policy check |
+| `located_scalar_200` | **~52.1 us** | one `usize` per decoded field |
+| `node_validated_200` | **~43.2 us** | one `usize` per row builder plus one completion call |
+
+The comparison is between user-visible modes, not a before/after regression
+claim: all cases receive source cursors. On this quick run, node completion
+validation was about 3.8 us per 200 nodes above the plain case (roughly 19 ns
+per node); Criterion reported no statistically significant change for the
+existing cases against their stored baselines. Ordinary builders retain no
+node-offset field. Custom scalar validation, node validation, and explicit
+`Located<T>` should remain opt-in where precise policy diagnostics require
+them.
+
+### Stage benchmark (P-G15)
+
+```bash
+cargo bench -p tensor-kdl --bench advanced --features "dom,derive" -- pg15
+```
+
+The three cases deliberately include raw `"#` / `"##` false candidates before
+the `"###` closer, then compare ordinary input, newly allocated padded input,
+and one reusable `PaddedInput::replace` allocation. Do not claim a speedup
+until the local Criterion result is recorded.
 
 ### Stage benchmark (P-G13 / P-G14 write)
 

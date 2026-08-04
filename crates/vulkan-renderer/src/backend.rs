@@ -19,7 +19,9 @@ use crate::frame::FrameToken;
 use crate::memory::MemoryTypeInfo;
 use crate::queue::{QueueFamilyInfo, QueuePlan};
 use crate::video::{VideoDecodeCodecs, VideoDecodeDevice, VideoDecodeRequirements};
-use crate::{ApiVersion, DeviceType, Error, Result};
+use crate::{
+    ApiVersion, DeviceType, Error, Result, TimestampQuerySet, TimestampQuerySetDescriptor,
+};
 
 mod device;
 mod owner;
@@ -442,6 +444,14 @@ impl Backend {
         descriptor: &CommandEncoderDescriptor,
     ) -> Result<CommandEncoder> {
         CommandEncoder::new(Arc::clone(&self.owner), descriptor)
+    }
+
+    /// Creates a renderer-owned timestamp query set for the selected graphics queue.
+    pub fn create_timestamp_query_set(
+        &self,
+        descriptor: &TimestampQuerySetDescriptor,
+    ) -> Result<TimestampQuerySet> {
+        TimestampQuerySet::new(Arc::clone(&self.owner), descriptor)
     }
 
     /// Submits command buffers and signals this backend's timeline. State

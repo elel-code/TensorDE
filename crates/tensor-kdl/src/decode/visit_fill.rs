@@ -34,8 +34,36 @@ pub trait VisitBuilder<'a>: Sized {
 
     fn on_header(&mut self, type_name: Option<KdlStr<'a>>, name: KdlStr<'a>) -> CtxResult<()>;
 
+    fn on_header_at(
+        &mut self,
+        offset: usize,
+        type_name: Option<KdlStr<'a>>,
+        name: KdlStr<'a>,
+    ) -> CtxResult<()> {
+        self.on_header(type_name, name).map_err(|mut error| {
+            if error.consumed == 0 {
+                error.consumed = offset;
+            }
+            error
+        })
+    }
+
     /// Glaze `decode_linear` role for positional slots.
     fn on_argument(&mut self, type_name: Option<KdlStr<'a>>, value: Value<'a>) -> CtxResult<bool>;
+
+    fn on_argument_at(
+        &mut self,
+        offset: usize,
+        type_name: Option<KdlStr<'a>>,
+        value: Value<'a>,
+    ) -> CtxResult<bool> {
+        self.on_argument(type_name, value).map_err(|mut error| {
+            if error.consumed == 0 {
+                error.consumed = offset;
+            }
+            error
+        })
+    }
 
     /// Return whether `key` was recognized (Glaze: index &lt; N).
     fn on_property(
@@ -44,6 +72,22 @@ pub trait VisitBuilder<'a>: Sized {
         type_name: Option<KdlStr<'a>>,
         value: Value<'a>,
     ) -> CtxResult<bool>;
+
+    fn on_property_at(
+        &mut self,
+        offset: usize,
+        key: KdlStr<'a>,
+        type_name: Option<KdlStr<'a>>,
+        value: Value<'a>,
+    ) -> CtxResult<bool> {
+        self.on_property(key, type_name, value)
+            .map_err(|mut error| {
+                if error.consumed == 0 {
+                    error.consumed = offset;
+                }
+                error
+            })
+    }
 
     /// DOM child fallback (feature `dom` only).
     #[cfg(feature = "dom")]
@@ -65,6 +109,23 @@ pub trait VisitBuilder<'a>: Sized {
     ) -> CtxResult<bool> {
         let _ = (parser, opts, type_name, name);
         Ok(false)
+    }
+
+    fn take_child_after_header_at(
+        &mut self,
+        offset: usize,
+        parser: &mut crate::Parser<'a>,
+        opts: Opts,
+        type_name: Option<KdlStr<'a>>,
+        name: KdlStr<'a>,
+    ) -> CtxResult<bool> {
+        self.take_child_after_header(parser, opts, type_name, name)
+            .map_err(|mut error| {
+                if error.consumed == 0 {
+                    error.consumed = offset;
+                }
+                error
+            })
     }
 
     fn finish(self) -> CtxResult<Self::Output>;
@@ -94,8 +155,26 @@ impl<'a, B: VisitBuilder<'a>> NodeVisitor<'a> for VisitFill<'a, B> {
         self.builder.on_header(type_name, name)
     }
 
+    fn on_header_at(
+        &mut self,
+        offset: usize,
+        type_name: Option<KdlStr<'a>>,
+        name: KdlStr<'a>,
+    ) -> CtxResult<()> {
+        self.builder.on_header_at(offset, type_name, name)
+    }
+
     fn on_argument(&mut self, type_name: Option<KdlStr<'a>>, value: Value<'a>) -> CtxResult<bool> {
         self.builder.on_argument(type_name, value)
+    }
+
+    fn on_argument_at(
+        &mut self,
+        offset: usize,
+        type_name: Option<KdlStr<'a>>,
+        value: Value<'a>,
+    ) -> CtxResult<bool> {
+        self.builder.on_argument_at(offset, type_name, value)
     }
 
     fn on_property(
@@ -105,6 +184,16 @@ impl<'a, B: VisitBuilder<'a>> NodeVisitor<'a> for VisitFill<'a, B> {
         value: Value<'a>,
     ) -> CtxResult<bool> {
         self.builder.on_property(key, type_name, value)
+    }
+
+    fn on_property_at(
+        &mut self,
+        offset: usize,
+        key: KdlStr<'a>,
+        type_name: Option<KdlStr<'a>>,
+        value: Value<'a>,
+    ) -> CtxResult<bool> {
+        self.builder.on_property_at(offset, key, type_name, value)
     }
 
     #[cfg(feature = "dom")]
@@ -121,6 +210,18 @@ impl<'a, B: VisitBuilder<'a>> NodeVisitor<'a> for VisitFill<'a, B> {
     ) -> CtxResult<bool> {
         self.builder
             .take_child_after_header(parser, opts, type_name, name)
+    }
+
+    fn take_child_after_header_at(
+        &mut self,
+        offset: usize,
+        parser: &mut crate::Parser<'a>,
+        opts: Opts,
+        type_name: Option<KdlStr<'a>>,
+        name: KdlStr<'a>,
+    ) -> CtxResult<bool> {
+        self.builder
+            .take_child_after_header_at(offset, parser, opts, type_name, name)
     }
 }
 
@@ -171,8 +272,19 @@ pub fn decode_node_body_after_header<'a, T: DecodeFromVisit<'a>>(
     type_name: Option<KdlStr<'a>>,
     name: KdlStr<'a>,
 ) -> CtxResult<T> {
+    decode_node_body_after_header_at(parser, opts, 0, type_name, name)
+}
+
+/// Source-aware nested variant of [`decode_node_body_after_header`].
+pub fn decode_node_body_after_header_at<'a, T: DecodeFromVisit<'a>>(
+    parser: &mut crate::Parser<'a>,
+    opts: Opts,
+    node_offset: usize,
+    type_name: Option<KdlStr<'a>>,
+    name: KdlStr<'a>,
+) -> CtxResult<T> {
     let mut fill = VisitFill::new(T::start_visit());
-    fill.builder.on_header(type_name, name)?;
+    fill.builder.on_header_at(node_offset, type_name, name)?;
     parser.finish_nested_child(opts, &mut fill)?;
     fill.finish()
 }
@@ -213,6 +325,20 @@ impl<'a, T: DecodeScalar<'a>> NodeVisitor<'a> for PeelArgumentBuilder<T> {
             return Ok(true);
         }
         self.value = Some(T::decode_scalar(&value)?);
+        Ok(true)
+    }
+
+    fn on_argument_at(
+        &mut self,
+        offset: usize,
+        _type_name: Option<KdlStr<'a>>,
+        value: Value<'a>,
+    ) -> CtxResult<bool> {
+        if self.value.is_some() {
+            self.extra = true;
+            return Ok(true);
+        }
+        self.value = Some(T::decode_scalar_at(&value, offset)?);
         Ok(true)
     }
 
@@ -294,6 +420,20 @@ impl<'a, 'k, T: DecodeScalar<'a>> NodeVisitor<'a> for PeelPropertyBuilder<'k, T>
     ) -> CtxResult<bool> {
         if key.as_str() == self.key {
             self.value = Some(T::decode_scalar(&value)?);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn on_property_at(
+        &mut self,
+        offset: usize,
+        key: KdlStr<'a>,
+        _type_name: Option<KdlStr<'a>>,
+        value: Value<'a>,
+    ) -> CtxResult<bool> {
+        if key.as_str() == self.key {
+            self.value = Some(T::decode_scalar_at(&value, offset)?);
             return Ok(true);
         }
         Ok(false)

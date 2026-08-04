@@ -1,0 +1,335 @@
+# Testing
+
+Tensorland borrows test strategy from Niri and Hyprland without copying implementation code.
+The local Nourish checkout is used for the ECS and retained-scene contracts. The converted
+behavioral suite lives in
+[`apps/tensorland/tests/reference_contracts.rs`](../../apps/tensorland/tests/reference_contracts.rs), with
+one child module per reference project; it is an ordinary Tensorland integration test and never links
+or executes an upstream test fixture.
+
+## Reference-to-Tensorland test conversion
+
+The local checkouts are treated as behavioral references. Their tests are translated into Tensorland
+contracts over stable IDs, ECS snapshots, typed KDL values, Vulkan capability records, and Tensorland protocol state;
+the reference projects are never linked into the build and their fixtures are not copied.
+
+| Reference behavior | Tensorland contract | Current tests |
+| --- | --- | --- |
+| Niri window opening, configure/ack and output removal | one configure size drives `WindowSpace`, ECS geometry, and output lifecycle | `tests/reference_contracts/niri.rs`, `protocol::runtime`, `ecs::world`, `protocol::state` |
+| Niri XWayland fractional scaling | rootless X11 surfaces reuse integer client-buffer scale, fractional output conversion, and the linear surface sampler without a parallel X11 coordinate path | `protocol::runtime`, `protocol::handlers::xwayland`, `protocol::state::xwayland`, `render::frame::plan`, `render::vulkan::pipeline` |
+| Niri dma-buf feedback and import failure paths | feedback exists only for a non-empty import contract; malformed explicit buffers fail before notifier success | `protocol::globals::dmabuf`, `render::vulkan::import` |
+| Smithay/Niri explicit-sync lifecycle | syncobj is advertised only with a capable DRM owner; failed submits preserve acquire state and release follows the latest GPU read | `protocol::globals::syncobj`, `protocol::state::sync`, `render::vulkan::sync`, `render::vulkan::frame` |
+| Niri/Nourish presentation lifecycle | frame callbacks follow accepted KMS commits while feedback follows the exact output/timeline flip; failures discard it and resume never reuses uncertain slots | `protocol::runtime`, `protocol::state::presentation`, `backend::tty::kms` |
+| Smithay/Niri surface-tree transactions | subsurface order is stable, synchronized children defer to the parent transaction, and popups escape tile clipping without escaping output damage | `protocol::state::surfaces`, `protocol::state::tree`, `render::frame::plan`, `scene::damage` |
+| Niri transaction/damage sequencing | first frame is full damage, movement damages old/new bounds, prepared frames can abort | `scene::damage`, `render::frame` |
+| Niri/Hyprland/Nourish pointer and cursor paths | relative motion may cross adjacent outputs but not gaps; absolute coordinates and invalid axes stay bounded; the topmost software cursor damages both positions and a GPU-busy repaint remains pending | `protocol::input`, `protocol::cursor`, `protocol::state::output`, `render::frame::cursor_tests` |
+| Cursor protocol and allocation contract | core/cursor-shape serial authority is device-bound; animation and tablet removal damage only complete affected extents; overlay and descriptor storage stays fixed-capacity | `protocol::runtime::tests::cursor_shape`, `protocol::state::tests`, `protocol::cursor::tests`, `render::frame::cursor_tests` |
+| Hyprland layout, workspace and multi-output regressions | deterministic layout names, track constraints, output-plan ordering and disconnect-before-connect diff | `tests/reference_contracts/hyprland.rs`, `layout::policy`, `layout::scrolling`, `backend::output` |
+| Hyprland IPC and client protocol checks | bounded framed requests, request IDs, version errors, and protocol-global ownership | `tests/reference_contracts/hyprland.rs`, `ipc`, `compositor::root`, `protocol::globals` |
+| Nourish 2-D scene/ECS invariants | stable view IDs, unique focus, lifecycle invalidation, geometry independent of draw order | `tests/reference_contracts/nourish.rs`, `ecs::world`, `scene::model` |
+| Nourish Vulkan memory/target boundaries | explicit modifier, fd-memory compatibility, plane topology and deferred resource retirement | `render::format`, `render::vulkan::target`, `render::vulkan::import` |
+
+The reference modules deliberately assert Tensorland invariants rather than upstream implementation
+details: Niri's configure/ack behavior becomes a geometry-and-scene contract, Hyprland's monitor
+and control tests become deterministic layout/IPC contracts, and Nourish's world tests become ECS
+lifecycle plus retained-scene contracts. When a reference behavior is not implemented yet (for
+example layer-shell or multi-plane client imports), it remains a documented gap instead of being
+represented by a vacuous passing test.
+
+Hardware-dependent tests remain split into a deterministic state-machine layer and an optional TTY
+smoke layer. A missing Vulkan descriptor heap or a missing native dma-buf capability is a reported
+selection result, never a silently skipped compatibility path.
+
+The remaining protocol program and its per-protocol completion evidence are
+tracked in [`protocol-roadmap.md`](protocol-roadmap.md). New globals require
+wire lifetime/error coverage before capability advertisement; hardware-backed
+protocols additionally require deterministic plan tests that run without the
+hardware and optional TTY evidence that proves the native execution path.
+
+Render performance evidence must record the fixed `composition`, `shadow_draws`,
+`shadow_pixel_upper_bound`, `backdrop_passes`,
+`backdrop_sample_pixels`, `backdrop_filter_pixels`, `backdrop_filter_texture_samples`,
+`backdrop_composite_pixel_upper_bound`, and `backdrop_retained_intermediate_pixels` tracing fields
+alongside frame elapsed time, output identity, serial, timeline, and output pixel count in the same
+`frame submit` event. This self-contained event is the only performance-analysis input: associating
+an elapsed-only event with an adjacent renderer event is invalid when multiple outputs interleave.
+A direct-frame baseline requires `direct-single-pass` and zeroes for every backdrop counter. A
+local-effect sample requires `backdrop-multi-pass`; retained capacity is the largest expanded region
+times two lanes, while sampled and filtered work sum all effects in scene order. These deterministic
+counters are the comparison denominator; `elapsed_us` is CPU submit wall time, not a GPU timestamp,
+and must not be inferred from unit tests.
+
+Analyze one or more non-ANSI or ANSI tracing logs with:
+
+```sh
+uv run scripts/tensorland/analyze_render_perf.py artifacts/tensor/logs/<capture>.log
+uv run scripts/tensorland/analyze_render_perf.py --format json artifacts/tensor/logs/<capture>.log
+```
+
+The report groups `direct-single-pass` and `backdrop-multi-pass`, uses nearest-rank p50/p95/p99,
+sums every fixed-width pixel counter, and reports sampled work relative to a full output for every
+active backdrop plus retained storage relative to a full two-lane output. Missing fields, duplicate
+fields, unknown composition labels, inconsistent fixed nine-tap work, impossible local extents, and
+an input with no self-contained samples are hard analysis errors. This intentionally rejects logs
+captured before the self-contained event contract instead of producing a potentially mixed result.
+
+Pass-plan tests also distinguish damage selection from effect presence. Damage outside every
+backdrop must retain `direct-single-pass` with no intermediate descriptors. Damage intersecting one
+of several effects must select only that pass. A background change outside the visible effect but
+inside its expanded sampling footprint must first propagate into the effect region and therefore
+retain `backdrop-multi-pass`; this guards the optimization from clipping convolution dependencies.
+Small intersecting damage must lower to that damage rectangle plus the complete filter radius rather
+than the full effect. Multiple disjoint rectangles use one bounding sample region while retaining
+exact composite rectangles, and an active region touching an output edge clips only the unavailable
+outside portion of its sample footprint.
+
+The hardware cursor-plane verification backlog, including property parsing, fixed slot retirement,
+binary sync-file handoff, real tablet cursor wire coverage, and TTY evidence, is maintained in
+[`cursor.md`](cursor.md). None of those items is complete solely from a successful plane probe.
+
+## Native dma-buf presentation gate
+
+From a Linux virtual terminal owned by the normal desktop user, run:
+
+```sh
+uv run scripts/tensorland/tty.py --dmabuf-smoke
+```
+
+The launcher waits for the new Tensorland socket and then starts
+`tensorland-dmabuf-smoke`. The client consumes Tensorland's linux-dmabuf v4 default
+feedback, resolves its advertised main device to the matching `renderD*` node,
+and allocates only explicit-modifier GBM buffers on that node. It has no SHM,
+implicit-modifier, or alternate-GPU fallback.
+
+Success requires all of the following for the same native surface: accepted
+dma-buf creation, XDG configure, frame callbacks, `wp_presentation` feedback,
+and release of an older `wl_buffer`. Tensorland itself writes its tracing stream
+to `artifacts/tensor/logs/tensor-tty.log` through its bounded Compio asynchronous
+drain; the launcher only tails new records for readiness and keeps control/client
+diagnostics in `artifacts/tensor/logs/tensor-tty.launcher.log`. It returns the smoke
+client's failure status, and neither logging path echoes compositor output onto
+the graphics TTY, avoiding terminal-output backpressure during shutdown.
+Each `tty.py` invocation also supplies a unique private IPC endpoint through
+`TENSOR_IPC_SOCKET`. This prevents a suspended desktop compositor or a stale
+socket from blocking the TTY smoke run; it does not weaken IPC's rule that an
+ordinary compositor startup never removes an existing control socket.
+
+## Native client smoke
+
+From a Linux virtual terminal, run:
+
+```sh
+uv run scripts/tensorland/tty.py --duration 30 \
+  --client ghostty \
+  --client-arg=--gtk-single-instance=false
+```
+
+Do not add `--no-xwayland`: the default configuration starts rootless XWayland
+as part of this session. The launcher waits until Tensorland reports that it has
+entered its compositor event loop, then starts the supplied client argv with
+`WAYLAND_DISPLAY` set to Tensorland's socket. The client retains its normal backend
+selection; Tensorland does not set `GDK_BACKEND`. The launcher's parent process is
+not part of the new session, so it removes the host session's stale `DISPLAY`,
+just as Tensorland's `ProcessLauncher` clears managed session values before
+installing Tensorland's published environment. Each `--client PROGRAM` starts one
+direct child process; repeat it to start multiple clients. `--client-arg ARG`
+adds a direct argv item to the most recent client without invoking a shell. Use
+`--client-arg=ARG` when an argument begins with `-`. In the Ghostty example,
+`--gtk-single-instance=false` only ensures that an existing host Ghostty cannot
+receive the request over D-Bus; it does not select a client backend.
+
+Each supplied client is supervised independently. If one cannot start or exits
+unsuccessfully, the launcher records that status but leaves the remaining
+clients, Fcitx, and Tensorland running. It shuts down only after every client has
+closed or the selected duration expires, then returns the first client failure.
+
+This is a native Wayland rendering and input test, not an X11-client test. The
+Tensorland log should contain `entering compositor event loop`; the launcher log
+should contain `client launch gate opened` and the supplied client command. The
+client window must appear and accept input before the bounded launch restores
+the previous session. Its stdout and stderr are retained in the launcher log
+for diagnosis.
+
+To include the native Fcitx path, run:
+
+```sh
+uv run scripts/tensorland/tty.py --fcitx --duration 30 \
+  --client ghostty \
+  --client-arg=--gtk-single-instance=false \
+  --client /home/yk/Myapps/GUI.for.SingBox-linux-amd64/GUI.for.SingBox
+```
+
+`--fcitx` runs Fcitx's `fcitx5-wayland-launcher` after Tensorland publishes its
+socket, then waits for Tensorland to record `input-method client registered` before
+it starts the generic clients. The keyboard grab is requested only after a
+focused client activates text input, so it is deliberately not a startup gate.
+The launcher asks the existing Fcitx daemon to attach a second Wayland
+connection; it never uses `fcitx5 --replace`, so the Fcitx instance serving a
+suspended niri session is not restarted or taken over. A missing Fcitx daemon
+or launcher, or a missing input-method registration, fails this focused smoke
+instead of silently testing without an input method.
+
+For a no-paste TTY smoke run that starts both Ghostty and GUI.for.SingBox, use:
+
+```sh
+scripts/tensorland/tty-all-clients.sh
+```
+
+It enables Fcitx, waits for its Tensorland input-method registration, then starts
+both clients for 60 seconds. Fcitx obtains its keyboard grab after a focused
+text input activates. `scripts/tensorland/tty-all-clients.sh forever` leaves the session
+running until it is stopped.
+
+GUI.for.SingBox is a Wails application with a session-wide D-Bus
+single-instance lock. If its niri instance is still running when the TTY
+session begins, Wails forwards the second launch to that instance and exits
+with status `1` before it can create a Tensorland window. Close that GUI instance
+first when it is the client under test; the launcher deliberately does not add
+an existing-process check or bypass the application's lock.
+
+Any client command follows this same path; it captures the application's output
+in the launcher log and never supplies the suspended host's `DISPLAY`. This is
+the appropriate route for an application that works under one compositor but
+not another.
+
+The compositor-owned arrow must be visible as soon as libinput publishes a
+pointer capability, including when that device appears after the first output
+frame. Moving it must erase the previous arrow location as well as draw the new
+one. Named XCursor images and client cursor surfaces are uploaded once and then
+reuse stable renderer image IDs; the vector cursor is only the missing-image fallback.
+
+An X11-only application is still required to exercise XWayland client mapping
+and rendering itself.
+
+- Pure layout/state tests cover empty, singleton, uneven, invalid, and boundary inputs.
+- Scene tests cover stable node ordering, independent draw order, effect-bound expansion, rounded
+  focus-ring inner/outer physical geometry (including fractional scale and output clipping), first
+  frame/full damage, old/new movement damage, popup bounds outside layout tiles, region coalescing,
+  and blur dependency propagation.
+- Scrolling tests cover focus visibility, persistent workspace offsets, oversized columns, and
+  full-geometry versus visible-clip output. Grid and master-stack tests apply view min/max
+  constraints after deterministic track allocation.
+- ECS tests assert stable IDs, lifecycle transitions, workspace moves, focus uniqueness, and
+  geometry ordering rather than Bevy internals.
+- KDL tests separate valid documents, malformed syntax, schema errors, named-source diagnostics,
+  config-only validation, and reload races.
+- IPC tests cover fragmented reads, multiple frames per read, malformed/oversized input, request-ID
+  round trips, permissions, socket ownership, fixed connection capacity, real Compio socket
+  completions, and response-before-shutdown ordering.
+- Signal tests direct a blocked termination signal at the runtime thread and require a submitted
+  Compio signalfd read to return its value.
+- GPU fence tests require a submitted one-shot io_uring wait to remain pending until the sync-file
+  test fd signals, then preserve its output and timeline value.
+- Nested Wayland tests submit real XDG min/max constraints and assert that one layout result drives
+  the configure size, Tensorland `WindowSpace` location, and retained ECS snapshot. Pure geometry never
+  requires a compositor session. The same client lifecycle exercises Tensorland `ProtocolWindow`
+  commit-bbox caching, preferred output state traversal, frame callbacks, presentation feedback,
+  activation, and teardown through Tensorland `ProtocolWindow` state.
+- Popup lifecycle coverage creates a real two-level XDG tree, establishes nested explicit grabs,
+  verifies Tensorland's child-first borrowed iteration order, and tears it down without frame staging.
+  A second tree destroys its parent first and must receive `not_the_topmost_popup` while Tensorland
+  removes the complete descendant topology immediately.
+- Stable XDG-shell wire coverage checks Tensorland-owned error attribution for unconfigured buffers,
+  invalid configure serials, defunct role objects, and incomplete positioners. A remap test retains
+  an in-flight configure across detach, proves detach emits no replacement configure, then verifies
+  that the old-generation ACK cannot authorize a buffer after the required new empty commit.
+- Layer-shell lifecycle coverage creates a real top-anchored client surface, verifies its configure
+  uses the fractional-scale logical output width, asserts its exclusive zone reshapes the workspace,
+  and confirms protocol destruction removes the Tensorland layer map and restores the full output zone.
+  Failure coverage rejects a buffer before the first configure ACK, zero dimensions without
+  opposite anchors, invalid exclusive edges, and zones below `-1` on the owning wire object. A
+  remap test proves an old-generation ACK cannot authorize the new buffer and that detach itself
+  does not emit the next initial configure. Output removal sends `closed`, and a real parentless
+  xdg-popup is transferred into the Tensorland layer tree before its initial commit.
+- Protocol-global tests bind the full `ProtocolCapabilities` set (core shell extensions plus
+  pointer-constraints, idle-inhibit, single-pixel-buffer, keyboard-shortcuts-inhibit, tablet,
+  text-input, input-method, virtual-keyboard, session-lock, security-context,
+  foreign-toplevel-list, xdg-foreign, system-bell, pointer-warp, content-type, alpha-modifier,
+  toplevel-icon/tag, and wlr-layer-shell). They assert preferred-scale (including `150/120`),
+  decoration configure, monotonic clock, and discarded-feedback events, including
+  protocol-correct child-object destruction order. Layer draw-order helpers assert Overlay sits
+  above Top and Bottom in the value-only scene merge.
+- XWayland scaling tests keep rootless X11 buffers on the ordinary surface path: integer client
+  buffer scale, `N/120` output geometry, outward damage coverage, and linear final sampling are one
+  contract. X11 provenance must not enable a nearest-neighbor default or a second coordinate model.
+- XWayland lifecycle tests cover the two-signal mapped-window association gate, logical configure
+  conversion, and teardown before Tensorland removes the X11-to-Wayland association. Runtime wiring
+  creates the XWM after XWayland readiness; hardware execution remains a TTY smoke test.
+  Override-redirect coverage additionally requires map and association state, a managed
+  `WM_TRANSIENT_FOR` ancestor, relative logical offsets, and X11 stacking. It verifies that such
+  windows add no ECS view or independent X11 coordinate path, and that owner or popup teardown
+  detaches their protocol/input/render state safely.
+- Normal X11 `WM_TRANSIENT_FOR` dialog coverage verifies the separate attached-view model: dialogs
+  do not consume tiled placements, retain independent scene/input/synchronization state, inherit
+  focused-owner scrolling, and move or disappear safely with their owner. Tests reject attachment
+  cycles, cross-workspace parents, missing owners, and accidental global-X11-position fallbacks.
+- Input lifecycle coverage verifies that mapping selects an ECS root before an input device exists,
+  then a late keyboard capability restores the Tensorland keyboard target only after the initial XDG
+  configure. Focus transitions deactivate the old toplevel, activate and raise the new attachment
+  family, and closing the active view restores a live successor without an empty-focus gap. A late
+  pointer capability schedules its first software-cursor frame; its removal schedules an overlay-free
+  frame, and cursor motion damages the old and new physical bounds while drawing above client content.
+  X11 activation routes through the `X11Surface` keyboard target so its ICCCM focus handshake is
+  retained without changing the Wayland logical pointer-coordinate path.
+- Focus-ring frame-plan and Vulkan-record tests verify the same back-to-front contract as Niri's
+  element list: a focused view's rounded ring precedes its client content and popup tree, and later
+  stacking entries cover the complete earlier view. The cursor remains a final compositor overlay.
+- Color tests keep capability claims behind execution. Real test-client wire coverage checks
+  duplicate `wp_color_representation_surface_v1` objects, pending/current commit state, and
+  destroy-to-unset behavior. Value tests prove that color-only commits advance the exact surface
+  content revision, SDR identity remains direct, HDR-to-SDR produces a retained linear BT.2390
+  plan, and HDR targets fail closed without a 10-bit/float format plus metadata ownership. The
+  fixed-width managed shader lowering and direct/multi-pass recording consume non-identity plans
+  without changing the identity pipeline. Production globals stay absent until encoded client-view
+  selection and KMS/output color state close the remaining correctness gates.
+- Presentation tests cover output/timeline identity, primary-output intersection selection, refresh
+  conversion, hardware-clock flags, surface destruction, output/session discard, and scanout-slot
+  quarantine across session resume.
+- Input-method wire coverage uses independent real application and input-method clients. It checks
+  focus activation, double-buffered surrounding/content/cursor state, stale serial rejection,
+  inactive-state reset, a fully inert unavailable second input method, keymap/repeat/modifier
+  initialization, fixed press/release keyboard routing, and edit delivery. Its mapped candidate
+  popup inherits `150/120` scale, joins the focused view's scene and output, and disappears on
+  deactivate. The aggregate Wayland-fd tests separately exercise atomically coalesced membership
+  refresh, cancellation completion, replacement submission, and exactly-once source completion.
+- Vulkan tests are capability-gated and must report a missing descriptor heap explicitly.
+- Device-selection tests cover explicit DRM-node filtering, incomplete primary/render identities,
+  and invalid configured node paths without requiring a Vulkan driver.
+- Native interop tests reject each missing external-memory, dma-buf, modifier, foreign
+  queue-family, external-semaphore, and bidirectional `SYNC_FD` capability independently.
+- Descriptor-heap renderer tests cover resource/sampler heap limits, embedded-sampler reservation,
+  user-range-relative push-index arithmetic, first-use `UNDEFINED + FOREIGN` acquisition, and the
+  retained `GENERAL + FOREIGN` path after a successful submission.
+- Explicit-sync tests cover acquire import ownership, fragment-stage waits, retry after failed
+  submission, latest-repaint release fences, and the no-early-release timeline fallback when
+  binary completion export fails.
+- Native format tests keep Vulkan import and output-export roles distinct and reject unsupported
+  fourccs, mismatched modifiers, non-exportable images, non-scanout GBM paths, and mismatched plane
+  topology. Preference ordering must be deterministic regardless of probe order.
+- Startup-gate tests prove that runtime preparation, process-environment publication, active
+  user-manager publication, and readiness cannot be skipped or reordered before session autostart.
+  Check and non-session modes must never receive an autostart permit.
+- Output lifecycle tests drive synthetic connector events through Tensorland output and `WindowSpace`
+  state;
+  they must cover connect, mode change, deterministic reflow, and disconnect without real DRM.
+- Output policy tests retain incomplete connector snapshots while excluding them from scanout, and
+  verify deterministic planning and disconnect-before-connect reconciliation across DRM devices.
+- Scene snapshots are appropriate when many coordinates or render decisions form one behavior.
+
+Every change runs:
+
+```sh
+cargo fmt --all -- --check
+uv run scripts/tensorland/check_file_lines.py
+uv run scripts/tensorland/check_crate_boundaries.py
+cargo test -p tensorland --all-targets
+cargo test -p tensorland --all-targets --features systemd
+cargo test -p tensorland --all-targets --no-default-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+```
+
+The IPC tests cover fragmented and coalesced frames, multiple requests on one Compio-completed
+client, version rejection, layout mutation, and graceful response-before-stop shutdown. A running
+session can be queried with
+`tensorctl --socket "$TENSOR_IPC_SOCKET" get-state`; use `tensorctl --socket "$TENSOR_IPC_SOCKET"
+quit` for a manual smoke-test shutdown.

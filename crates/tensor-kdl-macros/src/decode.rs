@@ -3,7 +3,7 @@
 use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Fields, GenericParam, Lifetime, LifetimeParam, LitStr};
 
-use crate::attr::{FieldInfo, kebab, parse_field};
+use crate::attr::{FieldInfo, kebab, parse_container_validate, parse_field};
 use crate::emit::{expand_struct_decode, field_emitters};
 
 pub(crate) fn expand_decode(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
@@ -18,6 +18,7 @@ pub(crate) fn expand_decode(input: &DeriveInput) -> syn::Result<proc_macro2::Tok
 
     match &input.data {
         Data::Struct(data) => {
+            let validate = parse_container_validate(&input.attrs)?;
             let fields = match &data.fields {
                 Fields::Named(n) => n
                     .named
@@ -51,7 +52,20 @@ pub(crate) fn expand_decode(input: &DeriveInput) -> syn::Result<proc_macro2::Tok
                     ));
                 }
             };
-            expand_struct_decode(name, &impl_generics, &ty_generics, where_clause, &fields)
+            if validate.is_some() && !crate::visit_emit::visit_fill_supported(&fields) {
+                return Err(syn::Error::new_spanned(
+                    name,
+                    "struct-level validation requires a visit-fill-compatible node struct",
+                ));
+            }
+            expand_struct_decode(
+                name,
+                &impl_generics,
+                &ty_generics,
+                where_clause,
+                &fields,
+                validate.as_ref(),
+            )
         }
         Data::Enum(data) => {
             let mut arms = Vec::new();

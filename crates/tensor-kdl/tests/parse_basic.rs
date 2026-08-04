@@ -80,6 +80,32 @@ fn raw_string() {
 }
 
 #[test]
+fn raw_string_closer_requires_every_hash() {
+    // The `"#` and `"##` sequences are data; only the final `"###` closes
+    // the `###"` raw string.
+    let doc = from_str(r#####"s ###"first"# "second"## "third"###"#####).unwrap();
+    assert_eq!(
+        doc.nodes[0].arguments().next().unwrap().as_str(),
+        Some("first\"# \"second\"## \"third")
+    );
+}
+
+#[test]
+fn raw_multiline_closer_requires_every_hash() {
+    let doc = from_str(
+        r#####"s ##"""
+  first """# remains content
+  second
+  """##"#####,
+    )
+    .unwrap();
+    assert_eq!(
+        doc.nodes[0].arguments().next().unwrap().as_str(),
+        Some("first \"\"\"# remains content\nsecond")
+    );
+}
+
+#[test]
 fn comments() {
     let doc = from_str(
         r#"
@@ -99,14 +125,19 @@ fn line_continuation() {
 }
 
 #[test]
-fn format_error_shows_snippet() {
-    let err = from_str("ok\nbad {\n").unwrap_err();
-    let formatted = format_error(&err.ctx, "ok\nbad {\n");
+fn format_error_uses_glaze_eof_index() {
+    let input = "ok\nbad {\n";
+    let err = from_str(input).unwrap_err();
+    let formatted = format_error(&err.ctx, input);
     assert!(
-        formatted.contains(':'),
-        "expected line:column prefix, got {formatted:?}"
+        formatted.starts_with(&format!("index {}:", input.len())),
+        "expected Glaze EOF index prefix, got {formatted:?}"
     );
-    assert!(formatted.contains('^'), "expected caret, got {formatted:?}");
+    assert!(
+        !formatted.contains('^'),
+        "Glaze does not fabricate an EOF caret, got {formatted:?}"
+    );
+    assert_eq!(err.ctx.line_col(input), (3, 1));
 }
 
 #[test]

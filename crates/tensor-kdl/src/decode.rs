@@ -21,11 +21,12 @@ mod visit_fill;
 
 pub use nested_dispatch::{NestedFill, NestedProbe, NestedViaVisit, NestedVisitTag, TopLevelFill};
 pub use visit_fill::{
-    DecodeFromVisit, VisitBuilder, VisitFill, decode_node_body_after_header, decode_node_str,
-    decode_node_str_const, decode_node_visit, decode_node_visit_const, linear_prop_index,
-    missing_argument_at, missing_child_named, missing_field, peel_argument_after_header,
-    peel_opt_argument_after_header, peel_opt_property_after_header, peel_property_after_header,
-    read_nodes_into_visit, skip_node_after_header,
+    DecodeFromVisit, VisitBuilder, VisitFill, decode_node_body_after_header,
+    decode_node_body_after_header_at, decode_node_str, decode_node_str_const, decode_node_visit,
+    decode_node_visit_const, linear_prop_index, missing_argument_at, missing_child_named,
+    missing_field, peel_argument_after_header, peel_opt_argument_after_header,
+    peel_opt_property_after_header, peel_property_after_header, read_nodes_into_visit,
+    skip_node_after_header,
 };
 
 use crate::error::{CtxResult, ErrorCode, ErrorCtx};
@@ -36,6 +37,62 @@ use crate::value::{KdlStr, Value};
 /// Decode a scalar KDL value into `Self`.
 pub trait DecodeScalar<'a>: Sized {
     fn decode_scalar(value: &Value<'a>) -> CtxResult<Self>;
+
+    /// Decode a scalar whose KDL entry begins at `offset`.
+    ///
+    /// The default keeps existing scalar implementations source-aware by
+    /// translating their relative error count onto the document cursor. The
+    /// successful path performs no allocation and normally folds to
+    /// [`Self::decode_scalar`]. Types such as [`Located`] override this method
+    /// when they also retain the origin on success.
+    #[inline(always)]
+    fn decode_scalar_at(value: &Value<'a>, offset: usize) -> CtxResult<Self> {
+        Self::decode_scalar(value).map_err(|mut error| {
+            error.consumed = offset.saturating_add(error.consumed);
+            error
+        })
+    }
+}
+
+/// A decoded value paired with the byte offset of its KDL entry.
+///
+/// `Located<T>` is allocation-free and does not require the `dom` or
+/// `diagnostics` features. Streaming typed decode records the exact argument
+/// or property start; DOM-only decode uses offset zero because tree values do
+/// not retain source locations.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Located<T> {
+    value: T,
+    offset: usize,
+}
+
+impl<T> Located<T> {
+    pub const fn new(value: T, offset: usize) -> Self {
+        Self { value, offset }
+    }
+
+    pub const fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub const fn offset(&self) -> usize {
+        self.offset
+    }
+
+    pub fn into_inner(self) -> T {
+        self.value
+    }
+}
+
+impl<'a, T: DecodeScalar<'a>> DecodeScalar<'a> for Located<T> {
+    fn decode_scalar(value: &Value<'a>) -> CtxResult<Self> {
+        T::decode_scalar(value).map(|value| Self::new(value, 0))
+    }
+
+    #[inline(always)]
+    fn decode_scalar_at(value: &Value<'a>, offset: usize) -> CtxResult<Self> {
+        T::decode_scalar_at(value, offset).map(|value| Self::new(value, offset))
+    }
 }
 
 /// Decode a single KDL node from a parse tree (feature `dom` only).
@@ -190,8 +247,6 @@ impl<'a, T: Decode<'a>> DecodeChildren<'a> for Vec<T> {
         nodes.iter().map(T::decode_node).collect()
     }
 }
-
-/// Helper: require exactly one argument and decode it.
 
 #[cfg(not(feature = "dom"))]
 impl<'a, T: DecodeFromVisit<'a>> DecodeDocument<'a> for Vec<T> {
@@ -464,6 +519,14 @@ impl<'a, T: DecodeScalar<'a>> DecodeScalar<'a> for Option<T> {
         match value {
             Value::Null => Ok(None),
             other => T::decode_scalar(other).map(Some),
+        }
+    }
+
+    #[inline(always)]
+    fn decode_scalar_at(value: &Value<'a>, offset: usize) -> CtxResult<Self> {
+        match value {
+            Value::Null => Ok(None),
+            other => T::decode_scalar_at(other, offset).map(Some),
         }
     }
 }

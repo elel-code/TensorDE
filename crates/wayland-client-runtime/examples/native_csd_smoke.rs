@@ -2,7 +2,7 @@
 //!
 //! Run under a Wayland compositor:
 //! ```text
-//! FIKA_WAYLAND_BACKEND=native cargo run -p wayland-client-runtime --example native_csd_smoke
+//! TENSOR_FILES_WAYLAND_BACKEND=native cargo run -p wayland-client-runtime --example native_csd_smoke
 //! ```
 //!
 //! Creates a solid-color toplevel, requests Client decorations, and pumps

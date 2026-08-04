@@ -1,0 +1,40 @@
+// Tensor's initial configuration is intentionally small and may break while the model evolves.
+layout "scrolling-1d" gaps=8 {
+    default-column-width proportion=0.5
+    master-width proportion=0.55
+}
+
+ipc-socket "/run/user/1000/tensor.sock"
+// discrete is the default; integrated and any are also valid.
+gpu "discrete"
+// Optional common Vulkan/tty DRM node; otherwise capability ranking selects the pair.
+// render-device "/dev/dri/renderD128"
+// auto enables integration when launched by the systemd user manager.
+systemd "auto"
+// XWayland serves individual X11 applications; Tensor never provides an X11 session.
+xwayland #true
+
+appearance {
+    // Compositor-owned focus feedback, drawn outside client geometry.
+    focus-ring enabled=#true width=4 color="#7fc8ff"
+    window-corners radius=12
+    // Descriptor-free analytic shadow; remains in the direct output pass.
+    window-shadow enabled=#true offset-x=0 offset-y=6 blur-radius=18 spread=0 color="#00000070"
+}
+
+// By default Tensor chooses the highest progressive refresh at the panel's native resolution.
+// output "HDMI-A-1" mode="2560x1600@239.760" scale=1.25 enabled=#true {
+//     position x=0 y=0
+// }
+// output "eDP-1" enabled=#false
+
+// Arguments are passed directly; shell syntax and expansion are not interpreted.
+// spawn-at-startup "waybar"
+
+// environment {
+//     clear "GTK_IM_MODULE"
+//     set "EDITOR" "hx"
+// }
+
+// cursor theme="default" size=24 hide-when-typing=#false
+// debug frame-stats=#false force-full-redraw=#false

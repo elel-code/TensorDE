@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.tensorde.TensorFiles1.Privileged
+Exec=@bindir@/tensor-files-privileged-helper --system-bus
+User=root

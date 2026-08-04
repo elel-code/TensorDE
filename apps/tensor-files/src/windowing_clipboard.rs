@@ -1,0 +1,86 @@
+use std::io;
+use std::sync::mpsc;
+
+/// Clipboard access backed by the event loop's existing Wayland connection.
+pub struct WaylandClipboard {
+    runtime: Rc<RefCell<WindowRuntime>>,
+}
+
+impl WaylandClipboard {
+    fn new(runtime: Rc<RefCell<WindowRuntime>>) -> Self {
+        Self { runtime }
+    }
+
+    pub fn backend(&self) -> &'static str {
+        "wayland-wl-data-device+primary"
+    }
+
+    pub fn store_async(
+        &self,
+        content: TransferContent,
+    ) -> Result<mpsc::Receiver<io::Result<()>>, String> {
+        // store_selection dual-writes primary selection when available.
+        let result = self
+            .runtime
+            .borrow_mut()
+            .store_selection(content)
+            .map_err(|error| io::Error::other(error.to_string()));
+        let (reply_tx, reply_rx) = mpsc::channel();
+        reply_tx
+            .send(result)
+            .map_err(|_| "clipboard result receiver stopped".to_string())?;
+        Ok(reply_rx)
+    }
+
+    pub fn store_text_async(
+        &self,
+        text: impl AsRef<str>,
+    ) -> Result<mpsc::Receiver<io::Result<()>>, String> {
+        self.store_async(TransferContent::text(text))
+    }
+
+    pub fn load_async(
+        &self,
+        preferred_mimes: &[&str],
+    ) -> Result<mpsc::Receiver<io::Result<String>>, String> {
+        let pipe = self
+            .runtime
+            .borrow_mut()
+            .receive_selection(preferred_mimes)
+            .map_err(|error| error.to_string())?;
+        let (reply_tx, reply_rx) = mpsc::channel();
+        thread::Builder::new()
+            .name("tensor-files-wayland-clipboard-read".to_string())
+            .spawn(move || {
+                let _ = reply_tx.send(pipe.read_text());
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(reply_rx)
+    }
+
+    /// Load primary selection (middle-click paste buffer).
+    pub fn load_primary_async(
+        &self,
+        preferred_mimes: &[&str],
+    ) -> Result<mpsc::Receiver<io::Result<String>>, String> {
+        let pipe = self
+            .runtime
+            .borrow_mut()
+            .receive_primary_selection(preferred_mimes)
+            .map_err(|error| error.to_string())?;
+        let (reply_tx, reply_rx) = mpsc::channel();
+        thread::Builder::new()
+            .name("tensor-files-wayland-primary-read".to_string())
+            .spawn(move || {
+                let _ = reply_tx.send(pipe.read_text());
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(reply_rx)
+    }
+}
+
+impl ActiveEventLoop {
+    pub fn clipboard(&self) -> WaylandClipboard {
+        WaylandClipboard::new(self.runtime.clone())
+    }
+}

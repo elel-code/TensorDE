@@ -15,7 +15,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      # tensor-compositor default features include `tty`, which links system
+      # tensorland default features include `tty`, which links system
       # libudev/libinput/libseat/libdrm/gbm/wayland/xkbcommon and compiles
       # client shaders with glslangValidator in build.rs.
       - name: Install system dependencies
@@ -32,11 +32,11 @@ jobs:
             libxkbcommon-dev \
             glslang-tools
       - run: cargo fmt --all -- --check
-      - run: uv run scripts/tensor/check_file_lines.py
-      - run: uv run scripts/tensor/check_crate_boundaries.py
+      - run: uv run scripts/tensorland/check_file_lines.py
+      - run: uv run scripts/tensorland/check_crate_boundaries.py
       - run: >-
           cargo test --all-targets
-          -p tensor-compositor
+          -p tensorland
           -p tensor-drm
           -p tensor-event
           -p tensor-host

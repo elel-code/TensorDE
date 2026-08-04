@@ -292,6 +292,11 @@ impl AcquiredSurfaceTexture<'_> {
         self.swapchain.configuration.extent
     }
 
+    /// Returns the usages selected when this swapchain was configured.
+    pub const fn usage(&self) -> TextureUsages {
+        self.swapchain.configuration.usage
+    }
+
     pub const fn status(&self) -> PresentStatus {
         self.status
     }

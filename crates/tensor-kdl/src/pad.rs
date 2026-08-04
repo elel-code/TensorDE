@@ -48,6 +48,30 @@ impl PaddedInput {
         Self { buf, content_len }
     }
 
+    /// Replace the logical input while retaining this allocation when it is large enough.
+    ///
+    /// This is the reusable-buffer half of Glaze's mutable `std::string` read
+    /// workflow (`docs/optimizing-performance.md`). The padded tail is restored
+    /// on every update, so callers can keep one allocation across configuration
+    /// reloads without exposing NUL padding as KDL content.
+    pub fn replace(&mut self, input: &str) {
+        let content_len = input.len();
+        let padded_len = content_len
+            .checked_add(PADDING_BYTES)
+            .expect("padded KDL input length overflow");
+        self.buf.clear();
+        // `Vec::reserve` is relative to its *length*, which is zero after the
+        // clear. Reserve the complete target length when the retained capacity
+        // is too small; reserving only the capacity delta could leave a short
+        // buffer and force a second growth during `resize` below.
+        if self.buf.capacity() < padded_len {
+            self.buf.reserve(padded_len);
+        }
+        self.buf.extend_from_slice(input.as_bytes());
+        self.buf.resize(padded_len, 0);
+        self.content_len = content_len;
+    }
+
     /// Logical KDL text (no padding). Safe for all public parse APIs.
     #[inline]
     pub fn as_str(&self) -> &str {
@@ -141,6 +165,29 @@ mod tests {
         let p = PaddedInput::from_string(String::from("kdl"));
         assert_eq!(p.as_str(), "kdl");
         assert_eq!(p.padded_bytes().len(), 3 + PADDING_BYTES);
+    }
+
+    #[test]
+    fn replace_reuses_capacity_and_restores_padding() {
+        let mut p = PaddedInput::new("a sufficiently long first input");
+        let capacity = p.buf.capacity();
+
+        p.replace("short");
+
+        assert_eq!(p.as_str(), "short");
+        assert_eq!(p.len(), 5);
+        assert_eq!(p.buf.capacity(), capacity);
+        assert!(p.padded_bytes()[p.len()..].iter().all(|&byte| byte == 0));
+    }
+
+    #[test]
+    fn replace_grows_to_include_padding_before_the_next_read() {
+        let mut p = PaddedInput::new("x");
+        p.replace("a longer replacement input");
+
+        assert!(p.buf.capacity() >= p.len() + PADDING_BYTES);
+        assert_eq!(p.padded_bytes().len(), p.len() + PADDING_BYTES);
+        assert!(p.padded_bytes()[p.len()..].iter().all(|&byte| byte == 0));
     }
 
     #[test]

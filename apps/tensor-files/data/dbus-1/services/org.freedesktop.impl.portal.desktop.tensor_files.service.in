@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.freedesktop.impl.portal.desktop.tensor_files
+Exec=@bindir@/tensor-files-xdp-filechooser

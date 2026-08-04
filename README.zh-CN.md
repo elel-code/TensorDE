@@ -5,11 +5,11 @@ TensorDE 以一个统一系统的形式开发原生、GPU-first 的桌面环境�
 
 ## 产品
 
-- `apps/desktop-shell`：桌面 Shell，包括顶栏、启动器、通知与 OSD、控制中心、
+- `apps/tensorland`：Tensorland Wayland 合成器。
+- `apps/tensor-shell`：Tensor Shell，包括顶栏、启动器、通知与 OSD、控制中心、
   概览和锁屏 surface。
-- `apps/fika`：Fika 文件管理器。
+- `apps/tensor-files`：Tensor Files 文件管理器。
 - `apps/gilder`：Gilder 场景与壁纸引擎。
-- `apps/tensor`：Tensor compositor 与 session runtime。
 
 ## 共享基础设施
 
@@ -20,7 +20,8 @@ TensorDE 以一个统一系统的形式开发原生、GPU-first 的桌面环境�
 - `crates/tensor-*`：与 compositor 共用的 value-only 事件、runtime、host、
   DRM、present、protocol 和 geometry 边界。
 
-`desktop-shell` 保持职责导向的 crate 名；TensorDE 是仓库和桌面环境品牌。
+Tensorland 承载合成器名称，Tensor Shell 与 Tensor Files 是同品牌配套产品；
+TensorDE 仍是仓库与桌面环境品牌。
 
 文档与自动化入口分别统一收录在 [docs](docs/README.md) 和
 [scripts](scripts/README.md)。

@@ -15,6 +15,7 @@ use crate::{
 };
 
 mod bootstrap;
+mod intermediate;
 mod offscreen;
 mod swapchain;
 mod terminal;
@@ -23,6 +24,10 @@ mod transaction;
 pub use bootstrap::{
     PresentationAdapterRequest, PresentationBootstrap, PresentationBootstrapDescriptor,
     PresentationExtentPolicy, PresentationImageCount, PresentationSurfaceConfigurationDescriptor,
+};
+pub use intermediate::{
+    AcquiredRetainedColorTarget, AcquiredRetainedColorTargets, RetainedColorTargetPool,
+    RetainedColorTargetPoolDescriptor, RetainedColorTargetRequest, RetainedColorTargetReservation,
 };
 pub use offscreen::{
     DirectSurfaceBlocker, FrameTargetPreference, OffscreenColorTarget, OffscreenColorTargets,

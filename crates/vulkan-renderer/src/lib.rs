@@ -11,6 +11,7 @@
 mod allocator;
 mod backend;
 mod capabilities;
+mod color;
 mod command;
 mod descriptor_heap;
 mod dynamic_buffer;
@@ -27,6 +28,7 @@ mod roadmap_2026;
 mod shader;
 mod standard;
 mod sync;
+mod timestamp;
 mod types;
 mod upload;
 mod video;
@@ -44,13 +46,19 @@ pub use capabilities::{
     ROADMAP_2026_PROFILE_REVISION, ROADMAP_2026_REQUIRED_DEVICE_EXTENSIONS,
     ROADMAP_2026_REQUIRED_INSTANCE_EXTENSIONS, STANDARD_REQUIRED_INSTANCE_EXTENSIONS,
 };
+pub use color::{
+    ChromaOffset, Chromaticity as ColorChromaticity, ColorAlphaMode, ColorPlanError,
+    ColorPrimaries, ColorRange as PixelColorRange, ColorShaderEncoding, ColorTransferFunction,
+    ColorTransformPlan, ColorTransformShaderData, ColorVolume, GamutMap, PixelEncoding,
+    SourceColorDescriptor, TargetColorDescriptor, ToneMap, YcbcrMatrix,
+};
 pub use command::{
     AttachmentView, BufferCopy, BufferImageCopy, BufferState, ColorAttachment,
-    ColorBufferImageCopy, ColorImageCopy, CommandBuffer, CommandEncoder, CommandEncoderDescriptor,
-    ComputeEncoder, ComputePassDescriptor, DepthAttachment, ImageBlit, ImageBlitFilter, ImageCopy,
-    IndexFormat, LoadOp, RenderingDescriptor, RenderingEncoder, RenderingLocalReadMapping,
-    RenderingLocalReadMappingDescriptor, RenderingLocalReadMappingKind, ResolveMode,
-    StencilAttachment, StoreOp, TextureState,
+    ColorBufferImageCopy, ColorImageBufferCopy, ColorImageCopy, CommandBuffer, CommandEncoder,
+    CommandEncoderDescriptor, ComputeEncoder, ComputePassDescriptor, DepthAttachment, ImageBlit,
+    ImageBlitFilter, ImageCopy, IndexFormat, LoadOp, RenderingDescriptor, RenderingEncoder,
+    RenderingLocalReadMapping, RenderingLocalReadMappingDescriptor, RenderingLocalReadMappingKind,
+    ResolveMode, StencilAttachment, StoreOp, TextureState,
 };
 pub use descriptor_heap::{
     BufferDescriptorBinding, BufferDescriptorKind, DescriptorAllocation, DescriptorHeap,
@@ -64,7 +72,7 @@ pub use descriptor_heap::{
     descriptor_heap_element_index,
 };
 pub use dynamic_buffer::{DynamicBuffer, DynamicBufferDescriptor, DynamicBufferUpload};
-pub use error::{Error, Result, VulkanFailure};
+pub use error::{Error, Result, UploadBeltLimit, VulkanFailure};
 pub use external_image::{
     ExternalImageViewDescriptor, RetainedExternalImage, RetainedExternalImageView,
 };
@@ -94,19 +102,21 @@ pub use pipeline::{
     create_graphics_pipeline_machine_code, graphics_pipeline_binary_key,
 };
 pub use present::{
-    AcquiredSurfaceTexture, DirectSurfaceBlocker, FrameTargetPreference,
-    FullscreenSampledSurfaceTerminal, FullscreenSampledSurfaceTerminalDescriptor,
-    FullscreenSampledSurfaceTerminalProgram, OffscreenColorTarget, OffscreenColorTargets,
-    OffscreenColorTargetsDescriptor, OffscreenSampledBindings, OffscreenSamplerTopology,
-    PresentMode, PresentStatus, PresentTransactionOutcome, PresentationAdapterRequest,
-    PresentationBootstrap, PresentationBootstrapDescriptor, PresentationExtentPolicy,
-    PresentationImageCount, PresentationPathDescriptor, PresentationPathPlan,
-    PresentationRequirements, PresentationSurfaceConfigurationDescriptor, PresentationTarget,
-    PresentationTransaction, PresentationTransactionDescriptor, PresentationTransactionPhase,
-    PresentationTransactionSchedule, PresentationTransactionStep, Surface, SurfaceAcquireStrategy,
-    SurfaceCapabilities, SurfaceConfiguration, SurfaceConfigurationRequest,
-    SurfacePresentCapabilities, Swapchain, SwapchainDescriptor, TerminalAlphaMode,
-    TerminalCompositeDescriptor, TerminalSampling,
+    AcquiredRetainedColorTarget, AcquiredRetainedColorTargets, AcquiredSurfaceTexture,
+    DirectSurfaceBlocker, FrameTargetPreference, FullscreenSampledSurfaceTerminal,
+    FullscreenSampledSurfaceTerminalDescriptor, FullscreenSampledSurfaceTerminalProgram,
+    OffscreenColorTarget, OffscreenColorTargets, OffscreenColorTargetsDescriptor,
+    OffscreenSampledBindings, OffscreenSamplerTopology, PresentMode, PresentStatus,
+    PresentTransactionOutcome, PresentationAdapterRequest, PresentationBootstrap,
+    PresentationBootstrapDescriptor, PresentationExtentPolicy, PresentationImageCount,
+    PresentationPathDescriptor, PresentationPathPlan, PresentationRequirements,
+    PresentationSurfaceConfigurationDescriptor, PresentationTarget, PresentationTransaction,
+    PresentationTransactionDescriptor, PresentationTransactionPhase,
+    PresentationTransactionSchedule, PresentationTransactionStep, RetainedColorTargetPool,
+    RetainedColorTargetPoolDescriptor, RetainedColorTargetRequest, RetainedColorTargetReservation,
+    Surface, SurfaceAcquireStrategy, SurfaceCapabilities, SurfaceConfiguration,
+    SurfaceConfigurationRequest, SurfacePresentCapabilities, Swapchain, SwapchainDescriptor,
+    TerminalAlphaMode, TerminalCompositeDescriptor, TerminalSampling,
 };
 #[cfg(feature = "ffmpeg-vulkan-decode")]
 pub use present::{PresentationDependencyScope, PresentationFrameDependencies};
@@ -125,6 +135,10 @@ pub use standard::{
 pub use sync::{
     BarrierBatch, BinarySemaphore, BinarySemaphoreDescriptor, ExternalTimelineSemaphoreDescriptor,
     RenderGraphSyncError, ResourceBinding, RetainedExternalTimelineSemaphore,
+};
+pub use timestamp::{
+    TimestampQuery, TimestampQueryResults, TimestampQuerySet, TimestampQuerySetDescriptor,
+    TimestampWriteStage,
 };
 pub use types::{
     ApiVersion, BufferUsages, ColorSpace, ComponentMapping, ComponentSwizzle, CompositeAlphaMode,

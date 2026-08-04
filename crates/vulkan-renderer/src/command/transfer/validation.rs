@@ -1,7 +1,92 @@
 use super::{
-    Buffer, BufferCopy, BufferImageCopy, ColorImageCopy, CommandEncoder, Error, Image, ImageBlit,
-    ImageCopy, Result,
+    AcquiredSurfaceTexture, Buffer, BufferCopy, BufferImageCopy, ColorImageBufferCopy,
+    ColorImageCopy, CommandEncoder, Error, ExportedDmaBufImage, Image, ImageBlit, ImageCopy,
+    Result,
 };
+
+pub(super) fn validate_surface_image_copy_resources(
+    encoder: &CommandEncoder,
+    source: &AcquiredSurfaceTexture<'_>,
+    destination: &Image,
+) -> Result<()> {
+    if !std::sync::Arc::ptr_eq(source.owner(), &encoder.owner)
+        || !destination.belongs_to(&encoder.owner)
+    {
+        return Err(Error::Validation(
+            "surface image copy resources were created by a different Device".into(),
+        ));
+    }
+    if !source.usage().contains(TextureUsages::COPY_SOURCE)
+        || !destination
+            .usage()
+            .contains(TextureUsages::COPY_DESTINATION)
+    {
+        return Err(Error::Validation(
+            "surface image copy requires TRANSFER_SRC and TRANSFER_DST usage".into(),
+        ));
+    }
+    if source.format() != destination.format()
+        || destination.sample_count() != SampleCount::One
+        || destination.dimension() != crate::ImageDimension::D2
+    {
+        return Err(Error::Validation(
+            "surface image copies require equal formats and a single-sampled 2D destination".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_surface_image_copy(
+    source: &AcquiredSurfaceTexture<'_>,
+    destination: &Image,
+    copy: ImageCopy,
+) -> Result<()> {
+    if copy.source_subresource != TextureSubresourceLayers::color(0, 0, 1) {
+        return Err(Error::Validation(
+            "surface image copy source must select its sole color subresource".into(),
+        ));
+    }
+    validate_external_copy_box(source.extent(), copy.source_offset, copy.extent)?;
+    validate_copy_subresource(
+        destination,
+        copy.destination_subresource,
+        copy.destination_offset,
+        copy.extent,
+    )?;
+    if copy.source_subresource.layer_count != copy.destination_subresource.layer_count
+        || copy.source_subresource.aspects != copy.destination_subresource.aspects
+    {
+        return Err(Error::Validation(
+            "surface image copy source and destination layers/aspects must match".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn lower_color_image_buffer_copy(copy: ColorImageBufferCopy) -> Result<BufferImageCopy> {
+    if copy.extent.is_empty() || copy.layer_count == 0 {
+        return Err(Error::Validation(
+            "color image-buffer copy extent and layer count must be non-zero".into(),
+        ));
+    }
+    if copy.source_origin.x < 0 || copy.source_origin.y < 0 {
+        return Err(Error::Validation(
+            "color image-buffer copy origin must be non-negative".into(),
+        ));
+    }
+    Ok(BufferImageCopy {
+        buffer_offset: copy.buffer_offset,
+        buffer_row_length: copy.buffer_row_length,
+        buffer_image_height: copy.buffer_image_height,
+        image_subresource: TextureSubresourceLayers::color(
+            copy.source_mip_level,
+            copy.source_base_array_layer,
+            copy.layer_count,
+        ),
+        image_offset: Origin3D::new(copy.source_origin.x, copy.source_origin.y, 0),
+        image_extent: Extent3D::new(copy.extent.width, copy.extent.height, 1),
+    })
+}
 use crate::{
     BufferUsages, Extent3D, Origin3D, SampleCount, TextureAspects, TextureLayout,
     TextureSubresourceLayers, TextureSubresourceRange, TextureUsages,
@@ -28,6 +113,91 @@ pub(super) fn lower_color_image_copy(copy: ColorImageCopy) -> Result<ImageCopy> 
         destination_offset: Origin3D::new(copy.destination_origin.x, copy.destination_origin.y, 0),
         extent: Extent3D::new(copy.extent.width, copy.extent.height, 1),
     })
+}
+
+pub(super) fn validate_exported_image_copy_resources(
+    encoder: &CommandEncoder,
+    source: &ExportedDmaBufImage,
+    destination: &Image,
+) -> Result<()> {
+    if !std::sync::Arc::ptr_eq(source.owner(), &encoder.owner)
+        || !destination.belongs_to(&encoder.owner)
+    {
+        return Err(Error::Validation(
+            "exported image copy resources were created by a different Device".into(),
+        ));
+    }
+    if !source.usage().contains(TextureUsages::COPY_SOURCE)
+        || !destination
+            .usage()
+            .contains(TextureUsages::COPY_DESTINATION)
+    {
+        return Err(Error::Validation(
+            "exported image copy requires TRANSFER_SRC and TRANSFER_DST usage".into(),
+        ));
+    }
+    if source.format() != destination.format()
+        || destination.sample_count() != SampleCount::One
+        || destination.dimension() != crate::ImageDimension::D2
+    {
+        return Err(Error::Validation(
+            "exported image copies require equal formats and a single-sampled 2D destination"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_exported_image_copy(
+    source: &ExportedDmaBufImage,
+    destination: &Image,
+    copy: ImageCopy,
+) -> Result<()> {
+    if copy.source_subresource != TextureSubresourceLayers::color(0, 0, 1) {
+        return Err(Error::Validation(
+            "exported image copy source must select its sole color subresource".into(),
+        ));
+    }
+    validate_external_copy_box(source.extent(), copy.source_offset, copy.extent)?;
+    validate_copy_subresource(
+        destination,
+        copy.destination_subresource,
+        copy.destination_offset,
+        copy.extent,
+    )?;
+    if copy.source_subresource.layer_count != copy.destination_subresource.layer_count
+        || copy.source_subresource.aspects != copy.destination_subresource.aspects
+    {
+        return Err(Error::Validation(
+            "exported image copy source and destination layers/aspects must match".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_external_copy_box(
+    image_extent: crate::Extent2D,
+    offset: Origin3D,
+    extent: Extent3D,
+) -> Result<()> {
+    let end_x = u32::try_from(offset.x)
+        .ok()
+        .and_then(|x| x.checked_add(extent.width));
+    let end_y = u32::try_from(offset.y)
+        .ok()
+        .and_then(|y| y.checked_add(extent.height));
+    if offset.z != 0
+        || extent.width == 0
+        || extent.height == 0
+        || extent.depth_or_layers != 1
+        || end_x.is_none_or(|end| end > image_extent.width)
+        || end_y.is_none_or(|end| end > image_extent.height)
+    {
+        return Err(Error::Validation(
+            "external color-image copy box exceeds its sole 2D subresource".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn validate_color_clear(
@@ -361,6 +531,40 @@ pub(super) fn validate_buffer_image_resources(
     ) {
         return Err(Error::Validation(
             "buffer-to-image copy layout must be TRANSFER_DST_OPTIMAL or GENERAL".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_image_buffer_copy_resources(
+    encoder: &CommandEncoder,
+    image: &Image,
+    layout: TextureLayout,
+    destination: &Buffer,
+) -> Result<()> {
+    if !image.belongs_to(&encoder.owner) || !destination.belongs_to(&encoder.owner) {
+        return Err(Error::Validation(
+            "image/buffer copy resources were created by a different Device".into(),
+        ));
+    }
+    if !image.usage().contains(TextureUsages::COPY_SOURCE)
+        || !destination.usage().contains(BufferUsages::COPY_DESTINATION)
+    {
+        return Err(Error::Validation(
+            "image-to-buffer copy requires TRANSFER_SRC and TRANSFER_DST usage".into(),
+        ));
+    }
+    if image.sample_count() != SampleCount::One {
+        return Err(Error::Validation(
+            "image-to-buffer copies require a single-sampled image".into(),
+        ));
+    }
+    if !matches!(
+        layout,
+        TextureLayout::TransferSource | TextureLayout::General
+    ) {
+        return Err(Error::Validation(
+            "image-to-buffer copy layout must be TRANSFER_SRC_OPTIMAL or GENERAL".into(),
         ));
     }
     Ok(())

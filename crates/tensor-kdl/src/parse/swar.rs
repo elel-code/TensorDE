@@ -109,6 +109,40 @@ pub fn find_quote_or_escape(input: &[u8], mut index: usize, end: usize) -> usize
     end
 }
 
+/// Scan forward for a quote byte only.
+///
+/// Raw KDL delimiters do not interpret escapes, so stopping at `\\` would add
+/// needless work. This keeps their delimiter scan on the same portable SWAR
+/// path as Glaze's direct string scans (`util/parse.hpp`).
+#[inline(always)]
+pub fn find_quote(input: &[u8], mut index: usize, end: usize) -> usize {
+    let end = end.min(input.len());
+    while index < end {
+        if index + 8 <= input.len() {
+            let chunk = load_u64_unaligned(&input[index..index + 8]);
+            let hit = has_byte(chunk, b'"');
+            if hit != 0 {
+                let at = index + first_lane(hit);
+                return at.min(end);
+            }
+            if index + 8 > end {
+                // Remainder inside this chunk past logical end is padding — stop.
+                break;
+            }
+            index += 8;
+            continue;
+        }
+        break;
+    }
+    while index < end {
+        if input[index] == b'"' {
+            return index;
+        }
+        index += 1;
+    }
+    end
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,5 +171,12 @@ mod tests {
         assert_eq!(find_quote_or_escape(s, 0, s.len()), 5);
         let long = b"01234567quote\"";
         assert_eq!(find_quote_or_escape(long, 0, long.len()), 13);
+    }
+
+    #[test]
+    fn find_quote_ignores_raw_backslashes() {
+        let s = b"raw\\content\"close";
+        assert_eq!(super::find_quote(s, 0, s.len()), 11);
+        assert_eq!(super::find_quote(b"no quote", 0, 8), 8);
     }
 }

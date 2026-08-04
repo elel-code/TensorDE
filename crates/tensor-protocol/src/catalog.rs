@@ -109,6 +109,16 @@ pub const PROTOCOL_CATALOG: &[ProtocolCapabilityRef] = &[
         prefer_over_community: false,
     },
     ProtocolCapabilityRef {
+        name: "xdg-dialog",
+        tier: ProtocolTier::StagingExt,
+        prefer_over_community: false,
+    },
+    ProtocolCapabilityRef {
+        name: "xdg-toplevel-drag",
+        tier: ProtocolTier::StagingExt,
+        prefer_over_community: false,
+    },
+    ProtocolCapabilityRef {
         name: "ext-session-lock",
         tier: ProtocolTier::StagingExt,
         prefer_over_community: false,
@@ -170,6 +180,16 @@ pub const PROTOCOL_CATALOG: &[ProtocolCapabilityRef] = &[
     },
     ProtocolCapabilityRef {
         name: "commit-timing",
+        tier: ProtocolTier::StagingExt,
+        prefer_over_community: false,
+    },
+    ProtocolCapabilityRef {
+        name: "tearing-control",
+        tier: ProtocolTier::StagingExt,
+        prefer_over_community: false,
+    },
+    ProtocolCapabilityRef {
+        name: "ext-transient-seat",
         tier: ProtocolTier::StagingExt,
         prefer_over_community: false,
     },

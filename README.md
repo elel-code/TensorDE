@@ -6,11 +6,11 @@ standards live under `crates/`.
 
 ## Products
 
-- `apps/desktop-shell` — the desktop shell: panels, launcher, notifications and
+- `apps/tensorland` — the Tensorland Wayland compositor.
+- `apps/tensor-shell` — Tensor Shell: panels, launcher, notifications and
   OSD, control center, overview, and lock surfaces.
-- `apps/fika` — the Fika file manager.
+- `apps/tensor-files` — the Tensor Files file manager.
 - `apps/gilder` — the Gilder scene and wallpaper engine.
-- `apps/tensor` — the Tensor compositor and session runtime.
 
 ## Shared foundations
 
@@ -25,8 +25,9 @@ standards live under `crates/`.
 - `crates/tensor-*` — value-only event, runtime, host, DRM, presentation,
   protocol, and geometry boundaries shared with the compositor.
 
-`desktop-shell` remains a role-oriented crate name; TensorDE is the repository
-and desktop-environment brand.
+Tensorland carries the compositor identity; Tensor Shell and Tensor Files form
+the companion product family. TensorDE remains the repository and desktop-
+environment brand.
 
 Documentation and automation are indexed under [docs](docs/README.md) and
 [scripts](scripts/README.md).

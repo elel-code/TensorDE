@@ -10,9 +10,12 @@ use crate::{
     SampledTextureBinding, TextureFormat, Viewport,
 };
 
+mod clear;
 mod local_read;
 mod machine_code;
 mod state;
+#[cfg(test)]
+mod tests;
 mod validation;
 
 pub use local_read::{
@@ -172,6 +175,8 @@ pub struct RenderingDescriptor<'a> {
 pub struct RenderingEncoder<'encoder> {
     encoder: &'encoder mut CommandEncoder,
     label: Option<String>,
+    render_area: crate::Rect2D,
+    layer_count: u32,
     color_formats: Vec<Option<TextureFormat>>,
     depth_format: vk::Format,
     stencil_format: vk::Format,
@@ -190,6 +195,8 @@ impl std::fmt::Debug for RenderingEncoder<'_> {
         formatter
             .debug_struct("RenderingEncoder")
             .field("label", &self.label)
+            .field("render_area", &self.render_area)
+            .field("layer_count", &self.layer_count)
             .field("color_formats", &self.color_formats)
             .field("depth_format", &self.depth_format)
             .field("stencil_format", &self.stencil_format)
@@ -254,6 +261,8 @@ impl CommandEncoder {
         Ok(RenderingEncoder {
             encoder: self,
             label: descriptor.label.map(str::to_owned),
+            render_area: descriptor.render_area,
+            layer_count: descriptor.layer_count,
             color_formats: metadata.color_formats,
             depth_format: metadata.depth_format,
             stencil_format: metadata.stencil_format,
@@ -767,28 +776,5 @@ fn load_op<T>(
         LoadOp::Load => (vk::AttachmentLoadOp::LOAD, vk::ClearValue::default()),
         LoadOp::Clear(value) => (vk::AttachmentLoadOp::CLEAR, clear_value(value)),
         LoadOp::Discard => (vk::AttachmentLoadOp::DONT_CARE, vk::ClearValue::default()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn typed_load_and_store_ops_map_without_implicit_preservation() {
-        assert_eq!(
-            load_op(LoadOp::Clear(0.5), |depth| vk::ClearValue {
-                depth_stencil: vk::ClearDepthStencilValue { depth, stencil: 0 }
-            })
-            .0,
-            vk::AttachmentLoadOp::CLEAR
-        );
-        assert_eq!(
-            match StoreOp::Discard {
-                StoreOp::Store => vk::AttachmentStoreOp::STORE,
-                StoreOp::Discard => vk::AttachmentStoreOp::DONT_CARE,
-            },
-            vk::AttachmentStoreOp::DONT_CARE
-        );
     }
 }

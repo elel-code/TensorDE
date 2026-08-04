@@ -11,7 +11,7 @@ The local Niri and Hyprland worktrees are behavioral references, not dependencie
 
 ## Configuration and Watchers
 
-- Parse representative TOML documents and malformed documents separately.
+- Parse representative KDL documents and malformed documents separately.
 - Use `tempfile` directories for path resolution, missing files, includes, and replacement races.
 - Test that a failed reload leaves the last valid configuration active.
 

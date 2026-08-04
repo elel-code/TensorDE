@@ -1,6 +1,6 @@
 //! Field attribute parsing for `#[kdl(...)]`.
 
-use syn::{Ident, LitStr, Type};
+use syn::{Attribute, Ident, LitStr, Type};
 
 #[derive(Clone, Debug)]
 pub(crate) enum FieldRole {
@@ -163,4 +163,32 @@ pub(crate) fn parse_field(field: &syn::Field) -> syn::Result<FieldInfo> {
         unwrap,
         rename,
     })
+}
+
+/// Optional struct-level completion validator.
+///
+/// `#[kdl(validate = "validate_kdl")]` names an inherent method with the
+/// signature `fn(&self, node_offset: usize) -> tensor_kdl::CtxResult<()>`.
+pub(crate) fn parse_container_validate(attrs: &[Attribute]) -> syn::Result<Option<Ident>> {
+    let mut validate = None;
+    for attr in attrs {
+        if !attr.path().is_ident("kdl") {
+            continue;
+        }
+        attr.parse_nested_meta(|meta| {
+            if !meta.path.is_ident("validate") {
+                return Err(meta.error("unsupported struct-level kdl attribute"));
+            }
+            if validate.is_some() {
+                return Err(meta.error("duplicate `validate` attribute"));
+            }
+            let value: LitStr = meta.value()?.parse()?;
+            let method = syn::parse_str::<Ident>(&value.value()).map_err(|_| {
+                syn::Error::new(value.span(), "validate must name one inherent method")
+            })?;
+            validate = Some(method);
+            Ok(())
+        })?;
+    }
+    Ok(validate)
 }

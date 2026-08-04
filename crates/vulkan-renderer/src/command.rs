@@ -9,7 +9,8 @@ use vulkanalia::{
 use crate::backend::DeviceOwner;
 use crate::{
     BarrierBatch, Buffer, BufferUsages, DescriptorHeap, DescriptorHeapKind, Error, Image, Result,
-    SubmissionLease, SubmissionResource, TextureLayout, TextureUsages,
+    SubmissionLease, SubmissionResource, TextureLayout, TextureUsages, TimestampQuery,
+    TimestampQuerySet, TimestampWriteStage,
 };
 
 mod compute;
@@ -23,8 +24,8 @@ pub use rendering::{
     RenderingLocalReadMappingKind, ResolveMode, StencilAttachment, StoreOp,
 };
 pub use transfer::{
-    BufferCopy, BufferImageCopy, ColorBufferImageCopy, ColorImageCopy, ImageBlit, ImageBlitFilter,
-    ImageCopy,
+    BufferCopy, BufferImageCopy, ColorBufferImageCopy, ColorImageBufferCopy, ColorImageCopy,
+    ImageBlit, ImageBlitFilter, ImageCopy,
 };
 
 /// Describes one primary command encoder.
@@ -208,6 +209,43 @@ impl fmt::Debug for CommandEncoder {
 }
 
 impl CommandEncoder {
+    /// Resets a contiguous range before writing a new timestamp sample.
+    pub fn reset_timestamp_queries(
+        &mut self,
+        queries: &TimestampQuerySet,
+        first: TimestampQuery,
+        count: u32,
+    ) -> Result<()> {
+        queries.validate_range(&self.owner, first, count)?;
+        unsafe {
+            self.owner
+                .device
+                .cmd_reset_query_pool(self.raw(), queries.raw(), first.index(), count);
+        }
+        self.retain_resource(queries);
+        Ok(())
+    }
+
+    /// Writes one timestamp at an explicit graphics/compute pipeline boundary.
+    pub fn write_timestamp(
+        &mut self,
+        queries: &TimestampQuerySet,
+        query: TimestampQuery,
+        stage: TimestampWriteStage,
+    ) -> Result<()> {
+        queries.validate_range(&self.owner, query, 1)?;
+        unsafe {
+            self.owner.device.cmd_write_timestamp2(
+                self.raw(),
+                stage.to_vk(),
+                queries.raw(),
+                query.index(),
+            );
+        }
+        self.retain_resource(queries);
+        Ok(())
+    }
+
     #[cfg(feature = "ffmpeg-vulkan-decode")]
     pub(crate) fn owner(&self) -> &Arc<DeviceOwner> {
         &self.owner

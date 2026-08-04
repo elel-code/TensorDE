@@ -41,6 +41,14 @@ name = "advanced"
 harness = false
 required-features = ["dom", "derive"]
 
+[[example]]
+name = "suite_report"
+required-features = ["dom"]
+
+[[example]]
+name = "suite_detail"
+required-features = ["dom"]
+
 [lints]
 workspace = true
 

@@ -18,7 +18,7 @@ use crate::visit_emit::{option_inner_type, vec_inner_type};
 ///
 /// `#[kdl(flatten)]` on document roots still requires feature `dom` +
 /// [`DecodePartial`] (unknown free nodes as trees). Without flatten, unknown
-/// names are structurally skipped.
+/// names follow [`tensor_kdl::Opts::error_on_unknown_keys`].
 pub(crate) fn emit_named_children_read_stream(
     fields: &[FieldInfo],
 ) -> syn::Result<proc_macro2::TokenStream> {
@@ -101,6 +101,9 @@ pub(crate) fn emit_named_children_read_stream(
                         #key if #id.is_none() => {
                             #assign
                         }
+                        #key => {
+                            ::tensor_kdl::skip_node_after_header(__p, opts, __ty, __name)?;
+                        }
                     });
                     finish_fields.push(quote! { #id });
                 } else {
@@ -110,6 +113,9 @@ pub(crate) fn emit_named_children_read_stream(
                     match_arms.push(quote! {
                         #key if #id.is_none() => {
                             #id = ::std::option::Option::Some(#fill);
+                        }
+                        #key => {
+                            ::tensor_kdl::skip_node_after_header(__p, opts, __ty, __name)?;
                         }
                     });
                     finish_fields.push(quote! {
@@ -191,6 +197,15 @@ pub(crate) fn emit_named_children_read_stream(
     } else {
         quote! {
             _ => {
+                if opts.error_on_unknown_keys {
+                    return ::std::result::Result::Err(
+                        ::tensor_kdl::ErrorCtx::new(
+                            ::tensor_kdl::ErrorCode::UnknownChild,
+                            __node_offset,
+                        )
+                        .with_message(::std::format!("unknown node `{}`", __name.as_str())),
+                    );
+                }
                 ::tensor_kdl::skip_node_after_header(__p, opts, __ty, __name)?;
             }
         }
@@ -211,6 +226,7 @@ pub(crate) fn emit_named_children_read_stream(
             let owned = ::tensor_kdl::take_context_for_parser(ctx);
             let mut parser = ::tensor_kdl::Parser::with_context(input, owned);
             let visit_result = parser.visit_document_at_nodes(opts, |__p| {
+                let __node_offset = __p.offset();
                 let (__ty, __name) = __p.parse_node_header()?;
                 match __name.as_str() {
                     #(#match_arms)*
@@ -353,11 +369,37 @@ fn emit_named_children_read_stream_dom(
             _ => {
                 let mut __consumed = false;
                 #(#flatten_try)*
-                let _ = (__consumed, &__node);
+                if !__consumed && opts.error_on_unknown_keys {
+                    return ::std::result::Result::Err(
+                        ::tensor_kdl::ErrorCtx::new(
+                            ::tensor_kdl::ErrorCode::UnknownChild,
+                            0,
+                        )
+                        .with_message(::std::format!(
+                            "unknown node `{}`",
+                            __node.name.as_str(),
+                        )),
+                    );
+                }
             }
         }
     } else {
-        quote! { _ => { let _ = __node; } }
+        quote! {
+            _ => {
+                if opts.error_on_unknown_keys {
+                    return ::std::result::Result::Err(
+                        ::tensor_kdl::ErrorCtx::new(
+                            ::tensor_kdl::ErrorCode::UnknownChild,
+                            0,
+                        )
+                        .with_message(::std::format!(
+                            "unknown node `{}`",
+                            __node.name.as_str(),
+                        )),
+                    );
+                }
+            }
+        }
     };
 
     Ok(quote! {

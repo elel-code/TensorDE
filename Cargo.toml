@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "apps/desktop-shell",
-    "apps/fika",
+    "apps/tensor-shell",
+    "apps/tensor-files",
     "apps/gilder",
-    "apps/tensor",
+    "apps/tensorland",
     "crates/tensor-drm",
     "crates/tensor-event",
     "crates/tensor-host",

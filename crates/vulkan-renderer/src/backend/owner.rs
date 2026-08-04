@@ -59,9 +59,8 @@ impl DeviceOwner {
         self.timeline
     }
 
-    #[cfg(feature = "ffmpeg-vulkan-decode")]
     pub(crate) const fn graphics_queue_family(&self) -> u32 {
-        self.graphics_queue_family
+        self.queues.graphics_family
     }
 
     pub(super) fn allocate_frame(&self) -> Result<FrameToken> {

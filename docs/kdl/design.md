@@ -1,10 +1,12 @@
 # Tensor KDL crate design
 
 Status: **implementation active** — suite **243/243**. Glaze contract:
-[glaze-alignment.md](glaze-alignment.md). Through **P-G14**: stack
-`write_chars`/itoa dumps (no heap on int/float), `write_into_with_context`;
-P-G13 nested `unwrap` peels; P-G12 document-root stream without `Node`;
-padded typed reads (P-G11). KQL is an explicitly incomplete subset of
+[glaze-alignment.md](glaze-alignment.md). Through **P-G17**: streaming typed
+decode retains entry and node positions on demand, anchors scalar validation
+errors, and runs opt-in completion validators without building a DOM;
+P-G15 adds raw-delimiter scans, reusable padded input, and named EOF reports;
+P-G14 provides stack `write_chars`/itoa dumps and `write_into_with_context`.
+KQL is an explicitly incomplete subset of
 `references/kdl/QUERY-SPEC.md` (includes `name()`/`tag()`, stacked matchers,
 keyword float RHS). Derive UI: trybuild. Stage benches: `cargo bench -p tensor-kdl`.
 Audience: implementers of a high-performance, error-friendly KDL 2.0 library for TensorDE.  
@@ -244,7 +246,16 @@ pub trait DecodeDocument<'a>: Sized {
 
 /// Scalar (argument or property value).
 pub trait DecodeScalar<'a>: Sized {
-    fn decode_scalar(value: ValueRef<'a>, ctx: &mut Context) -> Result<Self, ErrorCtx>;
+    fn decode_scalar(value: &Value<'a>) -> Result<Self, ErrorCtx>;
+
+    fn decode_scalar_at(value: &Value<'a>, offset: usize) -> Result<Self, ErrorCtx> {
+        // Default implementation translates a relative scalar error to the
+        // argument/property entry in the source document.
+        Self::decode_scalar(value).map_err(|mut error| {
+            error.consumed = offset.saturating_add(error.consumed);
+            error
+        })
+    }
 }
 
 /// Optional flatten target (unknown child/prop insertion).
@@ -282,6 +293,53 @@ pub enum ValueRef<'a> {
 
 Type annotations `(foo)` are available on nodes and values as `Option<KdlStr<'a>>`.
 
+### 7.2.1 Source-aware typed decode (P-G16)
+
+The parser records the cursor before each argument or property and passes that
+single `usize` through `NodeVisitor::on_argument_at` / `on_property_at` and the
+matching `VisitBuilder` callbacks. Derive-generated fields call
+`DecodeScalar::decode_scalar_at`; custom scalar validation can therefore return
+a relative `ErrorCtx` and receive a document-absolute `consumed` index without
+reparsing or retaining source text.
+
+`Located<T>` is the explicit success-path opt-in for consumers that also need
+the origin after decoding. It stores only `{ value, offset }`, allocates
+nothing, and does not require `dom` or `diagnostics`. Ordinary fields do not
+store an offset. A DOM-only decode has no entry spans and therefore constructs
+`Located<T>` with offset zero; in particular, `read::<Vec<T>>` under feature
+`dom` selects the generic DOM fallback. Product config builds keep `dom` off and
+use the streaming path.
+
+### 7.2.2 Node completion validation (P-G17)
+
+Visit-fill-compatible structs can declare an inherent completion validator:
+
+```rust
+#[derive(Decode)]
+#[kdl(validate = "validate_kdl")]
+struct Width {
+    #[kdl(property)]
+    proportion: Option<Located<f64>>,
+    #[kdl(property)]
+    fixed: Option<Located<u32>>,
+}
+```
+
+The method has the signature
+`fn validate_kdl(&self, node_offset: usize) -> CtxResult<()>`. The parser
+captures each node start before its header and propagates it through the
+default-compatible `on_header_at` / `take_child_after_header_at` callbacks.
+The derive calls the validator only after all fields and required-presence
+checks have completed. A validator can therefore point a missing combination
+at the node name and use `Located<T>` to point a conflict at the later field.
+
+Only a builder whose type declares `validate` stores the one `usize` node
+offset. An ordinary generated builder has no additional field and retains the
+same finish path. The streaming product path remains allocation-free and does
+not retain the source. DOM decoding also invokes the invariant, but supplies
+offset zero because the DOM API does not retain source spans; Tensor keeps
+`dom` disabled for configuration decoding.
+
 ### 7.3 Attribute vocabulary (`#[kdl(...)]`)
 
 Aligned with knus for familiarity; namespaced under `kdl`:
@@ -303,6 +361,10 @@ Aligned with knus for familiarity; namespaced under `kdl`:
 | `str` | Parse scalar via `FromStr` |
 | `skip` | Do not decode; `Default` |
 | `rename_all = "kebab-case"` | Struct-level (also `snake_case`, `camelCase`) |
+
+At the struct level, `#[kdl(validate = "method")]` names an inherent node
+completion validator. It is intentionally restricted to visit-fill-compatible
+structs so enabling validation never introduces a hidden DOM path.
 
 Enum `Decode`: each variant is a **node name** (kebab-case by default), tuple/struct variant fields use the same field attrs.
 
@@ -403,14 +465,11 @@ tensor_kdl::read_in_place(&mut cfg, text, &mut ctx)?;
 
 ```rust
 pub struct ErrorCtx {
-    pub code: ErrorCode,
-    /// Byte offset into the input (start of offending token / structure).
-    pub offset: usize,
-    /// Bytes successfully consumed before failure (Glaze `count`).
+    /// Bytes processed; also the source index used for diagnostics.
     pub consumed: usize,
+    pub code: ErrorCode,
     pub message: Option<Cow<'static, str>>,
     pub expected: Option<&'static str>,
-    pub depth: u32,
 }
 
 pub enum ErrorCode {
@@ -525,18 +584,16 @@ Workspace validation still applies when the crate lands (`fmt`, `test`, `clippy 
 | **P3** | `tensor-kdl-macros` `Decode` / `DecodeScalar` | knus-like samples + niri-shaped configs decode without DOM |
 | **P4** | Perfect-hash / opts / scratch reuse polish | Benches + unknown/missing key policies |
 | **P5** | `diagnostics` + `write` | Fancy errors; roundtrip pretty |
-| **P6** | Product integration | Optional Tensor/desktop config experiments (Tensor remains TOML unless product decision changes) |
+| **P6** | Product integration | Tensor loads strict typed KDL without enabling the DOM path |
 
 ## 14. Product note (TensorDE)
 
-Tensor’s **shipped** compositor config is TOML (`docs/tensor/configuration.md`); legacy KDL is rejected.  
-This crate is still justified as:
+Tensor’s compositor config is strict typed KDL (`docs/tensorland/configuration.md`);
+there is no TOML compatibility parser. This crate is the shared boundary for:
 
-1. Shared high-quality KDL 2 infrastructure for tools, generators, or future products.
-2. A place to encode Glaze-grade parse technique in Rust for node-oriented configs.
-3. A cleaner long-term alternative to knus if a product reintroduces KDL.
-
-Do not reintroduce KDL into Tensor startup without an explicit product decision.
+1. Cold-start and reload configuration decoding without a mandatory DOM.
+2. Glaze-grade parse mechanics and structured source diagnostics.
+3. Shared KDL 2 tooling and generators elsewhere in TensorDE.
 
 ## 15. Open questions (resolve before or during P1–P3)
 
@@ -545,7 +602,8 @@ Do not reintroduce KDL into Tensor startup without an explicit product decision.
 3. **Duplicate properties on typed fields:** last-wins (spec) vs error (stricter configs)? Default proposal: **error** when `error_on_unknown_keys`-style strict opts; last-wins under `lenient`.  
 4. **Presence-only child nodes** (`numlock` with no args): unit struct / `Flag` pattern — mirror knus `Flag` or use `#[kdl(child)] enabled: bool` with bare child ⇒ true?  
 5. **Crate public name:** `tensor-kdl` vs shorter `kdl2` — prefer `tensor-kdl` inside monorepo.  
-6. **Span stored in typed structs:** opt-in field attr only, to avoid slowing default decode.
+6. **Broader spans:** keep full spans opt-in; `Located<T>` stores only the entry
+   start so ordinary typed fields remain storage-neutral.
 
 ## 16. Summary
 

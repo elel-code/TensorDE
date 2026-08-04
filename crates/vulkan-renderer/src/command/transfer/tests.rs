@@ -111,6 +111,57 @@ fn typed_color_buffer_upload_rejects_empty_or_negative_regions() {
 }
 
 #[test]
+fn typed_color_readback_lowers_without_vulkan_copy_types() {
+    let copy = lower_color_image_buffer_copy(ColorImageBufferCopy {
+        buffer_offset: 512,
+        buffer_row_length: 1920,
+        buffer_image_height: 1080,
+        source_mip_level: 1,
+        source_base_array_layer: 2,
+        source_origin: Origin2D::new(32, 24),
+        extent: Extent2D::new(640, 480),
+        layer_count: 1,
+    })
+    .unwrap();
+    assert_eq!(copy.buffer_offset, 512);
+    assert_eq!(copy.buffer_row_length, 1920);
+    assert_eq!(copy.image_subresource.mip_level, 1);
+    assert_eq!(copy.image_subresource.base_array_layer, 2);
+    assert_eq!((copy.image_offset.x, copy.image_offset.y), (32, 24));
+    assert_eq!(
+        (
+            copy.image_extent.width,
+            copy.image_extent.height,
+            copy.image_extent.depth_or_layers
+        ),
+        (640, 480, 1)
+    );
+}
+
+#[test]
+fn typed_color_readback_rejects_empty_or_negative_regions() {
+    let empty = ColorImageBufferCopy {
+        buffer_offset: 0,
+        buffer_row_length: 0,
+        buffer_image_height: 0,
+        source_mip_level: 0,
+        source_base_array_layer: 0,
+        source_origin: Origin2D::new(0, 0),
+        extent: Extent2D::new(0, 1),
+        layer_count: 1,
+    };
+    assert!(lower_color_image_buffer_copy(empty).is_err());
+    assert!(
+        lower_color_image_buffer_copy(ColorImageBufferCopy {
+            source_origin: Origin2D::new(-1, 0),
+            extent: Extent2D::new(1, 1),
+            ..empty
+        })
+        .is_err()
+    );
+}
+
+#[test]
 fn image_copy_preserves_bounded_effect_region() {
     let copy = ImageCopy {
         source_subresource: color_layers(),

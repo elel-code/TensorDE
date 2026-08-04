@@ -273,6 +273,7 @@ pub(crate) fn expand_struct_decode(
     ty_generics: &syn::TypeGenerics<'_>,
     where_clause: Option<&syn::WhereClause>,
     fields: &[FieldInfo],
+    validate: Option<&Ident>,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let (builders, has_only_children, uses_args) = field_emitters(fields)?;
     let arg_counter = format_ident!("__arg_i");
@@ -577,7 +578,26 @@ pub(crate) fn expand_struct_decode(
         quote! {}
     };
 
-    let visit_fill = emit_decode_from_visit(name, impl_generics, ty_generics, where_clause, fields);
+    let dom_finish = if let Some(method) = validate {
+        quote! {
+            let __decoded = Self { #(#field_names),* };
+            __decoded.#method(0)?;
+            ::std::result::Result::Ok(__decoded)
+        }
+    } else {
+        quote! {
+            ::std::result::Result::Ok(Self { #(#field_names),* })
+        }
+    };
+
+    let visit_fill = emit_decode_from_visit(
+        name,
+        impl_generics,
+        ty_generics,
+        where_clause,
+        fields,
+        validate,
+    );
 
     Ok(quote! {
         #[cfg(feature = "dom")]
@@ -594,7 +614,7 @@ pub(crate) fn expand_struct_decode(
                     ::std::option::Option::Some(__node);
                 let _ = __parent;
                 #(#builders)*
-                ::std::result::Result::Ok(Self { #(#field_names),* })
+                #dom_finish
             }
         }
         #decode_doc

@@ -6,8 +6,8 @@ use std::{
 use tensor_util::{Rect, Size};
 
 use crate::{
-    ContentRevision, SurfaceAlpha, SurfaceBufferId, SurfaceContent, SurfaceId, SurfaceLayer,
-    SurfaceSampleTransform, SurfaceSourceRect, SurfaceTransform,
+    ContentRevision, SurfaceAlpha, SurfaceBufferId, SurfaceColorState, SurfaceContent, SurfaceId,
+    SurfaceLayer, SurfaceSampleTransform, SurfaceSourceRect, SurfaceTransform,
 };
 
 /// Protocol-owned mapping from opaque wire objects to value-only scene state.
@@ -45,6 +45,7 @@ struct SurfaceState<K, C> {
     source: Option<SurfaceSourceRect>,
     layer: SurfaceLayer,
     alpha: SurfaceAlpha,
+    color: SurfaceColorState,
 }
 
 #[derive(Clone, Debug)]
@@ -95,6 +96,7 @@ pub struct SurfaceCommit<K, C = u64> {
     pub source: Option<SurfaceSourceRect>,
     pub layer: SurfaceLayer,
     pub alpha: SurfaceAlpha,
+    pub color: SurfaceColorState,
 }
 
 impl<K, C> SurfaceBufferRegistry<K, C>
@@ -119,6 +121,7 @@ where
                 source: None,
                 layer: SurfaceLayer::View,
                 alpha: SurfaceAlpha::OPAQUE,
+                color: SurfaceColorState::default(),
             },
         );
         Some(id)
@@ -196,7 +199,8 @@ where
             || state.transform != snapshot.transform
             || state.source != snapshot.source
             || state.layer != snapshot.layer
-            || state.alpha != snapshot.alpha;
+            || state.alpha != snapshot.alpha
+            || state.color != snapshot.color;
 
         let mut released_buffers = Vec::new();
         if state.current.as_ref().map(|current| &current.object)
@@ -222,6 +226,7 @@ where
         state.source = snapshot.source;
         state.layer = snapshot.layer;
         state.alpha = snapshot.alpha;
+        state.color = snapshot.color;
         let content = state.current.as_ref().map(|current| {
             let buffer_size = self
                 .buffers
@@ -234,6 +239,7 @@ where
                 revision: state.revision,
                 layer: state.layer,
                 alpha: state.alpha,
+                color: state.color,
                 local_geometry: current.local_geometry,
                 sample_transform: SurfaceSampleTransform::for_surface(
                     buffer_size,
@@ -266,6 +272,7 @@ where
             revision: state.revision,
             layer: state.layer,
             alpha: state.alpha,
+            color: state.color,
             local_geometry: current.local_geometry,
             sample_transform: SurfaceSampleTransform::for_surface(
                 buffer_size,
@@ -441,6 +448,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ColorAlphaMode, ColorRepresentation};
 
     const SURFACE_A: u64 = 1;
     const SURFACE_B: u64 = 2;
@@ -458,6 +466,7 @@ mod tests {
             source: None,
             layer: SurfaceLayer::View,
             alpha: SurfaceAlpha::OPAQUE,
+            color: SurfaceColorState::default(),
         }
     }
 
@@ -467,6 +476,30 @@ mod tests {
             next_buffer_id: u64::MAX,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn committed_color_changes_are_render_content_revisions() {
+        let mut registry = SurfaceBufferRegistry::default();
+        registry.register_surface(SURFACE_A).unwrap();
+        let buffer = registry.allocate_buffer_id_for_import().unwrap();
+        assert!(registry.register_imported_buffer(BUFFER_A, buffer, Size::new(80, 60)));
+        let initial = registry.update_surface(&SURFACE_A, &commit(Some(BUFFER_A), 1));
+        let mut changed = commit(Some(BUFFER_A), 1);
+        changed.color.representation = ColorRepresentation {
+            alpha_mode: ColorAlphaMode::Straight,
+            ..ColorRepresentation::default()
+        };
+        let update = registry.update_surface(&SURFACE_A, &changed);
+
+        assert!(initial.changed);
+        assert!(update.changed);
+        let content = update.content.unwrap();
+        assert_eq!(content.revision, ContentRevision::new(2));
+        assert_eq!(
+            content.color.representation.alpha_mode,
+            ColorAlphaMode::Straight
+        );
     }
 
     #[test]

@@ -18,6 +18,14 @@ pub enum PresentState {
     Faulted,
 }
 
+/// Atomic KMS presentation mode selected by compositor policy.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PresentMode {
+    #[default]
+    Vsync,
+    Async,
+}
+
 /// Value-only request to present a prepared framebuffer on a connector.
 ///
 /// The adapter resolves `serial` / `slot` to real GBM/DRM objects. Policy and
@@ -29,6 +37,7 @@ pub struct PresentIntent {
     pub serial: u64,
     /// Timeline value exported from Vulkan (binary SYNC_FD is adapter-side).
     pub timeline_value: u64,
+    pub mode: PresentMode,
 }
 
 impl PresentIntent {
@@ -44,6 +53,13 @@ impl PresentIntent {
             slot,
             serial,
             timeline_value,
+            mode: PresentMode::Vsync,
         }
+    }
+
+    #[inline]
+    pub const fn with_mode(mut self, mode: PresentMode) -> Self {
+        self.mode = mode;
+        self
     }
 }

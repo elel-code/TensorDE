@@ -1,4 +1,0 @@
-[D-BUS Service]
-Name=org.fika.FileManager1.Privileged
-Exec=@bindir@/fika-privileged-helper --system-bus
-User=root
