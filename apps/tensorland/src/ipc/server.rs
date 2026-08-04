@@ -194,15 +194,18 @@ mod tests {
         outgoing.extend(encode(&Request::new(2, Command::GetState)).unwrap());
         client.write_all(&outgoing).unwrap();
 
-        for expected_id in [1, 2] {
+        let pending = [1, 2].map(|expected_id| {
             let event = received_requests
                 .recv_timeout(Duration::from_secs(1))
-                .expect("Compio IPC completion");
-            let IpcEvent {
-                request,
-                respond_to,
-            } = event;
-            assert_eq!(request.request_id, expected_id);
+                .expect("all requests in one completed read submit before any response");
+            assert_eq!(event.request.request_id, expected_id);
+            event
+        });
+        for IpcEvent {
+            request,
+            respond_to,
+        } in pending
+        {
             let result = match request.command {
                 Command::Ping => ResultBody::Pong,
                 _ => ResultBody::Accepted,
@@ -319,14 +322,19 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
         client
-            .write_all(&encode(&Request::new(43, Command::Ping)).unwrap())
+            .write_all(&{
+                let mut frames = encode(&Request::new(43, Command::Ping)).unwrap();
+                frames.extend(encode(&Request::new(44, Command::GetState)).unwrap());
+                frames
+            })
             .unwrap();
-        let unavailable = read_one_response(&mut client);
-        assert_eq!(unavailable.request_id, 43);
-        let ResultBody::Error(error) = unavailable.result else {
-            panic!("stopped bridge must return a structured error");
-        };
-        assert_eq!(error.code, "service_unavailable");
+        for (unavailable, expected_id) in read_responses(&mut client, 2).into_iter().zip([43, 44]) {
+            assert_eq!(unavailable.request_id, expected_id);
+            let ResultBody::Error(error) = unavailable.result else {
+                panic!("stopped bridge must return a structured error");
+            };
+            assert_eq!(error.code, "service_unavailable");
+        }
 
         let mut byte = [0; 1];
         assert_eq!(client.read(&mut byte).unwrap(), 0);
@@ -385,19 +393,18 @@ mod tests {
     }
 
     fn read_one_response(client: &mut UnixStream) -> Response {
+        read_responses(client, 1).pop().unwrap()
+    }
+
+    fn read_responses(client: &mut UnixStream, count: usize) -> Vec<Response> {
         let mut decoder = FrameDecoder::new();
         let mut buffer = [0; 4096];
-        loop {
+        let mut responses = Vec::with_capacity(count);
+        while responses.len() < count {
             let read = client.read(&mut buffer).expect("IPC response completion");
             assert_ne!(read, 0, "IPC connection closed before its response");
-            if let Some(response) = decoder
-                .push::<Response>(&buffer[..read])
-                .unwrap()
-                .into_iter()
-                .next()
-            {
-                return response;
-            }
+            responses.extend(decoder.push::<Response>(&buffer[..read]).unwrap());
         }
+        responses
     }
 }

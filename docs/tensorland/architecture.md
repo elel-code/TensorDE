@@ -69,7 +69,9 @@ read, and response writes are submitted Compio operations. Decoded requests and 
 state cross separate bounded bridges; only the compositor thread touches policy state. Request
 bridge saturation returns a request-ID-correlated `queue_full` response without discarding the
 connection. A stopped compositor bridge flushes `service_unavailable` before the Compio task closes
-that connection.
+that connection. Every complete frame decoded from one bounded read batch is submitted before the
+connection awaits the batch's one-shot completions; replies are still written in input order, so
+submission gains concurrency without making policy order completion-dependent.
 
 Tensorland intentionally has no general-purpose network control plane: its compositor control
 protocol is local Unix IPC.

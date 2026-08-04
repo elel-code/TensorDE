@@ -70,7 +70,9 @@ Tensorland worker bridge; requests are validated and dispatched on the composito
 cross a one-shot value channel back to the Compio connection task. `quit` stops the compositor only
 after the accepted response write completes. A saturated request bridge returns `queue_full` and
 keeps the connection usable; a stopped bridge flushes `service_unavailable` before closing it.
-External clients never receive Wayland resources, Vulkan handles, or mutable ECS access.
+Complete frames decoded from one bounded read batch are submitted together before response waits,
+then written back in input order. External clients never receive Wayland resources, Vulkan handles,
+or mutable ECS access.
 
 Configuration control uses the same request/reply transport. `reload-config` non-blockingly queues
 the configured path on the one-entry cold worker and returns `accepted`; saturation and stopped

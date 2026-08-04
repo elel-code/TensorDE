@@ -214,39 +214,38 @@ async fn handle_client(
         let decoded_requests = decoder
             .push::<Request>(&buffer[..read])
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        for request in decoded_requests {
+        let mut pending = Vec::with_capacity(decoded_requests.len());
+        let request_count = decoded_requests.len();
+        let mut bridge_stopped = false;
+        for (index, request) in decoded_requests.into_iter().enumerate() {
             let request_id = request.request_id;
+            let closes_batch = index + 1 == request_count;
+            if bridge_stopped {
+                pending.push(unavailable_reply(request_id, closes_batch));
+                continue;
+            }
             let (respond_to, response) = oneshot::channel();
-            let (reply, close_after_flush) = match requests.try_send(IpcEvent {
+            match requests.try_send(IpcEvent {
                 request,
                 respond_to,
             }) {
-                Ok(()) => {
-                    let reply = response.await.map_err(|_| {
-                        io::Error::new(
-                            io::ErrorKind::BrokenPipe,
-                            "compositor dropped the IPC response",
-                        )
-                    })?;
-                    (reply, false)
-                }
-                Err(TrySendError::Full) => (
-                    IpcReply::new(Response::error(
+                Ok(()) => pending.push(PendingIpcReply::Compositor(response)),
+                Err(TrySendError::Full) => pending.push(PendingIpcReply::Ready {
+                    reply: IpcReply::new(Response::error(
                         request_id,
                         "queue_full",
                         "compositor IPC request queue is full",
                     )),
-                    false,
-                ),
-                Err(TrySendError::Disconnected) => (
-                    IpcReply::new(Response::error(
-                        request_id,
-                        "service_unavailable",
-                        "compositor IPC request queue has stopped",
-                    )),
-                    true,
-                ),
-            };
+                    close_after_flush: false,
+                }),
+                Err(TrySendError::Disconnected) => {
+                    bridge_stopped = true;
+                    pending.push(unavailable_reply(request_id, closes_batch));
+                }
+            }
+        }
+        for pending_reply in pending {
+            let (reply, close_after_flush) = pending_reply.resolve().await?;
             let stop_after_flush = reply.should_stop_after_flush();
             let frame = match encode(&reply.response) {
                 Ok(frame) => frame,
@@ -258,6 +257,44 @@ async fn handle_client(
             if close_after_flush {
                 return Ok(());
             }
+        }
+    }
+}
+
+fn unavailable_reply(request_id: u64, close_after_flush: bool) -> PendingIpcReply {
+    PendingIpcReply::Ready {
+        reply: IpcReply::new(Response::error(
+            request_id,
+            "service_unavailable",
+            "compositor IPC request queue has stopped",
+        )),
+        close_after_flush,
+    }
+}
+
+enum PendingIpcReply {
+    Compositor(oneshot::Receiver<IpcReply>),
+    Ready {
+        reply: IpcReply,
+        close_after_flush: bool,
+    },
+}
+
+impl PendingIpcReply {
+    async fn resolve(self) -> io::Result<(IpcReply, bool)> {
+        match self {
+            Self::Compositor(response) => {
+                response.await.map(|reply| (reply, false)).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "compositor dropped the IPC response",
+                    )
+                })
+            }
+            Self::Ready {
+                reply,
+                close_after_flush,
+            } => Ok((reply, close_after_flush)),
         }
     }
 }
