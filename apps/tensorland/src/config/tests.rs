@@ -72,6 +72,56 @@ fn parses_nested_layout_policy() {
 }
 
 #[test]
+fn parses_regular_and_hidden_workspace_policy() {
+    let config = parse(
+        r#"
+        workspaces default-count=4 {
+            hidden "minimized" minimize-target=#true
+            hidden "communication" show-in-overview=#false
+        }
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(config.workspaces.regular_count, 4);
+    assert_eq!(config.workspaces.hidden.len(), 2);
+    assert_eq!(config.workspaces.hidden[0].name, "minimized");
+    assert!(config.workspaces.hidden[0].minimize_target);
+    assert!(!config.workspaces.hidden[1].show_in_overview);
+}
+
+#[test]
+fn workspace_policy_requires_one_bounded_minimize_target() {
+    assert!(matches!(
+        parse("workspaces default-count=0"),
+        Err(ConfigError::Workspaces(
+            WorkspaceConfigError::RegularCount { .. }
+        ))
+    ));
+    assert!(matches!(
+        parse(
+            r#"workspaces {
+                hidden "scratch"
+            }"#
+        ),
+        Err(ConfigError::Workspaces(
+            WorkspaceConfigError::MissingMinimizeTarget
+        ))
+    ));
+    assert!(matches!(
+        parse(
+            r#"workspaces {
+                hidden "one" minimize-target=#true
+                hidden "two" minimize-target=#true
+            }"#
+        ),
+        Err(ConfigError::Workspaces(
+            WorkspaceConfigError::MultipleMinimizeTargets
+        ))
+    ));
+}
+
+#[test]
 fn parses_per_output_rules() {
     let config = parse(
         r#"

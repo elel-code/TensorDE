@@ -674,29 +674,7 @@ fn xdg_toplevel_lifecycle_is_owned_by_runtime_state() {
             .geometry,
         crate::layout::Rect::new(8, 80, 388, 480)
     );
-    let view_id = runtime.state.view_for_surface(
-        runtime
-            .state
-            .space
-            .elements()
-            .next()
-            .unwrap()
-            .wl_surface()
-            .as_deref()
-            .unwrap(),
-    );
-    assert_eq!(
-        view_id.and_then(|view_id| runtime.state.world.view_layout(view_id)),
-        Some(crate::ecs::ViewLayout {
-            constraints: crate::layout::SizeConstraints::new(
-                tensor_util::Size::new(320, 200),
-                Some(640),
-                Some(480),
-            ),
-            primary_size: None,
-        })
-    );
-
+    let view_id = invariants::assert_workspace_visibility_retains_window(&mut runtime);
     #[cfg(feature = "tty")]
     {
         let focused_view = view_id.expect("mapped test window has an ECS view");

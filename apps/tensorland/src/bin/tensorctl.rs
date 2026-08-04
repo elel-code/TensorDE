@@ -53,6 +53,15 @@ enum CliCommand {
         #[arg(long, default_value_t = false)]
         follow: bool,
     },
+    /// Move the focused window into the configured hidden minimize workspace.
+    MinimizeFocused,
+    /// Restore a minimized window by stable Tensorland view ID.
+    RestoreMinimized {
+        view: u64,
+        /// Restore without activating the retained origin workspace.
+        #[arg(long, default_value_t = false)]
+        stay: bool,
+    },
     /// Set connector logical origin, e.g. `set-output-position HDMI-A-1 1920 0`.
     SetOutputPosition {
         name: String,
@@ -87,6 +96,11 @@ impl From<CliCommand> for Command {
             CliCommand::MoveFocusedToWorkspace { index, follow } => {
                 Self::MoveFocusedToWorkspace { index, follow }
             }
+            CliCommand::MinimizeFocused => Self::MinimizeFocused,
+            CliCommand::RestoreMinimized { view, stay } => Self::RestoreMinimized {
+                view,
+                follow: !stay,
+            },
             CliCommand::SetOutputPosition { name, x, y } => Self::SetOutputPosition { name, x, y },
             CliCommand::SetOutputEnabled { name, enabled } => {
                 Self::SetOutputEnabled { name, enabled }
@@ -217,6 +231,20 @@ mod tests {
                 argv: vec!["foot".to_owned(), "--server".to_owned()]
             }),
             Command::Spawn { argv } if argv == ["foot", "--server"]
+        ));
+        assert!(matches!(
+            Command::from(CliCommand::MinimizeFocused),
+            Command::MinimizeFocused
+        ));
+        assert!(matches!(
+            Command::from(CliCommand::RestoreMinimized {
+                view: 9,
+                stay: false,
+            }),
+            Command::RestoreMinimized {
+                view: 9,
+                follow: true,
+            }
         ));
     }
 }

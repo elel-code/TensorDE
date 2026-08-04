@@ -8,6 +8,8 @@ mod ipc;
 mod launch;
 mod signal;
 mod wayland_completion;
+#[cfg(test)]
+mod workspace_tests;
 
 use tensor_runtime::{
     EventfdWake, EventfdWakeError, RuntimeStop, WakeSink, WorkerBridge, WorkerRx, WorkerTx,
@@ -98,6 +100,7 @@ impl Compositor {
         let Config {
             initial_layout,
             layout_options,
+            workspaces,
             ipc_socket,
             gpu_preference,
             render_device,
@@ -114,6 +117,7 @@ impl Compositor {
             LayoutEngine::with_options(initial_layout, layout_options),
             appearance,
         )?;
+        protocol.state_mut().configure_workspaces(&workspaces);
         protocol
             .state_mut()
             .apply_runtime_policy(cursor.clone(), debug);
@@ -597,6 +601,11 @@ mod tests {
     #[test]
     fn ipc_layout_change_is_visible_in_state() {
         let mut state = runtime_state();
+        let workspace_config = crate::config::WorkspaceConfig {
+            regular_count: 3,
+            ..Default::default()
+        };
+        state.configure_workspaces(&workspace_config);
         state
             .world
             .spawn_view(ViewId::new(1), WorkspaceId::new(0))
@@ -634,7 +643,9 @@ mod tests {
         assert_eq!(snapshot.output_count, 0);
         assert_eq!(snapshot.focused_view, None);
         assert_eq!(snapshot.workspace, 0);
-        assert_eq!(snapshot.workspace_count, 9);
+        assert_eq!(snapshot.workspace_count, 3);
+        assert_eq!(snapshot.hidden_workspace_count, 1);
+        assert_eq!(snapshot.minimized_count, 0);
         assert_eq!(state.layout.options(), options);
 
         let workspaces = handle_ipc_request(
@@ -645,11 +656,14 @@ mod tests {
         let ResultBody::Workspaces(list) = workspaces.response.result else {
             panic!("expected workspace list");
         };
-        assert_eq!(list.len(), 9);
+        assert_eq!(list.len(), 4);
         assert!(list[0].active);
         assert_eq!(list[0].view_count, 1);
         assert!(!list[1].active);
         assert_eq!(list[1].view_count, 0);
+        assert!(list[3].hidden);
+        assert!(list[3].minimize_target);
+        assert_eq!(list[3].name, "minimized");
 
         assert!(matches!(
             handle_ipc_request(

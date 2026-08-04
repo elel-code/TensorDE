@@ -4,6 +4,13 @@ layout "scrolling-1d" gaps=8 {
     master-width proportion=0.55
 }
 
+// Regular workspaces participate in normal navigation. Hidden workspaces
+// retain live windows without entering that sequence.
+workspaces default-count=1 {
+    hidden "minimized" minimize-target=#true
+    // hidden "communication" show-in-overview=#true
+}
+
 ipc-socket "/run/user/1000/tensor.sock"
 // discrete is the default; integrated and any are also valid.
 gpu "discrete"

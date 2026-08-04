@@ -216,6 +216,26 @@ pub(super) fn handle_ipc_request_with_config(
             }
             ResultBody::Accepted
         }
+        IpcCommand::MinimizeFocused => {
+            if state.minimize_focused_view().is_none() {
+                return IpcReply::new(Response::error(
+                    request_id,
+                    "no_focus",
+                    "no minimizable focused view on the active workspace",
+                ));
+            }
+            ResultBody::Accepted
+        }
+        IpcCommand::RestoreMinimized { view, follow } => {
+            if !state.restore_minimized_view(crate::ecs::ViewId::new(view), follow) {
+                return IpcReply::new(Response::error(
+                    request_id,
+                    "not_minimized",
+                    format!("view {view} is not minimized"),
+                ));
+            }
+            ResultBody::Accepted
+        }
         IpcCommand::Quit => {
             return IpcReply::stop_after_flush(Response::new(request_id, ResultBody::Accepted));
         }

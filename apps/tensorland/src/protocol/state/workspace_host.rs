@@ -1,52 +1,104 @@
 //! Multi-workspace host for compositor policy.
 //!
 //! ECS already stores per-view [`WorkspaceId`]. This host owns the **active**
-//! workspace, a fixed desktop pool, and mapping of protocol windows when the
+//! workspace, a configurable desktop pool, and mapping of protocol windows when the
 //! user switches. Protocol (`ext-workspace`) and IPC read/write through here.
 
 use tensor_util::Size;
 use tracing::{debug, info};
 
+use crate::config::WorkspaceConfig;
 use crate::ecs::{ViewId, WorkspaceId};
 
 use super::{ProtocolWindow, RuntimeState};
 
-/// Default number of virtual desktops (1-based UX in IPC/protocol names).
-pub(crate) const WORKSPACE_COUNT: u32 = 9;
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HiddenWorkspace {
+    pub(crate) id: WorkspaceId,
+    pub(crate) name: Box<str>,
+    pub(crate) show_in_overview: bool,
+    pub(crate) minimize_target: bool,
+}
 
 /// Compositor-owned workspace selection and pool.
 #[derive(Debug)]
 pub(crate) struct WorkspaceHost {
     active: WorkspaceId,
-    /// Fixed pool `0..count` always exists for docks / IPC.
-    count: u32,
+    /// Regular pool `0..regular_count` is the only pool advertised through
+    /// ext-workspace and normal next/previous navigation.
+    regular_count: u32,
+    hidden: Box<[HiddenWorkspace]>,
+    minimize_target: WorkspaceId,
 }
 
 impl Default for WorkspaceHost {
     fn default() -> Self {
-        Self {
-            active: WorkspaceId::new(0),
-            count: WORKSPACE_COUNT,
-        }
+        Self::from_config(&WorkspaceConfig::default())
     }
 }
 
 impl WorkspaceHost {
+    pub(crate) fn from_config(config: &WorkspaceConfig) -> Self {
+        let hidden = config
+            .hidden
+            .iter()
+            .enumerate()
+            .map(|(index, workspace)| {
+                let offset = u32::try_from(index).expect("bounded hidden count fits u32");
+                HiddenWorkspace {
+                    id: WorkspaceId::new(
+                        config
+                            .regular_count
+                            .checked_add(offset)
+                            .expect("validated workspace IDs fit u32"),
+                    ),
+                    name: workspace.name.clone().into_boxed_str(),
+                    show_in_overview: workspace.show_in_overview,
+                    minimize_target: workspace.minimize_target,
+                }
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let minimize_target = hidden
+            .iter()
+            .find(|workspace| workspace.minimize_target)
+            .expect("validated workspace policy has one minimize target")
+            .id;
+        Self {
+            active: WorkspaceId::new(0),
+            regular_count: config.regular_count,
+            hidden,
+            minimize_target,
+        }
+    }
+
     pub(crate) fn active(&self) -> WorkspaceId {
         self.active
     }
 
     pub(crate) fn count(&self) -> u32 {
-        self.count
+        self.regular_count
     }
 
-    pub(crate) fn ids(&self) -> impl Iterator<Item = WorkspaceId> + '_ {
-        (0..self.count).map(WorkspaceId::new)
+    pub(crate) fn regular_ids(&self) -> impl Iterator<Item = WorkspaceId> + '_ {
+        (0..self.regular_count).map(WorkspaceId::new)
+    }
+
+    pub(crate) fn hidden(&self) -> &[HiddenWorkspace] {
+        &self.hidden
+    }
+
+    pub(crate) fn hidden_count(&self) -> usize {
+        self.hidden.len()
+    }
+
+    pub(crate) fn minimize_target(&self) -> WorkspaceId {
+        self.minimize_target
     }
 
     /// Activate by zero-based index. Returns `true` if the active id changed.
     pub(crate) fn activate_index(&mut self, index: u32) -> bool {
-        if index >= self.count {
+        if index >= self.regular_count {
             return false;
         }
         let next = WorkspaceId::new(index);
@@ -58,7 +110,7 @@ impl WorkspaceHost {
     }
 
     pub(crate) fn activate_id(&mut self, id: WorkspaceId) -> bool {
-        if id.get() >= self.count {
+        if id.get() >= self.regular_count {
             return false;
         }
         if self.active == id {
@@ -69,7 +121,7 @@ impl WorkspaceHost {
     }
 
     pub(crate) fn cycle(&mut self, delta: i32) -> bool {
-        let count = self.count as i32;
+        let count = self.regular_count as i32;
         let cur = self.active.get() as i32;
         let next = ((cur + delta).rem_euclid(count)) as u32;
         self.activate_index(next)
@@ -77,6 +129,11 @@ impl WorkspaceHost {
 }
 
 impl RuntimeState {
+    pub(crate) fn configure_workspaces(&mut self, config: &WorkspaceConfig) {
+        self.workspaces = WorkspaceHost::from_config(config);
+        self.refresh_ext_workspace_protocol();
+    }
+
     pub(crate) fn active_workspace(&self) -> WorkspaceId {
         self.workspaces.active()
     }
@@ -144,10 +201,72 @@ impl RuntimeState {
         }
     }
 
+    pub(crate) fn minimize_focused_view(&mut self) -> Option<ViewId> {
+        let active = self.workspaces.active();
+        let focused = self.world.focused_view(active)?;
+        let view_id = self.world.tiled_ancestor(focused)?;
+        #[cfg(feature = "tty")]
+        let replacement = self
+            .world
+            .focus_replacement_after_removal(view_id)
+            .ok()
+            .flatten();
+        #[cfg(feature = "tty")]
+        let minimized_surface = self
+            .mapped_window_for_view(view_id)
+            .and_then(|window| window.wl_surface().map(|surface| surface.into_owned()));
+        let target = self.workspaces.minimize_target();
+        match self.world.minimize_view(view_id, target) {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(error) => {
+                tracing::warn!(%error, view = view_id.get(), "failed to minimize view");
+                return None;
+            }
+        }
+        self.apply_workspace_visibility();
+        let _ = self.reflow_active_workspace();
+        #[cfg(feature = "tty")]
+        if let Some(window) = replacement.and_then(|view| self.mapped_window_for_view(view)) {
+            let _ = self.focus_mapped_window(window, crate::protocol::serial::next_serial());
+        } else if let Some(surface) = minimized_surface {
+            self.clear_keyboard_focus_for_surface(&surface);
+            self.publish_window_activation(None);
+        }
+        Some(view_id)
+    }
+
+    pub(crate) fn restore_minimized_view(&mut self, view_id: ViewId, follow: bool) -> bool {
+        let Some(view_id) = self.world.tiled_ancestor(view_id) else {
+            return false;
+        };
+        let origin = match self.world.restore_minimized_view(view_id) {
+            Ok(Some(origin)) => origin,
+            Ok(None) => return false,
+            Err(error) => {
+                tracing::warn!(%error, view = view_id.get(), "failed to restore minimized view");
+                return false;
+            }
+        };
+        if follow && origin != self.workspaces.active() {
+            let _ = self.activate_workspace(origin);
+        } else {
+            self.apply_workspace_visibility();
+            let _ = self.reflow_active_workspace();
+        }
+        #[cfg(feature = "tty")]
+        if origin == self.workspaces.active()
+            && let Some(window) = self.mapped_window_for_view(view_id)
+        {
+            let _ = self.focus_mapped_window(window, crate::protocol::serial::next_serial());
+        }
+        true
+    }
+
     /// Show only windows belonging to the active workspace.
     pub(crate) fn apply_workspace_visibility(&mut self) {
         let active = self.workspaces.active();
-        let windows: Vec<ProtocolWindow> = self.space.elements().cloned().collect();
+        let windows: Vec<ProtocolWindow> = self.space.retained_elements().cloned().collect();
         for window in windows {
             let Some(surface) = window.wl_surface() else {
                 continue;
@@ -170,7 +289,7 @@ impl RuntimeState {
                     self.space.map_element(window, loc, false);
                 }
             } else if self.space.element_geometry(&window).is_some() {
-                self.space.unmap_elem(&window, &self.popups);
+                self.space.hide_element(&window, &self.popups);
             }
         }
         self.space.refresh(&self.popups);
@@ -259,13 +378,19 @@ mod tests {
 
     #[test]
     fn workspace_host_cycles_within_pool() {
-        let mut host = WorkspaceHost::default();
+        let config = WorkspaceConfig {
+            regular_count: 3,
+            ..Default::default()
+        };
+        let mut host = WorkspaceHost::from_config(&config);
         assert_eq!(host.active().get(), 0);
         assert!(host.cycle(1));
         assert_eq!(host.active().get(), 1);
-        assert!(host.activate_index(8));
+        assert!(host.activate_index(2));
         assert!(host.cycle(1));
         assert_eq!(host.active().get(), 0);
+        assert_eq!(host.minimize_target().get(), 3);
+        assert_eq!(host.hidden()[0].id, WorkspaceId::new(3));
     }
 
     #[test]

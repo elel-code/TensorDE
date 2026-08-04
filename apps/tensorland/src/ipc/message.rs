@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::ConfigDiagnosticMetadata;
 use crate::layout::LayoutKind;
 
-pub const IPC_PROTOCOL_VERSION: u16 = 1;
+pub const IPC_PROTOCOL_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Request {
@@ -48,7 +48,7 @@ pub enum Command {
     Ping,
     GetState,
     GetOutputs,
-    /// List virtual desktops (fixed pool) with occupancy.
+    /// List regular and named hidden workspaces with occupancy.
     GetWorkspaces,
     /// Return the active configuration generation and last bounded failure.
     GetConfigStatus,
@@ -73,6 +73,14 @@ pub enum Command {
         index: u32,
         /// When true, also activate the destination workspace.
         #[serde(default)]
+        follow: bool,
+    },
+    /// Move the focused view family into the configured hidden minimize target.
+    MinimizeFocused,
+    /// Restore a minimized view to its retained regular workspace.
+    RestoreMinimized {
+        view: u64,
+        #[serde(default = "default_true")]
         follow: bool,
     },
     /// Set logical origin of a connector (`eDP-1`, `HDMI-A-1`, …).
@@ -128,18 +136,24 @@ pub struct StateSnapshot {
     pub focused_view: Option<u64>,
     /// Active virtual desktop (zero-based).
     pub workspace: u32,
-    /// Fixed workspace pool size.
+    /// Configured regular workspace pool size.
     pub workspace_count: u32,
+    pub hidden_workspace_count: usize,
+    /// Minimized root families; attached dialog views do not inflate this.
+    pub minimized_count: usize,
 }
 
-/// One virtual desktop in the fixed pool.
+/// One regular or named hidden workspace.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WorkspaceSnapshot {
     /// Zero-based index.
     pub index: u32,
-    /// Human-facing name (`"1"` … `"9"`).
+    /// Human-facing regular index or configured hidden-workspace name.
     pub name: String,
     pub active: bool,
+    pub hidden: bool,
+    pub show_in_overview: bool,
+    pub minimize_target: bool,
     pub view_count: usize,
     pub focused_view: Option<u64>,
 }

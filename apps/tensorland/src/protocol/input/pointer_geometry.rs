@@ -69,7 +69,7 @@ pub(super) fn virtual_terminal_for_keysym(keysym: u32) -> Option<i32> {
         .then(|| (keysym - keysyms::KEY_XF86Switch_VT_1 + 1) as i32)
 }
 
-/// Super+1..9 → workspace index 0..8 (zero-based host id).
+/// Super+1..9 directly addresses the first nine configured regular workspaces.
 pub(super) fn workspace_index_for_keysym(keysym: u32) -> Option<u32> {
     match keysym {
         keysyms::KEY_1 => Some(0),

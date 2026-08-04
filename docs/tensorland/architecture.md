@@ -71,6 +71,21 @@ state cross separate bounded bridges; only the compositor thread touches policy 
 Tensorland intentionally has no general-purpose network control plane: its compositor control
 protocol is local Unix IPC.
 
+Workspace identity is divided into a configurable ordered regular pool and named hidden
+workspaces. Only the regular pool is activatable and advertised through `ext-workspace-v1`;
+hidden workspaces remain compositor-owned storage that overview may expose selectively. One hidden
+workspace is the configured minimize target. Minimize moves the existing ECS view family there and
+retains its regular origin as value-only state; restore reverses that move rather than recreating a
+Wayland surface, imported image, descriptor, or scene identity. This makes minimized windows a
+workspace policy instead of a parallel lifecycle state.
+
+The overview boundary is defined to consume the same regular/hidden metadata and retained workspace
+snapshots. Tensorland will own overview geometry, hit testing, focus, and cross-workspace moves;
+Tensor Shell will own its visual chrome and accessible controls. The current compositor slice
+publishes the required workspace metadata and minimize/restore operations; it does not yet claim an
+overview scene implementation. Hidden workspaces marked `show-in-overview=#false` remain available
+to explicit IPC actions without entering that future scene.
+
 Configuration diagnostics follow the product boundary rather than becoming compositor UI.
 `tensor-kdl` produces parser/typed-decode context and an optional named-source miette report;
 Tensorland retains that structured value, renders it for `--validate-config` and logs, and lowers

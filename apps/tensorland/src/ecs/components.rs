@@ -17,6 +17,11 @@ pub struct Workspace {
     pub id: WorkspaceId,
 }
 
+/// Original regular workspace retained while a view family lives in the
+/// configured hidden minimize workspace.
+#[derive(Clone, Copy, Component, Debug, Eq, PartialEq)]
+pub struct MinimizedFrom(pub WorkspaceId);
+
 #[derive(Clone, Copy, Component, Debug, Eq, PartialEq)]
 pub struct ViewGeometry(pub Rect);
 

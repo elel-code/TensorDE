@@ -166,4 +166,17 @@ impl RuntimeState {
             })
             .cloned()
     }
+
+    pub(crate) fn retained_window_for_view(&self, view_id: ViewId) -> Option<ProtocolWindow> {
+        self.space
+            .retained_elements()
+            .find(|window| {
+                window
+                    .wl_surface()
+                    .as_deref()
+                    .and_then(|surface| self.view_for_surface(surface))
+                    == Some(view_id)
+            })
+            .cloned()
+    }
 }

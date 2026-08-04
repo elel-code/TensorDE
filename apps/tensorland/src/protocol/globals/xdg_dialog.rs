@@ -291,7 +291,7 @@ impl RuntimeState {
         };
         for child_view in self.world.attached_children(owner_view) {
             let Some(child) = self
-                .mapped_window_for_view(child_view)
+                .retained_window_for_view(child_view)
                 .and_then(|window| window.toplevel().cloned())
             else {
                 continue;

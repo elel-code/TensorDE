@@ -331,7 +331,7 @@ impl RuntimeState {
     }
 
     fn x11_surface_for_view(&self, view_id: ViewId) -> Option<(WlSurface, u32)> {
-        self.space.elements().find_map(|window| {
+        self.space.retained_elements().find_map(|window| {
             let x11 = window.x11_surface()?;
             let surface = window.wl_surface()?.into_owned();
             (self.view_for_surface(&surface) == Some(view_id)).then_some((surface, x11.window_id()))

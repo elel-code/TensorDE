@@ -285,7 +285,7 @@ impl WaylandRuntime {
         if self.display_runtime.is_none() {
             return Err(ProtocolError::DisplayRuntimeMissing);
         }
-        // Advertise the fixed workspace pool to any early ext-workspace binders.
+        // Advertise the configured regular pool to early ext-workspace binders.
         self.state.refresh_ext_workspace_protocol();
         self.prepared = true;
         Ok(())

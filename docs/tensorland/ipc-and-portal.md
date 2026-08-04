@@ -13,10 +13,19 @@ compositor reply without blocking the runtime thread, so a slow IPC peer cannot 
 dispatch or grow compositor memory without limit. Runtime failure and graceful-shutdown completion
 use a reserved control slot that cannot be consumed by request load.
 `tensorctl` exposes `ping`, `get-state`, `get-outputs`, `get-workspaces`, `get-config-status`,
-`reload-config`, layout/workspace/output controls, `spawn`, and `quit` using the same codec.
+`reload-config`, layout/workspace/output controls, `minimize-focused`, `restore-minimized`, `spawn`,
+and `quit` using the same codec.
 
-`get-state` returns a value-only snapshot: active layout kind, view count on the default workspace,
-mapped output count, and the focused view id when one exists.
+`get-state` returns a value-only snapshot: active layout kind, view count on the active regular
+workspace, mapped output count, focused view ID, regular/hidden workspace counts, and minimized-view
+family count. Attached dialogs move and restore with their root and do not inflate that count.
+`get-workspaces` includes hidden/overview/minimize-target metadata while normal workspace
+indices and `ext-workspace-v1` remain limited to the regular pool.
+
+`tensorctl minimize-focused` moves the focused view family to the configured minimize target.
+`tensorctl restore-minimized <view-id>` restores it and follows its recorded regular workspace;
+`--stay` restores without switching away from the current workspace. These operations reuse the
+retained protocol window and renderer resource identity rather than asking the client to remap.
 
 `get-outputs` returns the current output topology as sorted value-only records (name, logical
 geometry, fractional scale, mode size/refresh, and whether the head hosts the default workspace

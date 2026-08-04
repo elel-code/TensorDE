@@ -4,8 +4,8 @@ use bevy_ecs::{entity::Entity, world::World};
 use thiserror::Error;
 
 use super::components::{
-    Focused, StackingOrder, View, ViewBackdropRegion, ViewContent, ViewEffects, ViewGeometry,
-    ViewLayout, ViewPlacement, ViewPresentationHint, Workspace,
+    Focused, MinimizedFrom, StackingOrder, View, ViewBackdropRegion, ViewContent, ViewEffects,
+    ViewGeometry, ViewLayout, ViewPlacement, ViewPresentationHint, Workspace,
 };
 use super::{ViewId, WorkspaceId};
 use crate::layout::{LayoutEngine, LayoutSnapshot, LayoutState, Rect, SizeConstraints};
@@ -13,6 +13,7 @@ use crate::scene::{BackdropBlur, BackdropRegion, EffectStyle, SceneAppearance, S
 use tensor_util::Size;
 
 mod extract;
+mod minimize;
 
 pub struct CompositorWorld {
     world: World,
@@ -158,6 +159,7 @@ impl CompositorWorld {
                 .expect("every view has a workspace")
                 .id = workspace_id;
             entity.remove::<ViewGeometry>();
+            entity.remove::<MinimizedFrom>();
         }
         self.layout_snapshots.remove(&current_workspace_id);
         self.layout_snapshots.remove(&workspace_id);

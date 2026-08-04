@@ -14,6 +14,45 @@ fn runtime() -> WaylandRuntime {
     .unwrap()
 }
 
+pub(super) fn assert_workspace_visibility_retains_window(
+    runtime: &mut WaylandRuntime,
+) -> Option<crate::ecs::ViewId> {
+    let view_id = runtime.state.view_for_surface(
+        runtime
+            .state
+            .space
+            .elements()
+            .next()
+            .unwrap()
+            .wl_surface()
+            .as_deref()
+            .unwrap(),
+    );
+    assert_eq!(
+        view_id.and_then(|view_id| runtime.state.world.view_layout(view_id)),
+        Some(crate::ecs::ViewLayout {
+            constraints: crate::layout::SizeConstraints::new(
+                tensor_util::Size::new(320, 200),
+                Some(640),
+                Some(480),
+            ),
+            primary_size: None,
+        })
+    );
+    let workspace_config = crate::config::WorkspaceConfig {
+        regular_count: 2,
+        ..Default::default()
+    };
+    runtime.state.configure_workspaces(&workspace_config);
+    assert!(runtime.state.activate_workspace_index(1));
+    assert_eq!(runtime.state.space.elements().count(), 0);
+    assert_eq!(runtime.state.space.retained_elements().count(), 1);
+    assert!(runtime.state.activate_workspace_index(0));
+    assert_eq!(runtime.state.space.elements().count(), 1);
+    assert_eq!(runtime.state.space.retained_elements().count(), 1);
+    view_id
+}
+
 #[test]
 fn completion_runtime_installation_is_single_shot() {
     let mut runtime = runtime();

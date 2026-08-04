@@ -7,6 +7,7 @@ mod display;
 mod event_loop;
 #[cfg(feature = "tty")]
 mod input_method;
+mod ipc_snapshot;
 pub(in crate::protocol) mod layer;
 #[cfg(feature = "tty")]
 mod output;
@@ -192,7 +193,7 @@ pub(crate) struct RuntimeState {
     next_view_id: u64,
     /// Tensor-owned event bus (phase rings + worker inject). Reactor-agnostic.
     event_loop: EventLoopState,
-    /// Active virtual desktop + fixed workspace pool.
+    /// Active regular workspace plus configured regular/hidden topology.
     workspaces: WorkspaceHost,
 }
 
@@ -414,7 +415,7 @@ impl RuntimeState {
         self.detach_x11_popups_for_owner(&surface.id());
         let window = self
             .space
-            .elements()
+            .retained_elements()
             .find(|window| window.wl_surface().as_deref() == Some(surface))
             .cloned();
         if let Some(window) = window {
@@ -646,37 +647,6 @@ impl RuntimeState {
 
     pub(crate) fn view_count(&mut self) -> usize {
         self.world.view_count(self.workspaces.active())
-    }
-
-    /// Value-only compositor snapshot for the IPC control surface.
-    pub(crate) fn ipc_state_snapshot(&mut self) -> crate::ipc::StateSnapshot {
-        let active = self.workspaces.active();
-        crate::ipc::StateSnapshot {
-            layout: self.layout.kind(),
-            view_count: self.world.view_count(active),
-            output_count: self.output_count(),
-            focused_view: self.world.focused_view(active).map(|view| view.get()),
-            workspace: active.get(),
-            workspace_count: self.workspaces.count(),
-        }
-    }
-
-    /// Value-only virtual-desktop list for docks / bar clients over IPC.
-    pub(crate) fn ipc_workspace_snapshots(&mut self) -> Vec<crate::ipc::WorkspaceSnapshot> {
-        let active = self.workspaces.active();
-        self.workspaces
-            .ids()
-            .map(|id| {
-                let index = id.get();
-                crate::ipc::WorkspaceSnapshot {
-                    index,
-                    name: (index + 1).to_string(),
-                    active: id == active,
-                    view_count: self.world.view_count(id),
-                    focused_view: self.world.focused_view(id).map(|view| view.get()),
-                }
-            })
-            .collect()
     }
 
     /// Value-only output topology for the IPC control surface.

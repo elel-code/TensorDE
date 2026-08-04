@@ -39,6 +39,11 @@ layout "scrolling-1d" gaps=8 {
     master-width proportion=0.55
 }
 
+workspaces default-count=1 {
+    hidden "minimized" minimize-target=#true
+    // hidden "communication" show-in-overview=#true
+}
+
 ipc-socket "/run/user/1000/tensor.sock"
 gpu "discrete"
 // Optional DRM primary or render node. Without this, Tensorland capability ranking selects the pair.
@@ -100,6 +105,19 @@ to the current output working area, while `fixed` is a logical-pixel width. For 
 `default-column-width fixed=900` keeps a 900-pixel scrolling column across output changes.
 Invalid, zero, non-finite, or ambiguous widths reject the whole configuration instead of being
 silently repaired.
+
+`workspaces.default-count` creates `1..=32` regular workspaces; the default is one. Regular
+workspaces alone participate in next/previous navigation and `ext-workspace-v1` advertisement.
+Up to 16 named `hidden` workspaces may be declared. Exactly one explicit hidden list entry must set
+`minimize-target=#true`; when the complete `workspaces` node or its hidden list is omitted,
+Tensorland supplies `hidden "minimized" minimize-target=#true`. `show-in-overview` defaults to
+true and is retained as value-only policy for Tensor Shell's overview scene.
+
+Minimizing does not create a second window lifecycle: Tensorland moves the existing view family to
+the configured hidden target and records its regular origin. Restore moves the same IDs and retained
+surface/GPU resources back, optionally activating the origin workspace. Workspace topology is a
+startup identity policy, so changing this KDL node through hot reload reports
+`reload_requires_restart`; runtime minimize, restore, and navigation use versioned IPC.
 
 Each `output` node matches the connector name in its first argument. Its optional `scale` property is
 constrained to `0.1..=10.0` and quantized to the nearest `1/120`; this is the same representation

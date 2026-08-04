@@ -25,6 +25,7 @@ mod reload;
 mod scalar;
 mod watcher;
 mod worker;
+mod workspaces;
 pub use appearance::AppearanceConfigError;
 pub use diagnostic::{
     ConfigDiagnostic, ConfigDiagnosticCategory, ConfigDiagnosticMetadata,
@@ -40,11 +41,14 @@ pub(crate) use worker::{
     ConfigReloadOutcome, ConfigReloadSubmitError, ConfigReloadSubmitter, ConfigReloadWorker,
     ConfigReloadWorkerError, MAX_PENDING_CONFIG_RELOAD_RESULTS,
 };
+pub(crate) use workspaces::WorkspaceConfig;
+pub use workspaces::WorkspaceConfigError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub(crate) initial_layout: LayoutKind,
     pub(crate) layout_options: LayoutOptions,
+    pub(crate) workspaces: WorkspaceConfig,
     pub(crate) ipc_socket: PathBuf,
     pub(crate) gpu_preference: GpuPreference,
     pub(crate) render_device: Option<PathBuf>,
@@ -175,6 +179,8 @@ impl Config {
             Some("render-device")
         } else if self.output_rules != candidate.output_rules {
             Some("output")
+        } else if self.workspaces != candidate.workspaces {
+            Some("workspaces")
         } else if self.systemd != candidate.systemd {
             Some("systemd")
         } else if self.xwayland != candidate.xwayland {
@@ -250,6 +256,7 @@ impl Default for Config {
         Self {
             initial_layout: LayoutKind::default(),
             layout_options: LayoutOptions::default(),
+            workspaces: WorkspaceConfig::default(),
             ipc_socket: env::var_os("XDG_RUNTIME_DIR")
                 .map(|path| PathBuf::from(path).join("tensor.sock"))
                 .unwrap_or_else(|| PathBuf::from("/tmp/tensor.sock")),
@@ -271,6 +278,8 @@ impl Default for Config {
 struct FileConfig {
     #[kdl(child)]
     layout: Option<LayoutFileConfig>,
+    #[kdl(child)]
+    workspaces: Option<WorkspaceFileConfig>,
     #[kdl(child(name = "ipc-socket"), unwrap(argument))]
     ipc_socket: Option<String>,
     #[kdl(child, unwrap(argument))]
@@ -380,6 +389,11 @@ impl FileConfig {
             .ipc_socket
             .map(PathBuf::from)
             .unwrap_or_else(|| Config::default().ipc_socket);
+        let workspaces = self
+            .workspaces
+            .map(WorkspaceFileConfig::resolve)
+            .transpose()?
+            .unwrap_or_default();
         let gpu_preference = self
             .gpu
             .as_deref()
@@ -419,6 +433,7 @@ impl FileConfig {
         Ok(Config {
             initial_layout,
             layout_options,
+            workspaces,
             ipc_socket,
             gpu_preference,
             render_device,
@@ -439,6 +454,42 @@ impl FileConfig {
             debug: self.debug.map(DebugFileConfig::resolve).unwrap_or_default(),
         })
     }
+}
+
+#[derive(Debug, Default, Decode)]
+struct WorkspaceFileConfig {
+    #[kdl(property(name = "default-count"))]
+    regular_count: Option<u32>,
+    #[kdl(children(name = "hidden"))]
+    hidden: Vec<HiddenWorkspaceFileConfig>,
+}
+
+impl WorkspaceFileConfig {
+    fn resolve(self) -> Result<WorkspaceConfig, WorkspaceConfigError> {
+        workspaces::resolve(
+            self.regular_count,
+            self.hidden
+                .into_iter()
+                .map(|workspace| {
+                    (
+                        workspace.name,
+                        workspace.show_in_overview,
+                        workspace.minimize_target,
+                    )
+                })
+                .collect(),
+        )
+    }
+}
+
+#[derive(Debug, Decode)]
+struct HiddenWorkspaceFileConfig {
+    #[kdl(argument)]
+    name: String,
+    #[kdl(property(name = "show-in-overview"))]
+    show_in_overview: Option<bool>,
+    #[kdl(property(name = "minimize-target"))]
+    minimize_target: Option<bool>,
 }
 
 #[derive(Debug, Decode)]
@@ -705,6 +756,8 @@ pub enum ConfigError {
     XWayland(#[from] crate::xwayland::XWaylandConfigError),
     #[error(transparent)]
     Appearance(#[from] AppearanceConfigError),
+    #[error(transparent)]
+    Workspaces(#[from] WorkspaceConfigError),
     #[error("configuration field `{field}` requires a compositor restart")]
     ReloadRequiresRestart { field: &'static str },
 }

@@ -55,10 +55,16 @@ impl MappedWindow {
     }
 }
 
-/// Mapped protocol windows in back-to-front order plus logical outputs.
+/// Protocol windows in visible back-to-front order plus retained hidden
+/// windows and logical outputs.
+///
+/// Workspace visibility must not reuse client unmap semantics: a hidden
+/// window retains its protocol identity and last logical location so it can
+/// be shown again without recreating the Wayland/XWayland object.
 #[derive(Debug, Default)]
 pub(crate) struct WindowSpace {
     elements: Vec<MappedWindow>,
+    hidden_elements: Vec<MappedWindow>,
     outputs: Vec<MappedOutput>,
 }
 
@@ -73,6 +79,12 @@ impl WindowSpace {
             .iter()
             .position(|entry| entry.window == window)
             .map(|position| self.elements.remove(position))
+            .or_else(|| {
+                self.hidden_elements
+                    .iter()
+                    .position(|entry| entry.window == window)
+                    .map(|position| self.hidden_elements.remove(position))
+            })
             .unwrap_or_else(|| MappedWindow {
                 window: window.clone(),
                 location,
@@ -148,6 +160,21 @@ impl WindowSpace {
     }
 
     pub(crate) fn unmap_elem(&mut self, window: &ProtocolWindow, popups: &PopupManager) {
+        if let Some(position) = self
+            .elements
+            .iter()
+            .position(|entry| &entry.window == window)
+        {
+            let mapped = self.elements.remove(position);
+            for overlap in &mapped.outputs {
+                leave_window_output(&mapped.window, &overlap.output, popups);
+            }
+            return;
+        }
+        self.hidden_elements.retain(|entry| &entry.window != window);
+    }
+
+    pub(crate) fn hide_element(&mut self, window: &ProtocolWindow, popups: &PopupManager) {
         let Some(position) = self
             .elements
             .iter()
@@ -155,16 +182,33 @@ impl WindowSpace {
         else {
             return;
         };
-        let mapped = self.elements.remove(position);
-        for overlap in &mapped.outputs {
+        let mut mapped = self.elements.remove(position);
+        for overlap in mapped.outputs.drain(..) {
             leave_window_output(&mapped.window, &overlap.output, popups);
         }
+        if mapped.window.set_activated(false)
+            && let Some(toplevel) = mapped.window.toplevel()
+            && toplevel.initial_configure_sent()
+        {
+            toplevel.send_pending_configure();
+        }
+        self.hidden_elements.push(mapped);
     }
 
     pub(crate) fn elements(
         &self,
     ) -> impl DoubleEndedIterator<Item = &ProtocolWindow> + ExactSizeIterator {
         self.elements.iter().map(|entry| &entry.window)
+    }
+
+    /// Every compositor-owned protocol window, including workspace-hidden
+    /// windows. Rendering, input, capture, and presentation must continue to
+    /// use [`Self::elements`] so hidden windows never enter visible work.
+    pub(crate) fn retained_elements(&self) -> impl Iterator<Item = &ProtocolWindow> {
+        self.elements
+            .iter()
+            .chain(&self.hidden_elements)
+            .map(|entry| &entry.window)
     }
 
     pub(super) fn element_under<P, F>(
@@ -333,6 +377,7 @@ impl WindowSpace {
 
     pub(crate) fn refresh(&mut self, popups: &PopupManager) {
         self.elements.retain(|entry| entry.window.alive());
+        self.hidden_elements.retain(|entry| entry.window.alive());
         let outputs = &self.outputs;
         for mapped in &mut self.elements {
             let bbox = mapped.bbox(popups);

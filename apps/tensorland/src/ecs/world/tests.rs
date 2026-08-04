@@ -440,6 +440,27 @@ fn floating_view_moves_without_recomputing_the_tiled_snapshot() {
 }
 
 #[test]
+fn minimized_view_retains_origin_and_restore_is_transactional() {
+    let mut world = CompositorWorld::new();
+    let view_id = view(7);
+    let origin = workspace(1);
+    let hidden = workspace(9);
+    world.spawn_view(view_id, origin).unwrap();
+
+    assert!(world.minimize_view(view_id, hidden).unwrap());
+    assert_eq!(world.view_workspace(view_id), Some(hidden));
+    assert_eq!(world.minimized_from(view_id), Some(origin));
+    assert_eq!(world.minimized_count(), 1);
+    assert!(!world.minimize_view(view_id, hidden).unwrap());
+
+    assert_eq!(world.restore_minimized_view(view_id).unwrap(), Some(origin));
+    assert_eq!(world.view_workspace(view_id), Some(origin));
+    assert_eq!(world.minimized_from(view_id), None);
+    assert_eq!(world.minimized_count(), 0);
+    assert_eq!(world.restore_minimized_view(view_id).unwrap(), None);
+}
+
+#[test]
 fn attached_focus_reveals_the_tiled_owner_and_raises_its_subtree() {
     let mut world = CompositorWorld::new();
     for id in 1..=3 {
