@@ -13,7 +13,7 @@ use crate::{
         Response, ResultBody,
     },
     layout::LayoutEngine,
-    protocol::RuntimeState,
+    protocol::{RuntimeState, ViewWorkspaceError},
     spawn::{LaunchRequest, LaunchSubmitError, LaunchSubmitter},
 };
 
@@ -205,15 +205,45 @@ pub(super) fn handle_ipc_request_with_config(
                     "no focused view on the active workspace",
                 ));
             };
-            if !state.move_view_to_workspace(view, crate::ecs::WorkspaceId::new(index)) {
-                return IpcReply::new(Response::error(
-                    request_id,
-                    "move_failed",
-                    "could not move focused view",
-                ));
+            if let Err(error) =
+                state.move_view_to_workspace(view, crate::ecs::WorkspaceId::new(index))
+            {
+                return view_workspace_error_reply(request_id, error);
             }
             if follow {
                 let _ = state.activate_workspace_index(index);
+            }
+            ResultBody::Accepted
+        }
+        IpcCommand::ActivateView { view } => {
+            if let Err(error) = state.activate_view(crate::ecs::ViewId::new(view)) {
+                return view_workspace_error_reply(request_id, error);
+            }
+            ResultBody::Accepted
+        }
+        IpcCommand::MoveViewToWorkspace {
+            view,
+            index,
+            follow,
+        } => {
+            if index >= state.workspace_count() {
+                return IpcReply::new(Response::error(
+                    request_id,
+                    "invalid_argument",
+                    format!(
+                        "workspace index {index} out of range (0..{})",
+                        state.workspace_count()
+                    ),
+                ));
+            }
+            if let Err(error) = state.move_view_to_workspace(
+                crate::ecs::ViewId::new(view),
+                crate::ecs::WorkspaceId::new(index),
+            ) {
+                return view_workspace_error_reply(request_id, error);
+            }
+            if follow && let Err(error) = state.activate_view(crate::ecs::ViewId::new(view)) {
+                return view_workspace_error_reply(request_id, error);
             }
             ResultBody::Accepted
         }
@@ -242,6 +272,17 @@ pub(super) fn handle_ipc_request_with_config(
         }
     };
     IpcReply::new(Response::new(request_id, result))
+}
+
+fn view_workspace_error_reply(request_id: u64, error: ViewWorkspaceError) -> IpcReply {
+    let code = match &error {
+        ViewWorkspaceError::UnknownView(_) => "unknown_view",
+        ViewWorkspaceError::InvalidWorkspace { .. } => "invalid_argument",
+        ViewWorkspaceError::HiddenWorkspace { .. } => "hidden_workspace",
+        ViewWorkspaceError::InteractionBlocked => "interaction_blocked",
+        ViewWorkspaceError::Lifecycle(_) => "view_lifecycle",
+    };
+    IpcReply::new(Response::error(request_id, code, error.to_string()))
 }
 
 fn apply_output_ipc(

@@ -5,6 +5,7 @@
 //! user switches. Protocol (`ext-workspace`) and IPC read/write through here.
 
 use tensor_util::Size;
+use thiserror::Error;
 use tracing::{debug, info};
 
 use crate::config::WorkspaceConfig;
@@ -29,6 +30,23 @@ pub(crate) struct WorkspaceHost {
     regular_count: u32,
     hidden: Box<[HiddenWorkspace]>,
     minimize_target: WorkspaceId,
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum ViewWorkspaceError {
+    #[error("view {0:?} does not exist")]
+    UnknownView(ViewId),
+    #[error("workspace {index} is outside the regular workspace pool")]
+    InvalidWorkspace { index: u32 },
+    #[error("view {view:?} belongs to hidden workspace {workspace:?}")]
+    HiddenWorkspace {
+        view: ViewId,
+        workspace: WorkspaceId,
+    },
+    #[error("overview selection is blocked by an active popup grab")]
+    InteractionBlocked,
+    #[error("view lifecycle operation failed: {0}")]
+    Lifecycle(#[from] crate::ecs::ViewLifecycleError),
 }
 
 impl Default for WorkspaceHost {
@@ -178,27 +196,73 @@ impl RuntimeState {
         &mut self,
         view_id: ViewId,
         workspace: WorkspaceId,
-    ) -> bool {
+    ) -> Result<ViewId, ViewWorkspaceError> {
         if workspace.get() >= self.workspaces.count() {
-            return false;
+            return Err(ViewWorkspaceError::InvalidWorkspace {
+                index: workspace.get(),
+            });
         }
-        match self.world.move_view(view_id, workspace) {
+        let root = self
+            .world
+            .tiled_ancestor(view_id)
+            .ok_or(ViewWorkspaceError::UnknownView(view_id))?;
+        #[cfg(feature = "tty")]
+        let focus_transfer = self.focus_transfer_before_family_move(root, workspace);
+        match self.world.move_view(root, workspace) {
             Ok(()) => {
                 debug!(
-                    view = view_id.get(),
+                    view = root.get(),
                     workspace = workspace.get(),
                     "view moved to workspace"
                 );
                 self.apply_workspace_visibility();
                 let _ = self.reflow_active_workspace();
+                #[cfg(feature = "tty")]
+                self.finish_focus_transfer(focus_transfer);
                 self.refresh_ext_workspace_protocol();
-                true
+                Ok(root)
             }
             Err(error) => {
-                tracing::warn!(%error, view = view_id.get(), "failed to move view");
-                false
+                tracing::warn!(%error, view = root.get(), "failed to move view");
+                Err(error.into())
             }
         }
+    }
+
+    /// Select a stable overview view, activating its regular workspace or
+    /// restoring its minimized family first.
+    pub(crate) fn activate_view(&mut self, view_id: ViewId) -> Result<ViewId, ViewWorkspaceError> {
+        if self.popup_grab.is_some() {
+            return Err(ViewWorkspaceError::InteractionBlocked);
+        }
+        let root = self
+            .world
+            .tiled_ancestor(view_id)
+            .ok_or(ViewWorkspaceError::UnknownView(view_id))?;
+        let workspace = self
+            .world
+            .view_workspace(root)
+            .ok_or(ViewWorkspaceError::UnknownView(view_id))?;
+        if self.world.minimized_from(root).is_some() {
+            if !self.restore_minimized_view(root, true) {
+                return Err(ViewWorkspaceError::UnknownView(view_id));
+            }
+        } else {
+            if workspace.get() >= self.workspaces.count() {
+                return Err(ViewWorkspaceError::HiddenWorkspace {
+                    view: view_id,
+                    workspace,
+                });
+            }
+            let _ = self.activate_workspace(workspace);
+        }
+
+        if let Some(window) = self.mapped_window_for_view(view_id) {
+            let _ = self.focus_mapped_window(window, crate::protocol::serial::next_serial());
+        } else {
+            self.world.focus_view(view_id)?;
+        }
+        Ok(root)
     }
 
     pub(crate) fn minimize_focused_view(&mut self) -> Option<ViewId> {
@@ -208,7 +272,7 @@ impl RuntimeState {
         #[cfg(feature = "tty")]
         let replacement = self
             .world
-            .focus_replacement_after_removal(view_id)
+            .focus_replacement_after_family_removal(view_id)
             .ok()
             .flatten();
         #[cfg(feature = "tty")]
@@ -234,6 +298,54 @@ impl RuntimeState {
             self.publish_window_activation(None);
         }
         Some(view_id)
+    }
+
+    #[cfg(feature = "tty")]
+    fn focus_transfer_before_family_move(
+        &mut self,
+        root: ViewId,
+        destination: WorkspaceId,
+    ) -> Option<(
+        Option<ViewId>,
+        wayland_server::protocol::wl_surface::WlSurface,
+    )> {
+        let source = self.world.view_workspace(root)?;
+        if source != self.workspaces.active() || source == destination {
+            return None;
+        }
+        let focused = self.world.focused_view(source)?;
+        if self.world.tiled_ancestor(focused) != Some(root) {
+            return None;
+        }
+        let surface = self
+            .mapped_window_for_view(focused)?
+            .wl_surface()?
+            .into_owned();
+        let replacement = self
+            .world
+            .focus_replacement_after_family_removal(root)
+            .ok()
+            .flatten();
+        Some((replacement, surface))
+    }
+
+    #[cfg(feature = "tty")]
+    fn finish_focus_transfer(
+        &mut self,
+        transfer: Option<(
+            Option<ViewId>,
+            wayland_server::protocol::wl_surface::WlSurface,
+        )>,
+    ) {
+        let Some((replacement, moved_surface)) = transfer else {
+            return;
+        };
+        if let Some(window) = replacement.and_then(|view| self.mapped_window_for_view(view)) {
+            let _ = self.focus_mapped_window(window, crate::protocol::serial::next_serial());
+        } else {
+            self.clear_keyboard_focus_for_surface(&moved_surface);
+            self.publish_window_activation(None);
+        }
     }
 
     pub(crate) fn restore_minimized_view(&mut self, view_id: ViewId, follow: bool) -> bool {

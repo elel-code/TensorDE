@@ -37,7 +37,7 @@ pub(crate) use client::WaylandClientState;
 pub(crate) use popup::{PopupGrab, PopupKind, PopupManager, find_popup_root_surface};
 pub(crate) use protocol_side::{ObjectKey, ProtocolSideState};
 pub(crate) use window::ProtocolWindow;
-pub(crate) use workspace_host::WorkspaceHost;
+pub(crate) use workspace_host::{ViewWorkspaceError, WorkspaceHost};
 
 use event_loop::EventLoopState;
 use layer::LayerMaps;

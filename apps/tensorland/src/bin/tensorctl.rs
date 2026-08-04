@@ -54,6 +54,18 @@ enum CliCommand {
         #[arg(long, default_value_t = false)]
         follow: bool,
     },
+    /// Activate a window by stable Tensorland view ID.
+    ActivateView {
+        view: u64,
+    },
+    /// Move a window family by stable view ID to a regular workspace.
+    MoveViewToWorkspace {
+        view: u64,
+        index: u32,
+        /// Also switch to the destination and focus the requested view.
+        #[arg(long, default_value_t = false)]
+        follow: bool,
+    },
     /// Move the focused window into the configured hidden minimize workspace.
     MinimizeFocused,
     /// Restore a minimized window by stable Tensorland view ID.
@@ -98,6 +110,16 @@ impl From<CliCommand> for Command {
             CliCommand::MoveFocusedToWorkspace { index, follow } => {
                 Self::MoveFocusedToWorkspace { index, follow }
             }
+            CliCommand::ActivateView { view } => Self::ActivateView { view },
+            CliCommand::MoveViewToWorkspace {
+                view,
+                index,
+                follow,
+            } => Self::MoveViewToWorkspace {
+                view,
+                index,
+                follow,
+            },
             CliCommand::MinimizeFocused => Self::MinimizeFocused,
             CliCommand::RestoreMinimized { view, stay } => Self::RestoreMinimized {
                 view,
@@ -241,6 +263,22 @@ mod tests {
         assert!(matches!(
             Command::from(CliCommand::MinimizeFocused),
             Command::MinimizeFocused
+        ));
+        assert!(matches!(
+            Command::from(CliCommand::ActivateView { view: 11 }),
+            Command::ActivateView { view: 11 }
+        ));
+        assert!(matches!(
+            Command::from(CliCommand::MoveViewToWorkspace {
+                view: 11,
+                index: 2,
+                follow: true,
+            }),
+            Command::MoveViewToWorkspace {
+                view: 11,
+                index: 2,
+                follow: true,
+            }
         ));
         assert!(matches!(
             Command::from(CliCommand::RestoreMinimized {

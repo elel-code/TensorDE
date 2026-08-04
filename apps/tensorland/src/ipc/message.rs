@@ -6,7 +6,7 @@ use crate::layout::LayoutKind;
 #[cfg(test)]
 mod tests;
 
-pub const IPC_PROTOCOL_VERSION: u16 = 4;
+pub const IPC_PROTOCOL_VERSION: u16 = 5;
 pub const MAX_OVERVIEW_VIEWS: usize = 2_048;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -78,6 +78,17 @@ pub enum Command {
     MoveFocusedToWorkspace {
         index: u32,
         /// When true, also activate the destination workspace.
+        #[serde(default)]
+        follow: bool,
+    },
+    /// Activate a stable view from the current overview inventory.
+    ActivateView {
+        view: u64,
+    },
+    /// Move a stable view's complete attachment family to a regular workspace.
+    MoveViewToWorkspace {
+        view: u64,
+        index: u32,
         #[serde(default)]
         follow: bool,
     },

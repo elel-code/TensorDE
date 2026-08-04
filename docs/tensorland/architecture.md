@@ -93,9 +93,15 @@ The plan contains no client pixels and creates no descriptor identity. Overview 
 whole-workspace rearrangement therefore reuse imported images and descriptor-heap bindings; a later
 scene integration only changes per-view transform/clip values. Hidden workspaces marked
 `show-in-overview=#false` are filtered before planning and hit testing but remain available to
-explicit IPC actions. Focus activation, cross-workspace drag/drop, animation state, and Tensor
-Shell's rendered overview surface remain later integration slices; the geometry/hit-test semantic
-kernel and IPC representation are complete.
+explicit IPC actions. Versioned IPC accepts only stable view IDs for overview selection and
+cross-workspace movement. Tensorland resolves an attached ID to its root for family movement while
+retaining the exact requested member for focus; selecting a minimized member restores its retained
+origin first, whereas an unrelated hidden-workspace member is rejected rather than implicitly
+exposing hidden policy. Moving a focused family without following it reconciles the source
+workspace and seat focus before the old surface becomes invisible. Tensor Shell therefore needs no
+ECS, Wayland, workspace-family, or renderer ownership. Pointer-to-command wiring, animation state,
+and Tensor Shell's rendered overview surface remain later integration slices; the geometry,
+hit-test, stable-view command, and IPC representation kernels are complete.
 
 Configuration diagnostics follow the product boundary rather than becoming compositor UI.
 `tensor-kdl` produces parser/typed-decode context and an optional named-source miette report;

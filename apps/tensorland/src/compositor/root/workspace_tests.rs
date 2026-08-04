@@ -2,6 +2,7 @@ use tensor_runtime::{WorkerBridge, WorkerRx};
 
 use super::{LaunchOutcome, LaunchWorker, ProcessLauncher, ipc::handle_ipc_request};
 use crate::{
+    config::WorkspaceConfig,
     ecs::{ViewId, ViewPlacement, WorkspaceId},
     ipc::{Command, Request, ResultBody},
     layout::{LayoutEngine, LayoutKind},
@@ -26,6 +27,22 @@ fn live_worker() -> (LaunchWorker, WorkerRx<LaunchOutcome>) {
     )
     .unwrap();
     (worker, receiver)
+}
+
+fn state_with_two_workspaces() -> RuntimeState {
+    let mut state = runtime_state();
+    state.configure_workspaces(&WorkspaceConfig {
+        regular_count: 2,
+        ..WorkspaceConfig::default()
+    });
+    state
+}
+
+fn assert_error_code(result: ResultBody, expected: &str) {
+    let ResultBody::Error(error) = result else {
+        panic!("expected IPC error {expected}");
+    };
+    assert_eq!(error.code, expected);
 }
 
 #[test]
@@ -98,6 +115,153 @@ fn ipc_minimize_moves_to_hidden_workspace_and_restores_origin() {
     );
     assert_eq!(state.ipc_state_snapshot().minimized_count, 0);
     drop(worker);
+}
+
+#[test]
+fn ipc_activate_view_selects_the_requested_attached_dialog() {
+    let mut state = state_with_two_workspaces();
+    let root = ViewId::new(51);
+    let dialog = ViewId::new(52);
+    state.world.spawn_view(root, WorkspaceId::new(1)).unwrap();
+    state.world.spawn_view(dialog, WorkspaceId::new(1)).unwrap();
+    state
+        .world
+        .set_view_placement(
+            dialog,
+            ViewPlacement::Attached {
+                owner: root,
+                preferred_size: Size::new(320, 200),
+            },
+        )
+        .unwrap();
+    let (worker, _) = live_worker();
+
+    let reply = handle_ipc_request(
+        Request::new(30, Command::ActivateView { view: dialog.get() }),
+        &mut state,
+        &worker.submitter(),
+    );
+
+    assert!(matches!(reply.response.result, ResultBody::Accepted));
+    assert_eq!(state.active_workspace(), WorkspaceId::new(1));
+    assert_eq!(state.world.focused_view(WorkspaceId::new(1)), Some(dialog));
+}
+
+#[test]
+fn ipc_activate_view_restores_a_minimized_dialog_family() {
+    let mut state = runtime_state();
+    let root = ViewId::new(61);
+    let dialog = ViewId::new(62);
+    state.world.spawn_view(root, WorkspaceId::new(0)).unwrap();
+    state.world.spawn_view(dialog, WorkspaceId::new(0)).unwrap();
+    state
+        .world
+        .set_view_placement(
+            dialog,
+            ViewPlacement::Attached {
+                owner: root,
+                preferred_size: Size::new(320, 200),
+            },
+        )
+        .unwrap();
+    state.world.focus_view(dialog).unwrap();
+    assert_eq!(state.minimize_focused_view(), Some(root));
+    let (worker, _) = live_worker();
+
+    let reply = handle_ipc_request(
+        Request::new(31, Command::ActivateView { view: dialog.get() }),
+        &mut state,
+        &worker.submitter(),
+    );
+
+    assert!(matches!(reply.response.result, ResultBody::Accepted));
+    assert_eq!(state.world.view_workspace(root), Some(WorkspaceId::new(0)));
+    assert_eq!(
+        state.world.view_workspace(dialog),
+        Some(WorkspaceId::new(0))
+    );
+    assert_eq!(state.world.focused_view(WorkspaceId::new(0)), Some(dialog));
+    assert_eq!(state.ipc_state_snapshot().minimized_count, 0);
+}
+
+#[test]
+fn ipc_activate_view_returns_structured_identity_and_hidden_errors() {
+    let mut state = runtime_state();
+    let hidden = ViewId::new(71);
+    state.world.spawn_view(hidden, WorkspaceId::new(1)).unwrap();
+    let (worker, _) = live_worker();
+    let submitter = worker.submitter();
+
+    let unknown = handle_ipc_request(
+        Request::new(32, Command::ActivateView { view: 999 }),
+        &mut state,
+        &submitter,
+    );
+    assert_error_code(unknown.response.result, "unknown_view");
+
+    let hidden = handle_ipc_request(
+        Request::new(33, Command::ActivateView { view: hidden.get() }),
+        &mut state,
+        &submitter,
+    );
+    assert_error_code(hidden.response.result, "hidden_workspace");
+}
+
+#[test]
+fn ipc_move_view_moves_the_family_and_follow_focuses_the_requested_dialog() {
+    let mut state = state_with_two_workspaces();
+    let root = ViewId::new(81);
+    let dialog = ViewId::new(82);
+    state.world.spawn_view(root, WorkspaceId::new(0)).unwrap();
+    state.world.spawn_view(dialog, WorkspaceId::new(0)).unwrap();
+    state
+        .world
+        .set_view_placement(
+            dialog,
+            ViewPlacement::Attached {
+                owner: root,
+                preferred_size: Size::new(320, 200),
+            },
+        )
+        .unwrap();
+    let (worker, _) = live_worker();
+    let submitter = worker.submitter();
+
+    let invalid = handle_ipc_request(
+        Request::new(
+            34,
+            Command::MoveViewToWorkspace {
+                view: dialog.get(),
+                index: 2,
+                follow: false,
+            },
+        ),
+        &mut state,
+        &submitter,
+    );
+    assert_error_code(invalid.response.result, "invalid_argument");
+
+    let moved = handle_ipc_request(
+        Request::new(
+            35,
+            Command::MoveViewToWorkspace {
+                view: dialog.get(),
+                index: 1,
+                follow: true,
+            },
+        ),
+        &mut state,
+        &submitter,
+    );
+
+    assert!(matches!(moved.response.result, ResultBody::Accepted));
+    assert_eq!(state.world.view_workspace(root), Some(WorkspaceId::new(1)));
+    assert_eq!(
+        state.world.view_workspace(dialog),
+        Some(WorkspaceId::new(1))
+    );
+    assert_eq!(state.active_workspace(), WorkspaceId::new(1));
+    assert_eq!(state.world.focused_view(WorkspaceId::new(1)), Some(dialog));
 }
 
 #[test]

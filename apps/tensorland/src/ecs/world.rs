@@ -474,6 +474,30 @@ impl CompositorWorld {
             .map(|(view, _, _)| view.id))
     }
 
+    /// Select the most recently raised view outside a complete attachment
+    /// family which is about to leave its workspace.
+    #[cfg(any(feature = "tty", test))]
+    pub(crate) fn focus_replacement_after_family_removal(
+        &mut self,
+        root: ViewId,
+    ) -> Result<Option<ViewId>, ViewLifecycleError> {
+        let entity = self.entity_for(root)?;
+        let workspace_id = self
+            .world
+            .get::<Workspace>(entity)
+            .expect("every view has a workspace")
+            .id;
+        let family = self.view_family(root);
+        let mut query = self.world.query::<(&View, &Workspace, &StackingOrder)>();
+        Ok(query
+            .iter(&self.world)
+            .filter(|(view, workspace, _)| {
+                workspace.id == workspace_id && !family.contains(&view.id)
+            })
+            .max_by_key(|(view, _, stacking)| (stacking.0, view.id))
+            .map(|(view, _, _)| view.id))
+    }
+
     pub fn arrange_workspace(
         &mut self,
         workspace_id: WorkspaceId,
