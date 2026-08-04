@@ -84,8 +84,9 @@ exact composite rectangles, and an active region touching an output edge clips o
 outside portion of its sample footprint.
 
 The hardware cursor-plane verification backlog, including property parsing, fixed slot retirement,
-binary sync-file handoff, real tablet cursor wire coverage, and TTY evidence, is maintained in
-[`cursor.md`](cursor.md). None of those items is complete solely from a successful plane probe.
+binary sync-file handoff and TTY evidence, is maintained in [`cursor.md`](cursor.md). Tablet cursor
+wire coverage is complete; none of the hardware items is complete solely from a successful plane
+probe.
 
 ## Native dma-buf presentation gate
 

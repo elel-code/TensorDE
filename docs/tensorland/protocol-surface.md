@@ -218,8 +218,8 @@ change notifications are complete.
    revocation, hotplug, session, and output-plan exclusion.
 10. Finish already-advertised protocol depth: live output mode replacement,
     cross-output capture, cursor-only GPU capture, multi-plane/YUV dma-buf,
-    implicit reservation-fence policy, atomic cursor planes, tablet cursor wire
-    coverage, and xdg-toplevel-drag error paths.
+    implicit reservation-fence policy, atomic cursor planes, and
+    xdg-toplevel-drag error paths. Tablet cursor wire coverage is complete.
 11. Migrate remaining tier-3 surfaces upward when wayland-protocols promotes them.
 
 The required ownership, failure, hardware, and test gates for items 6–10 are

@@ -136,14 +136,16 @@ remains the correctness path.
 
 ### 4. Protocol and presentation closure
 
-- Add a real tablet-v2 `set_cursor` wire test covering role exclusivity, valid and stale proximity
-  serials, hotspot updates, detach, destruction, and output membership.
+- Tablet-v2 `set_cursor` wire coverage is complete: a real client verifies role exclusivity,
+  valid and stale proximity serials, the current-surface hotspot exception, detach/restore,
+  surface destruction, and `wl_output.enter`/`leave` membership.
 - Verify frame callbacks and presentation feedback are released only for cursor surfaces included
   in an accepted atomic submission, whether drawn into the primary image or assigned to a plane.
 - Verify pointer, tablet, and drag-icon surface destruction removes all output memberships without
   scanning or redrawing unrelated heads.
-- Document the precise behavior for current tablet cursor surfaces separately from cursor-shape
-  serial validation; do not infer core-pointer wording where tablet-v2 differs.
+- Current tablet cursor surfaces may update their hotspot with a stale proximity serial, as required
+  by tablet-v2; a different surface with the same stale serial is ignored. Cursor-shape devices keep
+  their own active-enter/proximity serial validation.
 
 ## Performance acceptance gates
 

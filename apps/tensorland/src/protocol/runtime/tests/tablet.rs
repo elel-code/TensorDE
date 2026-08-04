@@ -21,6 +21,7 @@ use wayland_protocols::wp::tablet::zv2::client::{
 
 use super::*;
 
+mod cursor;
 mod events;
 use events::inject_full_tablet_sequence;
 

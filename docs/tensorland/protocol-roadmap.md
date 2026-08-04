@@ -135,8 +135,8 @@ The following are extensions of already advertised protocols, not new globals:
 - `zwp_linux_dmabuf_v1`: import supported multi-plane/YUV layouts and define an
   explicit implicit-reservation-fence policy without weakening syncobj clients.
 - pointer/cursor/tablet: finish fixed hardware cursor-slot rendering, binary
-  fence handoff, joint Vulkan/KMS retirement, and tablet `set_cursor` wire
-  error/lifetime coverage.
+  fence handoff, and joint Vulkan/KMS retirement. Tablet `set_cursor` wire
+  errors, serials, detach, membership, and lifetime coverage are complete.
 - `xdg_toplevel_drag_v1`: complete duplicate-source, duplicate-attach, selection
   misuse, and destroy-before-end wire errors in addition to the execution path.
 
