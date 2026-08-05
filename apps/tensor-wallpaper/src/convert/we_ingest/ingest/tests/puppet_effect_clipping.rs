@@ -69,14 +69,12 @@ fn lowers_authored_puppet_effect_stream_token_one_clipping_graph() {
     assert_eq!(graph.passes[10].role, RenderPassRole::MeshVisiblePrefix);
     assert_eq!(graph.passes[16].role, RenderPassRole::MeshVisibleRemainder);
     assert_eq!(graph.passes[0].state.cull_mode, CullMode::None);
-    assert!(graph.passes[3..10].iter().all(|pass| {
-        matches!(pass.role, RenderPassRole::MeshClippingMask)
-            == (pass.state.cull_mode == CullMode::Back)
-    }));
-    assert!(graph.passes[10..17].iter().all(|pass| {
-        matches!(pass.role, RenderPassRole::MeshClippingMask)
-            == (pass.state.cull_mode == CullMode::Back)
-    }));
+    assert!(
+        graph
+            .passes
+            .iter()
+            .all(|pass| pass.state.cull_mode == CullMode::None)
+    );
     assert!(graph.passes[3..10].iter().all(|pass| {
         pass.effect_visibility
             == crate::engine::render_graph::RenderPassEffectVisibility::any_visible(1, 1)
@@ -112,7 +110,7 @@ fn lowers_authored_puppet_effect_stream_token_one_clipping_graph() {
     assert!(!mask_materials.is_empty());
     assert!(mask_materials.into_iter().all(|material| {
         let pass_start = ir.materials[material].pass_start as usize;
-        ir.material_passes[pass_start].cull_mode == SceneCullMode::Normal
+        ir.material_passes[pass_start].cull_mode == SceneCullMode::None
     }));
     assert!(clipped_targets.iter().any(|pass| {
         pass.bindings.contains(&TextureBindingRole::GraphTarget {

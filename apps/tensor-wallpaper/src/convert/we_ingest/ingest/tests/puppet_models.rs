@@ -151,7 +151,7 @@ fn lowers_direct_genericimage_puppet_token_one_clipping_graph() {
         graph
             .passes
             .iter()
-            .all(|pass| pass.state.cull_mode == CullMode::Back)
+            .all(|pass| pass.state.cull_mode == CullMode::None)
     );
     assert_eq!(
         graph.passes[2].state.pipeline_blend,
@@ -171,7 +171,7 @@ fn lowers_direct_genericimage_puppet_token_one_clipping_graph() {
     );
     assert_eq!(
         ir.material_passes[mask_material.pass_start as usize].cull_mode,
-        SceneCullMode::Normal
+        SceneCullMode::None
     );
     assert!(
         graph.passes[2]

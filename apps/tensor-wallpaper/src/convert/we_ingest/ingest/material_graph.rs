@@ -4,7 +4,7 @@ mod puppet_effect_stream;
 mod texture_storage;
 
 use super::*;
-use crate::engine::render_graph::{CullMode, RenderGraph, RenderPassDrawPrimitive, RenderPassRole};
+use crate::engine::render_graph::{RenderGraph, RenderPassDrawPrimitive};
 use puppet_effect_stream::{
     authored_package_utility_primitive, preserve_authored_puppet_effect_stream,
 };
@@ -636,13 +636,6 @@ impl WeIrBuilder {
         }
         let mut graph = we_image_graph(&graph_contract);
         self.retain_authored_package_utility_quads(&mut graph);
-        apply_base_material_cull(
-            &mut graph,
-            base_material_handle as usize,
-            base_pass
-                .as_ref()
-                .map_or(SceneCullMode::None, |pass| pass.cull_mode),
-        );
         let has_framebuffer_snapshot =
             graph_contract.framebuffer_snapshot.is_some() && !graph.passes.is_empty();
         puppet_clipping::apply_token_one_graph(self, object, base_material_handle, &mut graph);
@@ -766,29 +759,5 @@ impl WeIrBuilder {
             &self.material_constants,
             &self.fused_authored_source_materials,
         );
-    }
-}
-
-fn apply_base_material_cull(
-    graph: &mut RenderGraph,
-    base_material: usize,
-    authored_cull: SceneCullMode,
-) {
-    let cull_mode = match authored_cull {
-        SceneCullMode::None => CullMode::None,
-        SceneCullMode::Normal => CullMode::Back,
-    };
-    for pass in &mut graph.passes {
-        if pass.material_index != Some(base_material) {
-            continue;
-        }
-        let owns_base_geometry = matches!(
-            pass.role,
-            RenderPassRole::BaseMaterial | RenderPassRole::ObjectLocalSource
-        ) || (pass.role == RenderPassRole::SceneComposite
-            && pass.draw_primitive == RenderPassDrawPrimitive::ObjectMesh);
-        if owns_base_geometry {
-            pass.state.cull_mode = cull_mode;
-        }
     }
 }
