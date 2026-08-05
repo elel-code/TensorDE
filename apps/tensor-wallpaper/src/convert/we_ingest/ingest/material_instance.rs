@@ -574,7 +574,7 @@ uniform sampler2D g_Texture2; // {"default":"_rt_FullFrameBuffer","hidden":true,
             .expect("project-layer base draw");
         assert_eq!(
             base.draw_primitive,
-            crate::engine::render_graph::RenderPassDrawPrimitive::ObjectMesh
+            crate::engine::render_graph::RenderPassDrawPrimitive::FramebufferCompositeMesh
         );
         assert!(base.bindings.contains(
             &crate::engine::render_graph::TextureBindingRole::EffectTarget {

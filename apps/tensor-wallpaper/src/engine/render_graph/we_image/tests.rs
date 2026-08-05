@@ -589,6 +589,10 @@ fn composelayer_final_effect_material_composites_directly_to_scene() {
     );
     assert_eq!(graph.passes.len(), 3);
     assert_eq!(
+        graph.passes[1].draw_primitive,
+        RenderPassDrawPrimitive::FramebufferCompositeMesh
+    );
+    assert_eq!(
         graph.passes[1].state.pipeline_blend,
         PipelineBlendMode::Normal
     );

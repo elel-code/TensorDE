@@ -15,6 +15,14 @@ fn lower_render_pass_draw_primitive_preserves_all_typed_variants() {
             SceneRenderPassDrawPrimitive::ObjectMesh,
         ),
         (
+            crate::engine::render_graph::RenderPassDrawPrimitive::ObjectCompositeMesh,
+            SceneRenderPassDrawPrimitive::ObjectCompositeMesh,
+        ),
+        (
+            crate::engine::render_graph::RenderPassDrawPrimitive::FramebufferCompositeMesh,
+            SceneRenderPassDrawPrimitive::FramebufferCompositeMesh,
+        ),
+        (
             crate::engine::render_graph::RenderPassDrawPrimitive::FullscreenTriangle,
             SceneRenderPassDrawPrimitive::FullscreenTriangle,
         ),

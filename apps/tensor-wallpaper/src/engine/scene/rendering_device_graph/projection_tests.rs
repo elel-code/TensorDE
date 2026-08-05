@@ -155,6 +155,29 @@ fn image_layer_composite_base_target_uses_authored_texture_projection() {
 }
 
 #[test]
+fn framebuffer_composite_mesh_keeps_scene_sampling_projection_on_authored_target() {
+    let mut document = projection_storage_with_first_class_source(1_188, 403)
+        .document()
+        .clone();
+    document.render_passes[0].draw_primitive =
+        SceneRenderPassDrawPrimitive::FramebufferCompositeMesh;
+    let storage = SceneStorage::from_document(document).expect("framebuffer composite storage");
+    let graph = RenderingServer::new(&storage).rendering_device_graph_plan();
+    let producer = &graph.mesh_draws[0];
+
+    assert_eq!(
+        producer.projection_domain,
+        SceneRenderingDeviceProjectionDomain::Scene
+    );
+    assert_ne!(
+        producer.clip_transform,
+        authored_texture_clip_transform(1_188, 403)
+    );
+    assert_eq!(producer.clip_transform[0], [2.0 / 1_000.0, 0.0, 0.0, -1.0]);
+    assert_eq!(producer.clip_transform[1], [0.0, -2.0 / 500.0, 0.0, 1.0]);
+}
+
+#[test]
 fn effect_texture_projection_uses_we_y_conjugation_and_default_camera_depth() {
     let mut document = SceneBinaryDocument::default();
     document.project.logical_width = 3_840;

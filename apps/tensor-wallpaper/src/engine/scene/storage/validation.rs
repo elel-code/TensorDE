@@ -10,6 +10,7 @@ mod dynamic_text;
 use dynamic_text::validate_dynamic_text;
 mod shader_program;
 use shader_program::validate_shader_programs;
+mod render_pass;
 
 include!("validation/resource_payloads.rs");
 include!("validation/pointer_parallax.rs");
@@ -694,6 +695,7 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
                 len: document.objects.len(),
             });
         }
+        render_pass::validate_framebuffer_composite_mesh(document, pass)?;
         if pass.role == SceneRenderPassKind::ObjectLocalSource
             && (!matches!(
                 pass.draw_primitive,

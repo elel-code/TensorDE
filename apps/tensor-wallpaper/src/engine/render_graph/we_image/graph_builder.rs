@@ -90,6 +90,12 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
             },
             draw_primitive: if authored_texture_effects {
                 RenderPassDrawPrimitive::ObjectUvSupportQuad
+            } else if contract
+                .base_shader
+                .as_deref()
+                .is_some_and(is_framebuffer_composite_shader)
+            {
+                RenderPassDrawPrimitive::FramebufferCompositeMesh
             } else {
                 RenderPassDrawPrimitive::ObjectMesh
             },

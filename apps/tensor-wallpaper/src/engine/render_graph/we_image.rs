@@ -329,6 +329,17 @@ fn is_unskinned_generic_image_shader(shader: &str) -> bool {
         )
 }
 
+fn is_framebuffer_composite_shader(shader: &str) -> bool {
+    shader
+        .split("__")
+        .next()
+        .unwrap_or_default()
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .eq_ignore_ascii_case("composelayer")
+}
+
 fn base_pipeline_blend(contract: &WeImageGraphContract) -> PipelineBlendMode {
     contract
         .base_material_blending

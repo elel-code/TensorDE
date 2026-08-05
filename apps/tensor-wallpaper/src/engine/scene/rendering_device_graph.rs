@@ -279,6 +279,7 @@ fn pass_draws_object_mesh(pass: &SceneRenderPassRecord) -> bool {
             pass.draw_primitive,
             SceneRenderPassDrawPrimitive::ObjectMesh
                 | SceneRenderPassDrawPrimitive::ObjectCompositeMesh
+                | SceneRenderPassDrawPrimitive::FramebufferCompositeMesh
         )
 }
 
@@ -349,6 +350,7 @@ fn pass_utility_primitive(
         SceneRenderPassDrawPrimitive::None
         | SceneRenderPassDrawPrimitive::ObjectMesh
         | SceneRenderPassDrawPrimitive::ObjectCompositeMesh
+        | SceneRenderPassDrawPrimitive::FramebufferCompositeMesh
         | SceneRenderPassDrawPrimitive::ParticleBillboard => None,
     }
 }

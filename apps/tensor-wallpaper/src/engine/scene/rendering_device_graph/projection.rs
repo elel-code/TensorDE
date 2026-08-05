@@ -1,8 +1,8 @@
 //! Retained projection domains for scene and authored-texture targets.
 
 use super::{
-    ResolvedSemanticFrame, SceneObjectKind, SceneProjectRecord, SceneRenderPassRecord,
-    SceneRenderingDeviceProjectionDomain, SceneStorage,
+    ResolvedSemanticFrame, SceneObjectKind, SceneProjectRecord, SceneRenderPassDrawPrimitive,
+    SceneRenderPassRecord, SceneRenderingDeviceProjectionDomain, SceneStorage,
     target_extent::authored_texture_space_target_extent,
 };
 
@@ -135,6 +135,9 @@ pub(super) fn pass_projection_domain(
     graph_index: u32,
     pass: &SceneRenderPassRecord,
 ) -> SceneRenderingDeviceProjectionDomain {
+    if pass.draw_primitive == SceneRenderPassDrawPrimitive::FramebufferCompositeMesh {
+        return SceneRenderingDeviceProjectionDomain::Scene;
+    }
     if let Some([width, height]) =
         authored_texture_space_target_extent(storage, graph_index, pass.target, pass.target_name)
     {

@@ -32,6 +32,9 @@ pub enum RenderPassDrawPrimitive {
     None,
     ObjectMesh,
     ObjectCompositeMesh,
+    /// An object mesh whose shader covers its target from mesh UVs while projecting the
+    /// object position only to sample the live scene framebuffer.
+    FramebufferCompositeMesh,
     FullscreenTriangle,
     ObjectUvSupportQuad,
     ParticleBillboard,

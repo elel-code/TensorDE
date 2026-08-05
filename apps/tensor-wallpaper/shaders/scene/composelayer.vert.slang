@@ -31,6 +31,8 @@ VertexOutput main(VertexInput input)
         dot(drawTransform.modelViewProjectionMatrix[3], localPosition));
     VertexOutput output;
     output.position = float4(input.texCoord * 2.0 - 1.0, 0.0, 1.0);
-    output.framebufferCoord = projected.xy / max(abs(projected.w), 0.000001) * 0.5 + 0.5;
+    // The Vulkan scene projection already folds in WE's explicit D3D framebuffer-Y
+    // conjugation. Preserve the authored homogeneous divide, including its sign.
+    output.framebufferCoord = projected.xy / projected.w * 0.5 + 0.5;
     return output;
 }

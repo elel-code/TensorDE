@@ -53,6 +53,9 @@ pub(super) fn lower_pass_draw_primitive(
         RenderPassDrawPrimitive::ObjectCompositeMesh => {
             SceneRenderPassDrawPrimitive::ObjectCompositeMesh
         }
+        RenderPassDrawPrimitive::FramebufferCompositeMesh => {
+            SceneRenderPassDrawPrimitive::FramebufferCompositeMesh
+        }
         RenderPassDrawPrimitive::FullscreenTriangle => {
             SceneRenderPassDrawPrimitive::FullscreenTriangle
         }
