@@ -404,8 +404,7 @@ impl SceneScriptRuntime {
         input: SceneScriptFrameInput<'_>,
         deltas: &mut Vec<SceneScriptDelta>,
     ) -> Result<(), SceneScriptError> {
-        self.deadline.set(Some(Instant::now() + FRAME_DEADLINE));
-        let result = self.context.with(|ctx| {
+        self.context.with(|ctx| {
             let dispatch: Function = ctx
                 .globals()
                 .get("__tensor_wallpaperDispatch")
@@ -454,28 +453,30 @@ impl SceneScriptRuntime {
                     ))
                     .map_err(|error| SceneScriptError::Dispatch(error.to_string()))?;
             }
-            let batch: Object = dispatch
+            let pointer_clicks = pointer_click_array(ctx.clone(), input.pointer_clicks)?;
+            self.deadline.set(Some(Instant::now() + FRAME_DEADLINE));
+            let dispatch_result = dispatch
                 .call((
                     input.scene_time_seconds,
                     input.frame_time_seconds,
                     input.dirty_events.0,
                     input.pointer[0],
                     input.pointer[1],
-                    pointer_click_array(ctx.clone(), input.pointer_clicks)?,
+                    pointer_clicks,
                 ))
                 .catch(&ctx)
-                .map_err(|error| SceneScriptError::Dispatch(error.to_string()))?;
+                .map_err(|error| SceneScriptError::Dispatch(error.to_string()));
+            let deadline_expired = self
+                .deadline
+                .get()
+                .is_some_and(|deadline| Instant::now() >= deadline);
+            self.deadline.set(None);
+            let batch: Object = match dispatch_result {
+                Err(_) if deadline_expired => return Err(SceneScriptError::DeadlineExceeded),
+                result => result?,
+            };
             decode_batch_into(batch, deltas)
-        });
-        let deadline_expired = self
-            .deadline
-            .get()
-            .is_some_and(|deadline| Instant::now() >= deadline);
-        self.deadline.set(None);
-        if result.is_err() && deadline_expired {
-            return Err(SceneScriptError::DeadlineExceeded);
-        }
-        result
+        })
     }
 
     pub fn program_count(&self) -> usize {
