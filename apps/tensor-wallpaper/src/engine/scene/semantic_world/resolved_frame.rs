@@ -27,6 +27,9 @@ pub struct ResolvedSemanticFrame {
     pub media_clock: Option<SceneMediaClockState>,
     pub video_frame: Option<SceneVideoState>,
     pub parallax_position: [f32; 2],
+    /// Retained WE camera-parallax displacement shared by every scene-projected draw.
+    /// Root `parallaxDepth` remains an additional per-object render-world translation.
+    pub camera_parallax_translation: [f32; 2],
     pub visible_object_count: usize,
     pub visible_mesh_binding_count: usize,
     pub visible_effect_instance_count: usize,
@@ -90,6 +93,7 @@ impl ResolvedSemanticFrame {
             media_clock: None,
             video_frame: None,
             parallax_position: [0.5; 2],
+            camera_parallax_translation: [0.0; 2],
             visible_object_count,
             visible_mesh_binding_count,
             visible_effect_instance_count,

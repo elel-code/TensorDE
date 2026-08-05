@@ -52,7 +52,10 @@ pub(crate) fn scene_clip_transform_for_frame(
     world_matrix: [f32; 16],
 ) -> [[f32; 4]; 4] {
     let project = storage.project();
-    let mut clip = scene_clip_transform(project, world_matrix);
+    let mut render_world_matrix = world_matrix;
+    render_world_matrix[12] += semantic_frame.camera_parallax_translation[0];
+    render_world_matrix[13] += semantic_frame.camera_parallax_translation[1];
+    let mut clip = scene_clip_transform(project, render_world_matrix);
     let camera = storage
         .objects()
         .iter()

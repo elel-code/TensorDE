@@ -18,6 +18,7 @@ pub(super) struct RetainedPointerParallaxSystem {
     root_bindings: Vec<RootParallaxBinding>,
     active_camera: Option<SceneObjectHandle>,
     fallback_camera_eye: [f32; 2],
+    logical_half_extent: [f32; 2],
     camera_position: [f32; 2],
     pointer_scene_offset: [f32; 2],
     shader_position: [f32; 2],
@@ -63,6 +64,7 @@ impl RetainedPointerParallaxSystem {
             root_bindings,
             active_camera,
             fallback_camera_eye,
+            logical_half_extent: pointer_scene_offset,
             camera_position: [
                 camera_eye[0] + pointer_scene_offset[0],
                 camera_eye[1] + pointer_scene_offset[1],
@@ -115,6 +117,7 @@ impl RetainedPointerParallaxSystem {
 
     pub(super) fn apply_frame(&mut self, frame: &mut ResolvedSemanticFrame) {
         frame.parallax_position = self.shader_position;
+        frame.camera_parallax_translation = [0.0; 2];
         for object in &mut frame.objects {
             object.render_world_matrix = object.world_matrix;
         }
@@ -129,6 +132,14 @@ impl RetainedPointerParallaxSystem {
         for (current, target) in self.camera_position.iter_mut().zip(target) {
             *current += (target - *current) * self.response;
         }
+        let project_center = [
+            camera_eye[0] + self.logical_half_extent[0],
+            camera_eye[1] + self.logical_half_extent[1],
+        ];
+        frame.camera_parallax_translation = [
+            self.camera.amount * (self.camera_position[0] - project_center[0]),
+            self.camera.amount * (self.camera_position[1] - project_center[1]),
+        ];
         for object_index in 0..frame.objects.len() {
             let Some(binding) = self.root_bindings.get(object_index).copied() else {
                 continue;
@@ -263,6 +274,83 @@ mod tests {
         parallax.apply_frame(&mut frame);
 
         assert_eq!(frame.parallax_position, [0.7, 0.275]);
+    }
+
+    #[test]
+    fn retained_camera_translation_moves_zero_depth_draws_before_root_depth_adjustment() {
+        let image = SceneObjectHandle(0);
+        let mut document = SceneBinaryDocument::default();
+        document.project.logical_width = 100;
+        document.project.logical_height = 100;
+        document.camera_parallax = SceneCameraParallaxRecord {
+            enabled: true,
+            amount: 0.1,
+            delay: 0.0,
+            mouse_influence: 1.0,
+        };
+        document.objects = vec![test_object(image, SceneObjectKind::Image, [50.0, 50.0])];
+        let storage = SceneStorage::from_document(document).expect("camera parallax storage");
+        let world = SceneSemanticWorld::from_storage(&storage).expect("camera parallax world");
+        let mut frame = world.resolve_frame().expect("initial semantic frame");
+        let mut parallax = RetainedPointerParallaxSystem::from_world(&world, &frame);
+        let events = SceneFrameEvents {
+            pointer: crate::engine::scene::ScenePointerState {
+                position: [0.0, 50.0],
+                surface_size: [100, 100],
+                ..crate::engine::scene::ScenePointerState::default()
+            },
+            ..SceneFrameEvents::default()
+        };
+
+        parallax.begin_frame(&world, 0.0, &events);
+        parallax.apply_frame(&mut frame);
+
+        assert_eq!(frame.camera_parallax_translation, [-5.0, 0.0]);
+        assert_eq!(
+            frame.object(image).expect("image").render_world_matrix[12],
+            50.0,
+            "zero root depth does not cancel the shared camera translation"
+        );
+    }
+
+    #[test]
+    fn root_depth_translation_is_additional_to_shared_camera_translation() {
+        let image = SceneObjectHandle(0);
+        let mut document = SceneBinaryDocument::default();
+        document.project.logical_width = 100;
+        document.project.logical_height = 100;
+        document.camera_parallax = SceneCameraParallaxRecord {
+            enabled: true,
+            amount: 0.1,
+            delay: 0.0,
+            mouse_influence: 1.0,
+        };
+        document.objects = vec![test_object(image, SceneObjectKind::Image, [50.0, 50.0])];
+        document.object_parallax_depths = vec![SceneObjectParallaxDepthRecord {
+            object: image,
+            depth: [-0.2, -0.2],
+        }];
+        let storage = SceneStorage::from_document(document).expect("camera parallax storage");
+        let world = SceneSemanticWorld::from_storage(&storage).expect("camera parallax world");
+        let mut frame = world.resolve_frame().expect("initial semantic frame");
+        let mut parallax = RetainedPointerParallaxSystem::from_world(&world, &frame);
+        let events = SceneFrameEvents {
+            pointer: crate::engine::scene::ScenePointerState {
+                position: [0.0, 50.0],
+                surface_size: [100, 100],
+                ..crate::engine::scene::ScenePointerState::default()
+            },
+            ..SceneFrameEvents::default()
+        };
+
+        parallax.begin_frame(&world, 0.0, &events);
+        parallax.apply_frame(&mut frame);
+
+        assert_eq!(frame.camera_parallax_translation, [-5.0, 0.0]);
+        assert_eq!(
+            frame.object(image).expect("image").render_world_matrix[12],
+            49.0
+        );
     }
 
     #[test]
