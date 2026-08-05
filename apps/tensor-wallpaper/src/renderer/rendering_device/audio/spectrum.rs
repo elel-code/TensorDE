@@ -349,6 +349,13 @@ impl PcmSpectrumProducer {
     }
 
     fn block_passes_threshold(&self, samples: &[f32], frames: usize) -> bool {
+        // The recovered arbitrary-size transform intentionally starts from a
+        // non-zero complex baseline. Its finite-precision convolution leaks a
+        // small amount of that DC value into non-DC bins even for exact PCM
+        // silence. Do not expose that numerical residue as authored audio.
+        if samples.iter().all(|sample| *sample == 0.0) {
+            return false;
+        }
         if self.input_threshold <= f32::EPSILON {
             return true;
         }
@@ -513,5 +520,13 @@ mod tests {
             .collect::<Vec<_>>();
         let spectrum = producer.push_interleaved(&samples).expect("one snapshot");
         assert_eq!(spectrum.left, spectrum.right);
+    }
+
+    #[test]
+    fn exact_pcm_silence_produces_an_exact_zero_spectrum() {
+        let mut producer = PcmSpectrumProducer::new(48_000, 2, 1.0, 0.0).unwrap();
+        let samples = vec![0.0; producer.capture_frames * 2];
+        let spectrum = producer.push_interleaved(&samples).expect("one snapshot");
+        assert_eq!(spectrum, StereoSpectrum64::ZERO);
     }
 }
