@@ -114,23 +114,20 @@ repository policy.
   semantics/runtime changes, repository ignore cleanup, and agent/skill files
   when their review boundaries differ.
 
-## Durable recovery state
+## Current documentation and task evidence
 
-- Treat chat context and generated summaries as volatile. For any multi-step
-  scene-engine task, maintain a task-local recovery ledger in the ignored
-  architecture document. Record the current HEAD, tracked worktree state,
-  exact artifact paths, commands and results, established facts, disproved
-  hypotheses, unresolved blockers, and the next executable action.
-- Update that ledger immediately after each material discovery, failed run,
-  semantic decision, performance measurement, revert, and commit. Checkpoint it
-  before a long-running command or any point where context compaction could
-  interrupt the task.
-- On resume, read the ledger and verify its HEAD, worktree state, and artifact
-  existence before acting. Do not restart completed work or replace missing
-  evidence with assumptions from a conversation summary.
-- Keep this policy and the repository skill sample-independent. Concrete scene
-  IDs, checkpoints, trace paths, performance numbers, and current hypotheses
-  belong only in the task ledger and ignored evidence directories.
+- Do not create or append a chronological recovery ledger, dated diary, r-number
+  timeline, or chat transcript under `docs/tensor-wallpaper`.
+- Store exact artifact paths, commands, hashes, failed experiments, performance
+  samples, and the next executable action in a task-local ignored artifact
+  manifest. Verify the manifest against current source and filesystem state on
+  resume.
+- Topic documents contain only current architecture contracts, proven reusable
+  root causes, active blockers, and measurement rules. Replace or delete
+  superseded prose instead of appending a reversal history.
+- Keep the policy and skill sample-independent. Concrete scene IDs, frame
+  checkpoints, trace ranges, and per-run numbers belong in task evidence unless
+  they remain necessary to state a current cross-scene contract.
 
 For the exact local workflow and commands, use the repository skill
 `$tensor-wallpaper-scene-engine` in `.codex/skills/tensor-wallpaper-scene-engine/`.

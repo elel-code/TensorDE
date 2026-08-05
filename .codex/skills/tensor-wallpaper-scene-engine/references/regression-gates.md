@@ -7,8 +7,9 @@ old Tensor Wallpaper artifacts, and old screenshots as localization aids only. N
 `.gscene` as a correctness reference.
 
 Choose a task-local corpus that covers every affected capability. Concrete workshop IDs, object
-names, graph indices, frame checkpoints, and trace ranges belong in the task evidence or
-architecture document; they are not permanent skill scope.
+names, graph indices, frame checkpoints, and trace ranges belong in task-local ignored evidence.
+Topic documents may summarize only conclusions that remain current; these details are not
+permanent skill scope.
 
 Use this coverage matrix to select fixtures:
 
@@ -112,4 +113,5 @@ git diff --check
 ```
 
 Inspect staged and unstaged changes separately, recheck every `MM` file, keep generated artifacts
-outside Git, and commit coherent verified slices.
+outside Git, and commit coherent verified slices. Do not append a chronological recovery ledger;
+replace superseded topic documentation with the current conclusion.

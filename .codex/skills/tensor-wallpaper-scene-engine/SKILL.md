@@ -22,19 +22,18 @@ old Tensor Wallpaper output as the specification.
 5. Reject any proposed old-reader, alias, fallback, permissive parser, compatibility shader, or
    sample-specific branch. Remove obsolete behavior instead of maintaining two paths.
 
-## Preserve recovery state
+## Keep documentation current
 
-1. Treat conversation context as a volatile cache. Keep the current task's durable recovery ledger
-   in the ignored architecture document, never only in chat or an automatically generated summary.
-2. Record the current HEAD and tracked worktree state, exact evidence paths, commands and results,
-   proven facts, invalidated hypotheses, remaining blockers, and one next executable action.
-3. Update the ledger after every material discovery, failure, semantic decision, performance run,
-   revert, and commit. Write a checkpoint before long-running commands or likely context compaction.
-4. After a restart or compressed-context handoff, read the ledger first, validate its HEAD and
-   artifacts against the filesystem, then continue from the recorded next action without repeating
-   completed work.
-5. Keep concrete fixtures and task conclusions out of this skill. The ledger supplements formal
-   instruction and performance evidence; it never substitutes for those gates.
+1. Do not create or append a chronological recovery ledger, dated diary, r-number timeline, or
+   chat transcript under `docs/tensor-wallpaper`.
+2. Keep raw commands, hashes, captures, failed experiments, and per-run reports in a task-local
+   ignored artifact directory. A compact manifest there may record provenance and the next action.
+3. Update a topic document only when a fact becomes a current reusable contract, a proven root
+   cause, or an active blocker. Replace or delete superseded text instead of appending reversals.
+4. After a restart or compressed handoff, inspect current source, topic documents, Git state, and
+   the relevant artifact manifest. Revalidate artifact existence before relying on it.
+5. Keep concrete fixtures and task conclusions out of this skill; they belong in task evidence or,
+   when still current and broadly useful, the appropriate topic document.
 
 ## Implement through typed boundaries
 
@@ -93,9 +92,8 @@ old Tensor Wallpaper output as the specification.
 
 1. Run formatting, relevant full tests, `git diff --check`, and
    `uv run python scripts/tensor-wallpaper/scene_engine_constraints.py`.
-2. Update the architecture document with current evidence and explicitly invalidate superseded
-   conclusions. Keep concrete fixture IDs and checkpoints there or in task-local evidence, not in
-   this skill or `AGENTS.md`.
+2. Update only the relevant topic document with the current conclusion. Delete superseded prose;
+   keep concrete fixture IDs, commands, hashes, and checkpoints in task-local ignored evidence.
 3. Keep generated scenes, command traces, plans, and reports outside Git. Keep
    `reverse-engineered/tensor-wallpaper/` ignored.
 4. Stage the final working-tree state deliberately, rechecking `MM` files, and commit coherent
