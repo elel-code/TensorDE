@@ -52,10 +52,7 @@ pub(crate) fn scene_clip_transform_for_frame(
     world_matrix: [f32; 16],
 ) -> [[f32; 4]; 4] {
     let project = storage.project();
-    let mut render_world_matrix = world_matrix;
-    render_world_matrix[12] += semantic_frame.camera_parallax_translation[0];
-    render_world_matrix[13] += semantic_frame.camera_parallax_translation[1];
-    let mut clip = scene_clip_transform(project, render_world_matrix);
+    let mut clip = scene_clip_transform(project, world_matrix);
     let camera = storage
         .objects()
         .iter()
@@ -98,13 +95,29 @@ pub(crate) fn scene_clip_transform_for_frame(
     clip
 }
 
+pub(crate) fn particle_scene_clip_transform_for_frame(
+    storage: &SceneStorage,
+    semantic_frame: &ResolvedSemanticFrame,
+    world_matrix: [f32; 16],
+) -> [[f32; 4]; 4] {
+    let mut render_world_matrix = world_matrix;
+    render_world_matrix[12] += semantic_frame.particle_camera_parallax_translation[0];
+    render_world_matrix[13] += semantic_frame.particle_camera_parallax_translation[1];
+    scene_clip_transform_for_frame(storage, semantic_frame, render_world_matrix)
+}
+
 pub(crate) fn effect_texture_projection_matrix(
     storage: &SceneStorage,
     semantic_frame: &ResolvedSemanticFrame,
     world_matrix: [f32; 16],
     authored_source_extent: [f32; 2],
+    particle_camera_parallax: bool,
 ) -> [[f32; 4]; 4] {
-    let mut projection = scene_clip_transform_for_frame(storage, semantic_frame, world_matrix);
+    let mut projection = if particle_camera_parallax {
+        particle_scene_clip_transform_for_frame(storage, semantic_frame, world_matrix)
+    } else {
+        scene_clip_transform_for_frame(storage, semantic_frame, world_matrix)
+    };
     let half_width = authored_source_extent[0] * 0.5;
     let half_height = authored_source_extent[1] * 0.5;
     for row in &mut projection {

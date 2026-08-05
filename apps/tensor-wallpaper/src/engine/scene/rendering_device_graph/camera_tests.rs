@@ -1,4 +1,4 @@
-use super::projection::scene_clip_transform_for_frame;
+use super::projection::{particle_scene_clip_transform_for_frame, scene_clip_transform_for_frame};
 use super::*;
 use crate::engine::scene::SceneBinaryDocument;
 use crate::engine::scene::semantic_world::{
@@ -43,7 +43,7 @@ fn default_camera_still_applies_the_we_orthographic_depth_span() {
 }
 
 #[test]
-fn camera_parallax_changes_only_scene_projection_translation() {
+fn camera_parallax_does_not_modify_regular_scene_projection() {
     let mut document = SceneBinaryDocument::default();
     document.project.logical_width = 3_840;
     document.project.logical_height = 2_160;
@@ -59,14 +59,37 @@ fn camera_parallax_changes_only_scene_projection_translation() {
         1.25, 0.0, 0.0, 0.0, 0.0, 0.75, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 640.0, 900.0, 0.0, 1.0,
     ];
     let centered = scene_clip_transform_for_frame(&storage, &frame, world);
-    frame.camera_parallax_translation = [-96.0, 54.0];
+    frame.particle_camera_parallax_translation = [-96.0, 54.0];
     let moved = scene_clip_transform_for_frame(&storage, &frame, world);
+
+    assert_eq!(moved, centered);
+}
+
+#[test]
+fn camera_parallax_changes_only_particle_projection_translation() {
+    let mut document = SceneBinaryDocument::default();
+    document.project.logical_width = 3_840;
+    document.project.logical_height = 2_160;
+    let storage = SceneStorage::from_document(document).expect("projection storage");
+    let mut frame = ResolvedSemanticFrame::from_resolved_parts(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let world = [
+        1.25, 0.0, 0.0, 0.0, 0.0, 0.75, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 640.0, 900.0, 0.0, 1.0,
+    ];
+    let centered = particle_scene_clip_transform_for_frame(&storage, &frame, world);
+    frame.particle_camera_parallax_translation = [-96.0, 54.0];
+    let moved = particle_scene_clip_transform_for_frame(&storage, &frame, world);
 
     for row in 0..4 {
         for column in 0..3 {
             assert_eq!(
                 moved[row][column], centered[row][column],
-                "camera parallax must not change glyph/object scale, rotation, or depth"
+                "camera parallax must not change particle scale, rotation, or depth"
             );
         }
     }

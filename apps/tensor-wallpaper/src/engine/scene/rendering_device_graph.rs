@@ -30,6 +30,8 @@ pub use effect_batch::{
     SceneRenderingDeviceEffectBatchInstance,
 };
 pub(crate) use projection::effect_texture_projection_matrix;
+#[cfg(feature = "rendering-device")]
+pub(crate) use projection::particle_scene_clip_transform_for_frame;
 use projection::pass_projection_domain;
 #[cfg(test)]
 use projection::{authored_texture_clip_transform, scene_clip_transform};
@@ -140,6 +142,7 @@ impl SceneRenderingDeviceGraphPlan {
                                     semantic_frame,
                                     pass_object_state.render_world_matrix,
                                     authored_source_extent,
+                                    false,
                                 ),
                                 authored_source_extent,
                                 uv_inset_texels: if pass.draw_primitive
@@ -371,8 +374,20 @@ fn utility_primitive_draw(
         | SceneRenderingDeviceDrawPrimitive::FullscreenTriangle => 3,
     };
     let projection_domain = pass_projection_domain(storage, graph_index, pass);
+    let particle_camera_parallax =
+        primitive == SceneRenderingDeviceDrawPrimitive::ParticleBillboard;
     let clip_transform = pass_object_state.map_or_else(identity_clip_transform, |object| {
-        projection_domain.clip_transform(storage, semantic_frame, object.render_world_matrix)
+        if particle_camera_parallax
+            && projection_domain == SceneRenderingDeviceProjectionDomain::Scene
+        {
+            projection::particle_scene_clip_transform_for_frame(
+                storage,
+                semantic_frame,
+                object.render_world_matrix,
+            )
+        } else {
+            projection_domain.clip_transform(storage, semantic_frame, object.render_world_matrix)
+        }
     });
     let authored_source_extent = authored_source_extent(storage, pass.object);
     let effect_texture_projection_matrix =
@@ -382,6 +397,7 @@ fn utility_primitive_draw(
                 semantic_frame,
                 object.render_world_matrix,
                 authored_source_extent,
+                particle_camera_parallax,
             )
         });
     SceneRenderingDeviceMeshDraw {

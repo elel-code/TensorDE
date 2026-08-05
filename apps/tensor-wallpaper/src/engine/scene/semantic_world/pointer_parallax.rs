@@ -117,7 +117,7 @@ impl RetainedPointerParallaxSystem {
 
     pub(super) fn apply_frame(&mut self, frame: &mut ResolvedSemanticFrame) {
         frame.parallax_position = self.shader_position;
-        frame.camera_parallax_translation = [0.0; 2];
+        frame.particle_camera_parallax_translation = [0.0; 2];
         for object in &mut frame.objects {
             object.render_world_matrix = object.world_matrix;
         }
@@ -136,7 +136,7 @@ impl RetainedPointerParallaxSystem {
             camera_eye[0] + self.logical_half_extent[0],
             camera_eye[1] + self.logical_half_extent[1],
         ];
-        frame.camera_parallax_translation = [
+        frame.particle_camera_parallax_translation = [
             self.camera.amount * (self.camera_position[0] - project_center[0]),
             self.camera.amount * (self.camera_position[1] - project_center[1]),
         ];
@@ -277,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_camera_translation_moves_zero_depth_draws_before_root_depth_adjustment() {
+    fn retained_particle_camera_translation_is_independent_of_zero_root_depth() {
         let image = SceneObjectHandle(0);
         let mut document = SceneBinaryDocument::default();
         document.project.logical_width = 100;
@@ -305,16 +305,16 @@ mod tests {
         parallax.begin_frame(&world, 0.0, &events);
         parallax.apply_frame(&mut frame);
 
-        assert_eq!(frame.camera_parallax_translation, [-5.0, 0.0]);
+        assert_eq!(frame.particle_camera_parallax_translation, [-5.0, 0.0]);
         assert_eq!(
             frame.object(image).expect("image").render_world_matrix[12],
             50.0,
-            "zero root depth does not cancel the shared camera translation"
+            "zero root depth leaves the regular object at its authored position"
         );
     }
 
     #[test]
-    fn root_depth_translation_is_additional_to_shared_camera_translation() {
+    fn root_depth_translation_is_independent_of_particle_camera_translation() {
         let image = SceneObjectHandle(0);
         let mut document = SceneBinaryDocument::default();
         document.project.logical_width = 100;
@@ -346,7 +346,7 @@ mod tests {
         parallax.begin_frame(&world, 0.0, &events);
         parallax.apply_frame(&mut frame);
 
-        assert_eq!(frame.camera_parallax_translation, [-5.0, 0.0]);
+        assert_eq!(frame.particle_camera_parallax_translation, [-5.0, 0.0]);
         assert_eq!(
             frame.object(image).expect("image").render_world_matrix[12],
             49.0

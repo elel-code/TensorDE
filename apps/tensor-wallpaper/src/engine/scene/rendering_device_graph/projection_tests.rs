@@ -209,7 +209,8 @@ fn effect_texture_projection_uses_we_y_conjugation_and_default_camera_depth() {
         1.0,
     ];
 
-    let projection = effect_texture_projection_matrix(&storage, &frame, world, [993.0, 844.0]);
+    let projection =
+        effect_texture_projection_matrix(&storage, &frame, world, [993.0, 844.0], false);
     let expected = [
         [0.258_146_05, 0.001_904_58, 0.0, 0.136_683_7],
         [-0.003_983_68, 0.390_064_98, 0.0, 0.013_092_16],
