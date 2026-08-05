@@ -1,12 +1,12 @@
 use super::super::descriptor_layout::scene_pipeline_descriptor_layout;
-use super::graphics::{scene_color_target, scene_cull_mode, scene_front_face};
+use super::graphics::{scene_color_target, scene_cull_mode};
 use super::*;
 use crate::engine::scene::{
     SceneBinaryDocument, SceneRenderPassKind, SceneRenderPassRecord, SceneRenderTargetKind,
     SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode,
     SceneRenderingDeviceTargetAllocation, SceneShaderContractRecord, SceneTargetExtentDomain,
 };
-use vulkan_renderer::{BlendFactor, BlendOperation, ColorWrites, CullMode, Extent2D, FrontFace};
+use vulkan_renderer::{BlendFactor, BlendOperation, ColorWrites, CullMode, Extent2D};
 
 #[test]
 fn pipeline_indices_follow_drawn_pass_shader_and_blend_order() {

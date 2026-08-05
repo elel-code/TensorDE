@@ -123,7 +123,7 @@ pub(super) fn create_graphics_pipeline(
                     primitive_restart_enable: false,
                     polygon_mode: PolygonMode::Fill,
                     cull_mode: scene_cull_mode(cull_mode),
-                    front_face: scene_front_face(),
+                    front_face: FrontFace::CounterClockwise,
                 },
                 depth_stencil: None,
                 multisample: MultisampleState {
@@ -209,14 +209,6 @@ pub(super) const fn scene_cull_mode(cull_mode: SceneCullMode) -> CullMode {
         SceneCullMode::None => CullMode::None,
         SceneCullMode::Normal => CullMode::Back,
     }
-}
-
-/// WE records D3D11 front faces as counter-clockwise before the D3D viewport transform.
-/// Tensor Wallpaper keeps a positive-height Vulkan viewport, whose framebuffer-space Y mapping
-/// has the opposite orientation. Preserve the effective WE winding by reversing the Vulkan
-/// front-face selector instead of weakening authored back-face culling.
-pub(super) const fn scene_front_face() -> FrontFace {
-    FrontFace::Clockwise
 }
 
 pub(super) fn scene_color_target(

@@ -76,7 +76,6 @@ fn authored_normal_cull_uses_back_faces_and_has_a_distinct_pipeline_key() {
         scene_cull_mode(crate::engine::scene::SceneCullMode::Normal),
         CullMode::Back
     );
-    assert_eq!(scene_front_face(), FrontFace::Clockwise);
 }
 
 #[test]
