@@ -21,6 +21,13 @@ pub(crate) fn waterripple_slots_5_sources() -> (String, String) {
     )
 }
 
+pub(crate) fn skew_sources() -> (String, String) {
+    (
+        include_str!("../../shaders/scene/skew.vert.slang").to_owned(),
+        include_str!("../../shaders/scene/skew.frag.slang").to_owned(),
+    )
+}
+
 pub(crate) fn image_effect_source_sources() -> (String, String) {
     (
         include_str!("../../shaders/scene/image_effect_source.vert.slang").to_owned(),
@@ -64,6 +71,8 @@ mod tests {
             image_effect_source_sources().1,
             puppet_effect_composite_clipping_sources().0,
             puppet_effect_composite_clipping_sources().1,
+            skew_sources().0,
+            skew_sources().1,
         ];
         sources.push(mesh_vertex_source());
         sources.push(iris_object_mesh_vertex_source());

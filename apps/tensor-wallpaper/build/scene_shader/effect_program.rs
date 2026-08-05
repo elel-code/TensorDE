@@ -24,7 +24,7 @@ pub(crate) fn effect_vertex_source(key: &str, shader: &str, texture_slot_mask: u
     if shader == "effects/waterwaves" {
         return waterwaves_effect_vertex_source();
     }
-    if shader == "effects/scroll" || shader == "effects/skew" {
+    if shader == "effects/scroll" {
         return waterwaves_effect_vertex_source();
     }
     r#"#version 450
@@ -60,11 +60,7 @@ pub(crate) fn effect_object_mesh_vertex_source(
     }
     if matches!(
         shader,
-        "effects/blend"
-            | "effects/blendgradient"
-            | "effects/waterwaves"
-            | "effects/scroll"
-            | "effects/skew"
+        "effects/blend" | "effects/blendgradient" | "effects/waterwaves" | "effects/scroll"
     ) {
         return Some(object_uv_affine_effect_object_mesh_vertex_source());
     }
@@ -293,9 +289,6 @@ pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask:
     if shader == "effects/scroll" {
         return scroll_effect_fragment_source();
     }
-    if shader == "effects/skew" {
-        return skew_effect_fragment_source(key);
-    }
     panic!("scene shader {key:?} has no typed fragment contract")
 }
 
@@ -365,55 +358,6 @@ void main() {
 }
 "#
     .to_owned()
-}
-
-fn skew_effect_fragment_source(key: &str) -> String {
-    let repeat = effect_combo_value_for_key(key, "REPEAT", 1) != 0;
-    let repeat_statement = if repeat {
-        "sample_object_uv = fract(sample_object_uv);"
-    } else {
-        ""
-    };
-    format!(
-        r#"#version 450
-layout(location = 0) in vec2 v_TexCoord;
-layout(location = 1) in vec2 v_ObjectTexCoord;
-layout(location = 2) flat in vec4 v_ObjectUvToScreenUv;
-layout(location = 0) out vec4 o_Color;
-layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
-layout(set = 0, binding = 3) uniform SkewUniform {{
-    vec4 g_TopBottomLeftRight;
-    vec4 g_Unused0;
-    vec4 g_Unused1;
-    vec4 g_Unused2;
-}} u_Effect;
-vec2 objectDeltaToScreen(vec2 delta) {{
-    return vec2(
-        dot(v_ObjectUvToScreenUv.xy, delta),
-        dot(v_ObjectUvToScreenUv.zw, delta));
-}}
-void main() {{
-    if (any(lessThan(v_ObjectTexCoord, vec2(0.0)))
-        || any(greaterThan(v_ObjectTexCoord, vec2(1.0)))) {{
-        o_Color = vec4(0.0);
-        return;
-    }}
-    vec2 sample_object_uv = v_ObjectTexCoord;
-    sample_object_uv.x -= mix(
-        u_Effect.g_TopBottomLeftRight.x,
-        u_Effect.g_TopBottomLeftRight.y,
-        step(0.5, v_ObjectTexCoord.y));
-    sample_object_uv.y += mix(
-        u_Effect.g_TopBottomLeftRight.z,
-        u_Effect.g_TopBottomLeftRight.w,
-        step(0.5, v_ObjectTexCoord.x));
-    {repeat_statement}
-    vec2 sample_screen_uv = v_TexCoord
-        + objectDeltaToScreen(sample_object_uv - v_ObjectTexCoord);
-    o_Color = texture(g_Texture0, sample_screen_uv);
-}}
-"#
-    )
 }
 
 pub(crate) fn effect_combo_value_for_key(key: &str, combo: &str, default: i64) -> i64 {

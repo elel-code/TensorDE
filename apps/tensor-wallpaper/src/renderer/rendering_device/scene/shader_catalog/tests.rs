@@ -625,6 +625,32 @@ fn shader_catalog_carries_typed_effect_parameter_layouts() {
 }
 
 #[test]
+fn skew_uses_native_slang_vertex_coordinates_and_direct_wrapped_sample() {
+    let shader =
+        rendering_device_scene_shader_for_key("effects/skew__SLOTS_1").expect("skew shader");
+
+    assert!(shader.fragment_source.contains("[[shader(\"fragment\")]]"));
+    assert!(!shader.fragment_source.contains("#version"));
+    assert!(
+        shader
+            .fragment_source
+            .contains("sourceTexture.Sample(sourceSampler, frac(input.texCoord))")
+    );
+    assert!(!shader.fragment_source.contains("objectDeltaToScreen"));
+    assert!(!shader.fragment_source.contains("objectTexCoord"));
+    assert_eq!(
+        shader.vertex_primitive,
+        crate::engine::scene::SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
+    );
+    assert!(shader.vertex.bindings.iter().any(|binding| {
+        binding.kind == BuiltinSceneDescriptorBindingKind::UniformBuffer && binding.register == 3
+    }));
+    assert!(!shader.vertex.bindings.iter().any(|binding| {
+        binding.kind == BuiltinSceneDescriptorBindingKind::UniformBuffer && binding.register == 2
+    }));
+}
+
+#[test]
 fn package_only_programs_are_absent_from_the_builtin_catalog() {
     for key in [
         "effects/111__SLOTS_1__BLENDMODE_7",

@@ -580,6 +580,9 @@ fn scene_shader_sources(family: SceneShaderFamily, key: &str) -> (String, String
         SceneShaderFamily::Effect if effect_shader_name_for_key(key) == "effects/waterflow" => {
             super::waterflow_sources()
         }
+        SceneShaderFamily::Effect if effect_shader_name_for_key(key) == "effects/skew" => {
+            super::skew_sources()
+        }
         SceneShaderFamily::Effect
             if effect_shader_name_for_key(key) == "effects/tint"
                 && effect_texture_slot_mask_for_key(key) == 0x03 =>
@@ -645,6 +648,9 @@ fn has_version_controlled_slang_source(family: SceneShaderFamily, key: &str) -> 
                     effect_shader_name_for_key(key),
                     effect_texture_slot_mask_for_key(key)
                 ),
-                ("effects/tint", 0x03) | ("effects/waterflow", _) | ("effects/waterripple", 0x05)
+                ("effects/tint", 0x03)
+                    | ("effects/waterflow", _)
+                    | ("effects/skew", _)
+                    | ("effects/waterripple", 0x05)
             )
 }

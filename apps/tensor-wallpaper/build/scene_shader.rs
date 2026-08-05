@@ -48,7 +48,7 @@ mod waterwaves_direct;
 pub(super) use builtin_slang::{
     composelayer_sources, generic_image_sources, image_effect_source_sources,
     iris_object_mesh_vertex_source, mesh_vertex_source, puppet_effect_composite_clipping_sources,
-    waterripple_slots_5_sources,
+    skew_sources, waterripple_slots_5_sources,
 };
 pub(crate) use catalog::build_scene_shader_origin_catalog;
 pub(super) use core_material::{

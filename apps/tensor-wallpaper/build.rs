@@ -28,6 +28,8 @@ fn main() {
     println!("cargo:rerun-if-changed=shaders/scene/waterflow.vert.slang");
     println!("cargo:rerun-if-changed=shaders/scene/waterflow_object_mesh.vert.slang");
     println!("cargo:rerun-if-changed=shaders/scene/waterflow.frag.slang");
+    println!("cargo:rerun-if-changed=shaders/scene/skew.vert.slang");
+    println!("cargo:rerun-if-changed=shaders/scene/skew.frag.slang");
     println!("cargo:rerun-if-changed=shaders/scene/mesh_standard.vert.slang");
     println!("cargo:rerun-if-changed=shaders/scene/genericparticle.vert.slang");
     println!("cargo:rerun-if-changed=shaders/scene/genericparticle.frag.slang");
