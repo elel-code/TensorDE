@@ -3,7 +3,7 @@
 Tensorland borrows test strategy from Niri and Hyprland without copying implementation code.
 The local Nourish checkout is used for the ECS and retained-scene contracts. The converted
 behavioral suite lives in
-[`apps/tensorland/tests/reference_contracts.rs`](../../apps/tensorland/tests/reference_contracts.rs), with
+[`apps/tensor-wm/tests/reference_contracts.rs`](../../apps/tensor-wm/tests/reference_contracts.rs), with
 one child module per reference project; it is an ordinary Tensorland integration test and never links
 or executes an upstream test fixture.
 
@@ -98,7 +98,7 @@ uv run scripts/tensorland/tty.py --dmabuf-smoke
 ```
 
 The launcher waits for the new Tensorland socket and then starts
-`tensorland-dmabuf-smoke`. The client consumes Tensorland's linux-dmabuf v4 default
+`tensor-dmabuf-smoke`. The client consumes Tensorland's linux-dmabuf v4 default
 feedback, resolves its advertised main device to the matching `renderD*` node,
 and allocates only explicit-modifier GBM buffers on that node. It has no SHM,
 implicit-modifier, or alternate-GPU fallback.
@@ -342,5 +342,5 @@ subscription registration/backpressure, response/event envelopes, peer disconnec
 rejected configuration events. Codec tests also exercise caller-owned buffer reuse, and the slow
 subscriber test fills exactly eight pending events before the ninth disconnects it. A running
 session can be queried with
-`tensorctl --socket "$TENSOR_IPC_SOCKET" get-state`; use `tensorctl --socket "$TENSOR_IPC_SOCKET"
+`tensor-msg land --socket "$TENSOR_IPC_SOCKET" get-state`; use `tensor-msg land --socket "$TENSOR_IPC_SOCKET"
 quit` for a manual smoke-test shutdown.

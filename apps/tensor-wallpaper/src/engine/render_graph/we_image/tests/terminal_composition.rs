@@ -71,6 +71,60 @@ fn effect_only_terminal_keeps_local_source_and_declared_scene_snapshot_slots() {
 }
 
 #[test]
+fn static_effect_only_terminal_keeps_the_authored_last_effect() {
+    let graph = we_image_graph(&WeImageGraphContract {
+        object_index: 12,
+        base_material_index: Some(5),
+        base_shader: Some("composelayer".to_owned()),
+        base_material_blending: Some("translucent".to_owned()),
+        base_texture_slots: vec![0],
+        base_pass_constants: Vec::new(),
+        color_blend_mode: 0,
+        framebuffer_snapshot: Some(WeFramebufferSnapshotContract {
+            target_name: "_rt_FullFrameBuffer".to_owned(),
+            texture_slot: 0,
+            composite_to_object_mesh: true,
+            usage: WeFramebufferSnapshotUsage::EffectOnlyLayer,
+        }),
+        final_scene_blend: SceneBlendMode::Alpha,
+        static_black_output: false,
+        effects_in_authored_texture_space: false,
+        puppet_skinning_after_effects: false,
+        waterwaves_uv_field_material_index: None,
+        waterwaves_direct_material: None,
+        foliage_ripple_material: None,
+        final_effect_material: None,
+        effect_passes: vec![
+            static_effect(
+                0,
+                "effects/simple_audio_bars__SLOTS_1__SHAPE_7",
+                &[(0, "previous")],
+            ),
+            static_effect(1, "effects/skew__SLOTS_1", &[(0, "previous")]),
+            static_effect(
+                2,
+                "effects/opacity__SLOTS_3__MASK_1",
+                &[(0, "previous"), (1, "mask")],
+            ),
+        ],
+    });
+
+    assert_eq!(graph.passes.len(), 5);
+    let terminal = graph.passes.last().expect("authored terminal");
+    assert_eq!(terminal.role, RenderPassRole::SceneComposite);
+    assert_eq!(
+        terminal.shader.as_deref(),
+        Some("effects/opacity__SLOTS_3__MASK_1")
+    );
+    assert_eq!(terminal.target, RenderTargetRole::SceneColor);
+    assert_eq!(
+        terminal.state.pipeline_blend,
+        PipelineBlendMode::Translucent
+    );
+    assert_eq!(terminal.state.color_write_mask, ColorWriteMask::Rgb);
+}
+
+#[test]
 fn shader_only_scene_snapshot_is_not_injected_into_the_base_pass() {
     let graph = we_image_graph(&WeImageGraphContract {
         object_index: 9,
@@ -268,4 +322,34 @@ fn singleton_final_effect_draw_owns_its_material_visibility_stage() {
         graph.passes[0].effect_visibility,
         RenderPassEffectVisibility::material_stages(17, 1)
     );
+}
+
+fn static_effect(
+    binding_start: u32,
+    shader: &str,
+    bindings: &[(u32, &str)],
+) -> WeEffectPassContract {
+    WeEffectPassContract {
+        object_index: 12,
+        effect_binding_start: binding_start,
+        effect_binding_count: 1,
+        runtime_visibility: false,
+        material_index: Some(6 + binding_start as usize),
+        effect_file: "effects/test/effect.json".to_owned(),
+        pass_index: 0,
+        command: None,
+        shader: Some(shader.to_owned()),
+        source: None,
+        target: None,
+        binds: bindings
+            .iter()
+            .map(|(slot, source)| (*slot, (*source).to_owned()))
+            .collect(),
+        pass_constants: Vec::new(),
+        material_blending: Some("normal".to_owned()),
+        depthtest: Some("disabled".to_owned()),
+        depthwrite: Some("disabled".to_owned()),
+        cullmode: Some("nocull".to_owned()),
+        combos: BTreeMap::new(),
+    }
 }

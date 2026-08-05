@@ -388,7 +388,8 @@ fn add_dynamic_text_material(
         &material_path,
         SceneResourceKind::MaterialJson,
         WeIrResourceSource::Builtin,
-        br#"{"passes":[{"shader":"tensor-wallpaper/dynamic-text","blending":"translucent"}]}"#.to_vec(),
+        br#"{"passes":[{"shader":"tensor-wallpaper/dynamic-text","blending":"translucent"}]}"#
+            .to_vec(),
     );
     let material = builder.materials.len() as u32;
     let texture_start = builder.material_textures.len() as u32;

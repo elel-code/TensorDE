@@ -140,8 +140,8 @@ fn image_layer_composite_base_target_uses_authored_texture_projection() {
     );
     let expected = [
         [1.188, 0.0, 0.0, -1.0],
-        [0.0, 0.806, 0.0, 1.0],
-        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.806, 0.0, -1.0],
+        [0.0, 0.0, 0.00025, 0.5],
         [0.0, 0.0, 0.0, 1.0],
     ];
     for (actual, expected) in producer
@@ -151,6 +151,57 @@ fn image_layer_composite_base_target_uses_authored_texture_projection() {
         .zip(expected.into_iter().flatten())
     {
         assert!((actual - expected).abs() <= 1.0e-6);
+    }
+}
+
+#[test]
+fn effect_texture_projection_uses_we_y_conjugation_and_default_camera_depth() {
+    let mut document = SceneBinaryDocument::default();
+    document.project.logical_width = 3_840;
+    document.project.logical_height = 2_160;
+    let storage = SceneStorage::from_document(document).expect("projection storage");
+    let frame = ResolvedSemanticFrame::from_resolved_parts(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let world = [
+        0.99827063,
+        -0.008665401,
+        0.0,
+        0.0,
+        0.008665401,
+        0.99827063,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.99830824,
+        0.0,
+        2_182.4326,
+        1_094.1395,
+        0.0,
+        1.0,
+    ];
+
+    let projection = effect_texture_projection_matrix(&storage, &frame, world, [993.0, 844.0]);
+    let expected = [
+        [0.258_146_05, 0.001_904_58, 0.0, 0.136_683_7],
+        [-0.003_983_68, 0.390_064_98, 0.0, 0.013_092_16],
+        [0.0, 0.0, 0.000_249_577_06, 0.5],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    for (actual, expected) in projection
+        .into_iter()
+        .flatten()
+        .zip(expected.into_iter().flatten())
+    {
+        assert!(
+            (actual - expected).abs() <= 2.0e-6,
+            "{actual} != {expected}"
+        );
     }
 }
 

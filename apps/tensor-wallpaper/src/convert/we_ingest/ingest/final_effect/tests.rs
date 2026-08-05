@@ -33,7 +33,6 @@ fn final_effect_kind_carries_its_typed_draw_primitive() {
         FinalEffectKind::PuppetOpacity,
         FinalEffectKind::PuppetIrisWaterRipple,
         FinalEffectKind::TechCircle,
-        FinalEffectKind::AudioBars,
         FinalEffectKind::FramebufferWater,
     ] {
         assert_eq!(
@@ -110,21 +109,14 @@ fn equivalent_composelayer_programs_are_final_draw_candidates() {
         final_effect_kind("we/composelayer", &[circle], false, false),
         Some(FinalEffectKind::TechCircle)
     );
+}
 
-    let mut audio = effect("effects/simple_audio_bars__SLOTS_1__SHAPE_7", &[0]);
-    audio.combos.insert("SHAPE".to_owned(), 7);
+#[test]
+fn audio_bars_chain_stays_authored() {
+    let static_effects = audio_bars_effects();
     assert_eq!(
-        final_effect_kind(
-            "we/composelayer",
-            &[
-                audio,
-                effect("effects/skew__SLOTS_1", &[0]),
-                effect("effects/opacity__SLOTS_3", &[0, 1]),
-            ],
-            false,
-            false,
-        ),
-        Some(FinalEffectKind::AudioBars)
+        final_effect_kind("we/composelayer", &static_effects, false, false),
+        None
     );
 }
 
@@ -242,6 +234,16 @@ fn framebuffer_water_effects() -> Vec<WeEffectPassContract> {
         effect("effects/waterwaves__SLOTS_1", &[0]),
         effect("effects/opacity__SLOTS_1", &[0]),
         effect("effects/shake__SLOTS_3", &[0, 1]),
+    ]
+}
+
+fn audio_bars_effects() -> Vec<WeEffectPassContract> {
+    let mut audio = effect("effects/simple_audio_bars__SLOTS_1__SHAPE_7", &[0]);
+    audio.combos.insert("SHAPE".to_owned(), 7);
+    vec![
+        audio,
+        effect("effects/skew__SLOTS_1", &[0]),
+        effect("effects/opacity__SLOTS_3", &[0, 1]),
     ]
 }
 

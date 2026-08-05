@@ -12,7 +12,7 @@ use vulkan_renderer::{
 };
 use wayland_client_runtime::{SurfaceHandle, SurfaceId};
 
-use crate::{ShellComponent, SurfaceKey};
+use crate::{PanelAppletStore, PanelScene, ShellComponent, SurfaceKey, panel::PanelInteraction};
 
 const FRAME_SLOTS: usize = 3;
 const SURFACE_IMAGE: ResourceId = ResourceId(1);
@@ -38,11 +38,36 @@ struct PresentedSurface {
     present_complete: Vec<BinarySemaphore>,
     initialized_images: Vec<bool>,
     next_frame_slot: usize,
+    panel_scene: Option<PanelScene>,
+    panel_interaction: PanelInteraction,
+    panel_applet_revision: u64,
+    panel_draws: Vec<crate::panel::PanelDraw>,
 }
 
 struct FrameSlot {
     acquire: BinarySemaphore,
     in_flight: Option<FrameToken>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PanelPresentation<'a> {
+    scene: Option<&'a PanelScene>,
+    interaction: PanelInteraction,
+    applets: &'a PanelAppletStore,
+}
+
+impl<'a> PanelPresentation<'a> {
+    pub(crate) const fn new(
+        scene: Option<&'a PanelScene>,
+        interaction: PanelInteraction,
+        applets: &'a PanelAppletStore,
+    ) -> Self {
+        Self {
+            scene,
+            interaction,
+            applets,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -137,6 +162,7 @@ impl ShellPresenter {
         &mut self,
         surface_id: SurfaceId,
         extent: Extent2D,
+        panel: PanelPresentation<'_>,
     ) -> Result<(), ShellPresentError> {
         for attempt in 0..2 {
             let surface = self
@@ -148,6 +174,7 @@ impl ShellPresenter {
                 &self.queue,
                 &self.initial_graph,
                 &self.retained_graph,
+                panel,
             )?;
             match outcome {
                 PresentOutcome::Presented => return Ok(()),
@@ -231,6 +258,10 @@ impl PresentedSurface {
             present_complete,
             initialized_images,
             next_frame_slot: 0,
+            panel_scene: None,
+            panel_interaction: PanelInteraction::default(),
+            panel_applet_revision: 0,
+            panel_draws: Vec::with_capacity(8),
         })
     }
 
@@ -240,7 +271,9 @@ impl PresentedSurface {
         queue: &Queue,
         initial_graph: &CompiledGraph,
         retained_graph: &CompiledGraph,
+        panel: PanelPresentation<'_>,
     ) -> Result<PresentOutcome, ShellPresentError> {
+        self.update_panel_draws(panel.scene, panel.interaction, panel.applets);
         let slot_index = self.next_frame_slot;
         self.next_frame_slot = (self.next_frame_slot + 1) % self.frame_slots.len();
         if let Some(frame) = self.frame_slots[slot_index].in_flight.take() {
@@ -293,10 +326,17 @@ impl PresentedSurface {
             multisampled_render_to_single_sampled: None,
         };
         unsafe {
-            encoder
+            let mut rendering = encoder
                 .begin_rendering(&rendering)
-                .map_err(|source| gpu_error("begin Tensor Shell dynamic rendering", source))?
-                .end();
+                .map_err(|source| gpu_error("begin Tensor Shell dynamic rendering", source))?;
+            for draw in &self.panel_draws {
+                rendering
+                    .clear_color_attachment(0, draw.color, &[draw.rect])
+                    .map_err(|source| {
+                        gpu_error("draw retained Tensor Shell panel widget", source)
+                    })?;
+            }
+            rendering.end();
             encoder.pipeline_barrier(&before_present);
         }
         let command = encoder
@@ -353,10 +393,35 @@ impl PresentedSurface {
         self.swapchain = replacement;
         self.present_complete = present_complete;
         self.initialized_images = vec![false; self.swapchain.image_count()];
+        self.panel_scene = None;
+        self.panel_applet_revision = 0;
+        self.panel_draws.clear();
         for slot in &mut self.frame_slots {
             slot.in_flight = None;
         }
         Ok(())
+    }
+
+    fn update_panel_draws(
+        &mut self,
+        scene: Option<&PanelScene>,
+        interaction: PanelInteraction,
+        applets: &PanelAppletStore,
+    ) {
+        if self.panel_scene.as_ref() == scene
+            && self.panel_interaction == interaction
+            && self.panel_applet_revision == applets.revision()
+        {
+            return;
+        }
+        self.panel_scene = scene.cloned();
+        self.panel_interaction = interaction;
+        self.panel_applet_revision = applets.revision();
+        self.panel_draws = scene
+            .map(|scene| {
+                scene.physical_draws(self.swapchain.configuration().extent, interaction, applets)
+            })
+            .unwrap_or_default();
     }
 }
 

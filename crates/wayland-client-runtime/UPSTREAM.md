@@ -84,7 +84,7 @@ oversized region clipped by the compositor because a NULL region means
 - SHM path: `create_layer_surface` / `create_layer_surface_full` (solid fill for smoke)
 - **GPU path**: `create_layer_surface_gpu` — bufferless initial commit, no SHM on
   configure; exports RWH for `VK_KHR_wayland_surface` swapchain present
-  (Gilder-style wallpaper hosts).
+  (Tensor Wallpaper-style wallpaper hosts).
 - Layers bind `wp_viewporter` + `wp_fractional_scale_v1` when available (same
   buffer_scale=1 rule as toplevels); `scale_factor` / `set_viewport_destination`
   work for layer surfaces.

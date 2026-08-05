@@ -242,6 +242,16 @@ impl NotificationStore {
         self.do_not_disturb
     }
 
+    pub fn active_count(&self) -> usize {
+        self.active.len()
+    }
+
+    pub fn has_active_critical(&self) -> bool {
+        self.active
+            .values()
+            .any(|notification| notification.urgency == NotificationUrgency::Critical)
+    }
+
     pub fn active(&self, id: NotificationId) -> Option<&Notification> {
         self.active.get(&id)
     }

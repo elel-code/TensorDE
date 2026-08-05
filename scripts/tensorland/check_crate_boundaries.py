@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
-TENSOR_ROOT = WORKSPACE_ROOT / "apps/tensorland"
+TENSOR_ROOT = WORKSPACE_ROOT / "apps/tensor-wm"
 SMITHAY_DEPENDENCIES = {"smithay", "smithay-drm-extras"}
 READINESS_DEPENDENCIES = {"calloop", "mio", "polling"}
 REQUIRED_COMPIO_FEATURES = {"runtime", "async-fd", "io-uring"}

@@ -5,7 +5,7 @@ pub mod settings;
 
 pub use paths::{ApplicationPaths, PathError};
 pub use settings::{
-    AdapterConfig, AdaptiveAction, AdaptiveConfig, CacheConfig, DynamicPausePolicy, TensorWallpaperConfig,
+    AdapterConfig, AdaptiveAction, AdaptiveConfig, CacheConfig, DynamicPausePolicy,
     OutputAdaptiveConfig, OutputConfig, OutputPerformanceConfig, PerformanceConfig, PowerPolicy,
-    ThrottlePolicy, VideoConfig, VideoDecoderPolicy,
+    TensorWallpaperConfig, ThrottlePolicy, VideoConfig, VideoDecoderPolicy,
 };

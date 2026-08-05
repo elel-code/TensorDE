@@ -21,7 +21,7 @@ pub enum SurfaceRegion {
     Default,
     /// Empty region — no pixels match.
     ///
-    /// For input, this is pointer passthrough (Gilder wallpaper default).
+    /// For input, this is pointer passthrough (Tensor Wallpaper wallpaper default).
     Empty,
     /// Explicit union of surface-local rectangles.
     Rectangles(Vec<LogicalRect>),

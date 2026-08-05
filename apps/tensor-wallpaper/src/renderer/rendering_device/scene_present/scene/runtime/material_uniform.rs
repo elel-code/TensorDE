@@ -37,8 +37,6 @@ use value_writer::set_vector;
 
 use super::draw_uniform::{depth_parallax_inverse_values, iris_draw_values};
 
-#[cfg(test)]
-use final_effect::final_audio_bars_values;
 use final_effect::{
     final_effect_program_values, final_waterripple_values, final_waterwaves_values,
     material_texture_resolution, object_source_texture_resolution, ripple_flow_composite_values,
@@ -263,7 +261,6 @@ fn material_uniform_values(
             draw,
             shader_key,
             scene_time_seconds,
-            frame_inputs.average_spectrum32,
             frame_inputs.audio_material_values,
         ),
         BuiltinSceneParameterLayout::FinalWaterRipple => {

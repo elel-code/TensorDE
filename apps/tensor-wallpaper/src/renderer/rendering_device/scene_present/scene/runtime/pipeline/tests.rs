@@ -369,7 +369,8 @@ fn foliage_screen_variant_uses_standard_premultiplied_screen_blend() {
     let storage = SceneStorage::from_document(SceneBinaryDocument {
         strings: vec![
             "we/image-foliage-ripple-screen-composite".to_owned(),
-            "we/image-foliage-ripple-screen-composite__TENSOR_WALLPAPER_FOLIAGE_POWER_TWO_1".to_owned(),
+            "we/image-foliage-ripple-screen-composite__TENSOR_WALLPAPER_FOLIAGE_POWER_TWO_1"
+                .to_owned(),
         ],
         ..SceneBinaryDocument::default()
     })

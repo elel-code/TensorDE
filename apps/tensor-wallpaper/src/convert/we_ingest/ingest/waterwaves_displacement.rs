@@ -11,7 +11,8 @@ use crate::engine::scene::{SceneCullMode, SceneDepthTest, ScenePipelineBlend};
 use super::WeIrBuilder;
 
 pub(super) const WATERWAVES_UV_FIELD_SHADER: &str = "we/waterwaves-uv-field";
-const DISABLE_WATERWAVES_AGGREGATION_ENV: &str = "TENSOR_WALLPAPER_CONVERT_DISABLE_WATERWAVES_AGGREGATION";
+const DISABLE_WATERWAVES_AGGREGATION_ENV: &str =
+    "TENSOR_WALLPAPER_CONVERT_DISABLE_WATERWAVES_AGGREGATION";
 const WATERWAVES_UV_FIELD_ENV: &str = "TENSOR_WALLPAPER_CONVERT_WATERWAVES_UV_FIELD";
 const IMAGE_DIRECT_SHADER: &str = "we/image-waterwaves-direct";
 const IMAGE_MULTIPLY_DIRECT_SHADER: &str = "we/image-waterwaves-multiply-direct";

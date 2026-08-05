@@ -53,27 +53,28 @@ pub(crate) fn scene_clip_transform_for_frame(
 ) -> [[f32; 4]; 4] {
     let project = storage.project();
     let mut clip = scene_clip_transform(project, world_matrix);
-    let Some((camera, camera_object)) = storage
+    let camera = storage
         .objects()
         .iter()
         .find(|object| object.kind == SceneObjectKind::Camera)
         .and_then(|object| {
             semantic_frame
                 .object(object.id)
-                .map(|state| (state, object))
-        })
-    else {
-        return clip;
-    };
-    debug_assert!(camera_object.camera_zoom.is_finite() && camera_object.camera_zoom > 0.0);
-    let zoom = camera.camera_zoom;
+                .map(|state| (state, object.camera_zoom))
+        });
+    let zoom = camera.map_or(1.0, |(state, authored_zoom)| {
+        debug_assert!(authored_zoom.is_finite() && authored_zoom > 0.0);
+        state.camera_zoom
+    });
     let width = project.logical_width.max(1) as f32;
     let height = project.logical_height.max(1) as f32;
-    let camera_position = [
-        camera.world_matrix[12],
-        camera.world_matrix[13],
-        camera.world_matrix[14],
-    ];
+    let camera_position = camera.map_or([0.0; 3], |(state, _)| {
+        [
+            state.world_matrix[12],
+            state.world_matrix[13],
+            state.world_matrix[14],
+        ]
+    });
     let homogeneous = clip[3];
     for value in &mut clip[0] {
         *value *= zoom;
@@ -102,10 +103,13 @@ pub(crate) fn effect_texture_projection_matrix(
 ) -> [[f32; 4]; 4] {
     let mut projection = scene_clip_transform_for_frame(storage, semantic_frame, world_matrix);
     let half_width = authored_source_extent[0] * 0.5;
-    let negative_half_height = authored_source_extent[1] * -0.5;
+    let half_height = authored_source_extent[1] * 0.5;
     for row in &mut projection {
         row[0] *= half_width;
-        row[1] *= negative_half_height;
+        row[1] *= half_height;
+    }
+    for value in &mut projection[1] {
+        *value = -*value;
     }
     projection
 }

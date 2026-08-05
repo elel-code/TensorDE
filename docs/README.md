@@ -11,6 +11,18 @@ Product documentation has one canonical location:
 - [Tensor Shell](tensor-shell/architecture.md) — desktop surface semantics,
   [functional alignment](tensor-shell/alignment.md), product-local pass planning,
   and shared-renderer boundaries.
+- [Tensor Launcher](../apps/tensor-launcher/README.md) — desktop-entry discovery,
+  retained search, and standalone launcher ownership.
+- [Tensor Greeter](../apps/tensor-greeter/README.md) — greetd protocol, bounded
+  authentication state, and the pre-session security boundary.
+- [Tensor Settings](../apps/tensor-settings/README.md) — standalone settings
+  ownership, product schema boundaries, and reload routing.
+- [Tensor Idle](../apps/tensor-idle/README.md) — AC/battery idle policy and the
+  lock, output-power, and suspend boundary.
+- [Tensor control plane](control-plane.md) — product-owned IPC/session servers and
+  the independently packaged `tensor-msg` frontend.
+- [Tensor XDP](tensor-xdp/README.md) — portal capability publication,
+  Compio-native D-Bus ownership, configuration, and compositor/Shell gates.
 - [KDL](kdl/README.md) — shared KDL 2.0 crate design (Glaze-style performance,
   typed decoding, diagnostics, and Tensorland's shipped configuration format).
 

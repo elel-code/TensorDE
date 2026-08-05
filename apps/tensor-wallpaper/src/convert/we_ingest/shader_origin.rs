@@ -6,7 +6,10 @@
 
 use super::ir::WeIrShaderOrigin;
 
-include!(concat!(env!("OUT_DIR"), "/tensor_wallpaper_scene_shader_origins.rs"));
+include!(concat!(
+    env!("OUT_DIR"),
+    "/tensor_wallpaper_scene_shader_origins.rs"
+));
 
 pub(super) fn scene_shader_origin(authored_key: &str) -> WeIrShaderOrigin {
     let program = authored_key

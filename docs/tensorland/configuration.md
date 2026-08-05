@@ -281,11 +281,11 @@ Layout kind/options, appearance, cursor, and debug policy apply live as one tran
 `ipc-socket`, `gpu`, `render-device`, `output`, `systemd`, `xwayland`, `spawn-at-startup`, or
 `environment` are rejected with `reload_requires_restart` until their startup-owned resources have
 an atomic replacement path. Rejection preserves the old generation and live state. Use
-`tensorctl reload-config` for an explicit request and `tensorctl get-config-status` to inspect the
+`tensor-msg land reload-config` for an explicit request and `tensor-msg land get-config-status` to inspect the
 active generation and last bounded failure.
 
 IPC never puts complete KDL source on the wire. Version 7 `config_reload` subscriptions publish
-applied generations and bounded failure metadata; `tensorctl watch-config` exposes that stream.
+applied generations and bounded failure metadata; `tensor-msg land watch-config` exposes that stream.
 `tensor-shell`, not the compositor renderer, will own the transient visual and accessible
 notification. This mirrors Niri's useful split: the on-screen notice is short while its `validate`
 command and logs carry the detailed miette report.

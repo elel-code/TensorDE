@@ -6,17 +6,17 @@ use std::path::Path;
 mod installed_effects;
 #[path = "catalog/key.rs"]
 mod key;
-#[path = "catalog/stage_compilation.rs"]
-mod stage_compilation;
 #[path = "catalog/specs.rs"]
 mod specs;
+#[path = "catalog/stage_compilation.rs"]
+mod stage_compilation;
 
 use installed_effects::INSTALLED_EFFECT_PROGRAMS;
 use key::{effect_shader_name_for_key, effect_texture_slot_mask_for_key};
 use stage_compilation::{
     builtin_binding_expressions, compile_generated_scene_fragment, compile_generated_scene_vertex,
-    compile_particle_compute, compile_slang_scene_fragment,
-    compile_slang_scene_input_attachment, compile_slang_scene_vertex,
+    compile_particle_compute, compile_slang_scene_fragment, compile_slang_scene_input_attachment,
+    compile_slang_scene_vertex,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -98,8 +98,11 @@ pub(crate) fn build_scene_shader_origin_catalog() {
         "pub(super) fn is_engine_builtin_effect_program(program: &str) -> bool {{\n    matches!(program,\n{patterns}\n    )\n}}\n"
     );
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
-    fs::write(out_dir.join("tensor_wallpaper_scene_shader_origins.rs"), generated)
-        .expect("write built-in scene shader origin catalog");
+    fs::write(
+        out_dir.join("tensor_wallpaper_scene_shader_origins.rs"),
+        generated,
+    )
+    .expect("write built-in scene shader origin catalog");
 }
 
 pub(crate) fn build_scene_shader_catalog() {
@@ -357,8 +360,11 @@ pub(crate) fn build_scene_shader_catalog() {
         compute_bindings,
     ));
 
-    fs::write(out_dir.join("tensor_wallpaper_scene_shader_catalog.rs"), generated)
-        .expect("write built-in scene shader catalog");
+    fs::write(
+        out_dir.join("tensor_wallpaper_scene_shader_catalog.rs"),
+        generated,
+    )
+    .expect("write built-in scene shader catalog");
 }
 
 fn compile_scene_fragment(
@@ -511,10 +517,13 @@ fn scene_shader_sources(family: SceneShaderFamily, key: &str) -> (String, String
                 super::image_effect_composite_sources()
             }
         }
-        SceneShaderFamily::MeshFlatRoundedMaskComposite => match key {
-            "we/flat-rounded-hsl-source" => super::flat_rounded_hsl_source_sources(),
-            _ => super::flat_rounded_mask_composite_sources(),
-        },
+        SceneShaderFamily::MeshFlatRoundedMaskComposite => {
+            if key == "we/flat-rounded-hsl-source" {
+                super::flat_rounded_hsl_source_sources()
+            } else {
+                super::flat_rounded_mask_composite_sources()
+            }
+        }
         SceneShaderFamily::MeshPuppetEffectComposite => super::puppet_effect_composite_sources(),
         SceneShaderFamily::MeshPuppetEffectCompositeClipping => {
             super::puppet_effect_composite_clipping_sources()

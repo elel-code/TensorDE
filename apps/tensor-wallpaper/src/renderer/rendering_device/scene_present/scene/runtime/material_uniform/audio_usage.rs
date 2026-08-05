@@ -59,13 +59,8 @@ pub(super) fn material_uses_audio_spectrum(
 
 fn shader_uses_audio_spectrum(shader_key: &str) -> bool {
     rendering_device_scene_shader_for_key(shader_key).is_some_and(|shader| {
-        match shader.parameter_layout {
-            BuiltinSceneParameterLayout::FinalEffectProgram => {
-                shader_key.eq_ignore_ascii_case("we/audio-bars-final")
-            }
-            BuiltinSceneParameterLayout::Pulse => pulse_audio_processing(shader_key) != 0,
-            _ => false,
-        }
+        shader.parameter_layout == BuiltinSceneParameterLayout::Pulse
+            && pulse_audio_processing(shader_key) != 0
     })
 }
 
@@ -95,7 +90,9 @@ mod tests {
             &storage,
             SceneStringId(0)
         ));
-        assert!(rendering_device_scene_shader_for_key("package/effects/audioline__SLOTS_1").is_none());
+        assert!(
+            rendering_device_scene_shader_for_key("package/effects/audioline__SLOTS_1").is_none()
+        );
     }
 
     #[test]

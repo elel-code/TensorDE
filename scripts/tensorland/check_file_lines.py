@@ -12,7 +12,7 @@ SOURCE_SUFFIXES = {".py", ".rs"}
 
 
 def source_files(root: Path) -> list[Path]:
-    tensor_root = root / "apps/tensorland"
+    tensor_root = root / "apps/tensor-wm"
     files: list[Path] = []
     directories = [
         tensor_root / "src",

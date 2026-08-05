@@ -1,9 +1,9 @@
 #[cfg(feature = "rendering-device")]
-use tensor_wallpaper::renderer::rendering_device::RenderingDeviceClearColor;
-#[cfg(feature = "rendering-device")]
 use std::path::PathBuf;
 #[cfg(feature = "rendering-device")]
 use std::time::Duration;
+#[cfg(feature = "rendering-device")]
+use tensor_wallpaper::renderer::rendering_device::RenderingDeviceClearColor;
 
 #[cfg(feature = "rendering-device")]
 const DEFAULT_SCENE_RUN_DURATION: Option<Duration> = None;
@@ -28,6 +28,8 @@ fn main() {
 
 #[cfg(feature = "rendering-device")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    use scene_execution_plan_report::scene_execution_plan_report;
+    use serde_json::{Map, json};
     use tensor_wallpaper::engine::scene::{RenderingServer, SceneStorage};
     use tensor_wallpaper::renderer::rendering_device::{
         RenderingDeviceOptions, RenderingDeviceSceneRunOptions, capabilities,
@@ -40,11 +42,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         RenderingDeviceSharedVideoPresentOptions, RenderingDeviceVideoSessionCodec,
         run_rendering_device_shared_video_present,
     };
-    use tensor_wallpaper::renderer::wayland::{
-        WaylandFractionalScaleRounding, WaylandLayer,
-    };
-    use scene_execution_plan_report::scene_execution_plan_report;
-    use serde_json::{Map, json};
+    use tensor_wallpaper::renderer::wayland::{WaylandFractionalScaleRounding, WaylandLayer};
     let mut mode = RenderingDeviceCliMode::All;
     let mut options = RenderingDeviceOptions::default();
     let mut duration = DEFAULT_SCENE_RUN_DURATION;
@@ -125,7 +123,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 source = Some(args.next().ok_or("--source requires a path")?.into());
             }
             "--render-device" => {
-                render_device_selector = Some(args.next().ok_or("--render-device requires a selector")?);
+                render_device_selector =
+                    Some(args.next().ok_or("--render-device requires a selector")?);
             }
             "--render-device-preference" => {
                 let value = args

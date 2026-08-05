@@ -102,9 +102,10 @@ pub(super) fn scene_effect_visibility_mutation_policy(
                                 return;
                             }
                             policy.literal_targets.extend(
-                                analysis.effect_visibility_targets.into_iter().map(|target| {
-                                    (target.layer_name, target.effect_name)
-                                }),
+                                analysis
+                                    .effect_visibility_targets
+                                    .into_iter()
+                                    .map(|target| (target.layer_name, target.effect_name)),
                             );
                         }
                         Err(_) => {

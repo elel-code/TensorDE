@@ -10,10 +10,49 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ShaderSamplerCombo {
+    pub slot: u32,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ShaderTextureDefault {
     pub slot: u32,
     pub target: String,
     requirements: Vec<(String, i64)>,
+}
+
+pub(super) fn parse_shader_sampler_combos(source: &str) -> Result<Vec<ShaderSamplerCombo>, String> {
+    let mut combos = Vec::new();
+    for (line_index, line) in source.lines().enumerate() {
+        let Some((declaration, annotation)) = line.split_once("//") else {
+            continue;
+        };
+        let Some(slot) = sampler_slot(declaration) else {
+            continue;
+        };
+        let Some(metadata) = sampler_metadata(annotation, line_index)? else {
+            continue;
+        };
+        let Some(name) = metadata.get("combo").and_then(Value::as_str) else {
+            continue;
+        };
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return Err(format!(
+                "shader sampler combo on line {} is not an identifier",
+                line_index + 1
+            ));
+        }
+        combos.push(ShaderSamplerCombo {
+            slot,
+            name: name.to_owned(),
+        });
+    }
+    Ok(combos)
 }
 
 pub(super) fn parse_shader_texture_defaults(
@@ -24,36 +63,12 @@ pub(super) fn parse_shader_texture_defaults(
         let Some((declaration, annotation)) = line.split_once("//") else {
             continue;
         };
-        let declaration = declaration.trim();
-        let Some(name) = declaration
-            .strip_prefix("uniform sampler2D ")
-            .and_then(|declaration| declaration.split(';').next())
-            .map(str::trim)
-        else {
+        let Some(slot) = sampler_slot(declaration) else {
             continue;
         };
-        let Some(slot) = name
-            .strip_prefix("g_Texture")
-            .and_then(|slot| slot.parse::<u32>().ok())
-        else {
+        let Some(metadata) = sampler_metadata(annotation, line_index)? else {
             continue;
         };
-        let Some(json_start) = annotation.find('{') else {
-            continue;
-        };
-        let json_end = annotation.rfind('}').ok_or_else(|| {
-            format!(
-                "shader sampler annotation on line {} is missing its closing brace",
-                line_index + 1
-            )
-        })?;
-        let metadata: Value =
-            serde_json::from_str(&annotation[json_start..=json_end]).map_err(|source| {
-                format!(
-                    "invalid shader sampler annotation on line {}: {source}",
-                    line_index + 1
-                )
-            })?;
         let Some(target) = metadata.get("default").and_then(Value::as_str) else {
             continue;
         };
@@ -82,6 +97,38 @@ pub(super) fn parse_shader_texture_defaults(
         });
     }
     Ok(defaults)
+}
+
+fn sampler_slot(declaration: &str) -> Option<u32> {
+    declaration
+        .trim()
+        .strip_prefix("uniform sampler2D ")?
+        .split(';')
+        .next()?
+        .trim()
+        .strip_prefix("g_Texture")?
+        .parse::<u32>()
+        .ok()
+}
+
+fn sampler_metadata(annotation: &str, line_index: usize) -> Result<Option<Value>, String> {
+    let Some(json_start) = annotation.find('{') else {
+        return Ok(None);
+    };
+    let json_end = annotation.rfind('}').ok_or_else(|| {
+        format!(
+            "shader sampler annotation on line {} is missing its closing brace",
+            line_index + 1
+        )
+    })?;
+    serde_json::from_str(&annotation[json_start..=json_end])
+        .map(Some)
+        .map_err(|source| {
+            format!(
+                "invalid shader sampler annotation on line {}: {source}",
+                line_index + 1
+            )
+        })
 }
 
 pub(super) fn apply_shader_texture_defaults(
@@ -195,5 +242,20 @@ uniform sampler2D g_Texture3; // {"default":"gradient/test","require":{"GRADIENT
         .expect_err("malformed metadata must fail");
 
         assert!(error.contains("closing brace"));
+    }
+
+    #[test]
+    fn sampler_combo_is_independent_from_its_default_texture() {
+        let combos = parse_shader_sampler_combos(
+            r#"uniform sampler2D g_Texture2; // {"combo":"OPACITYMASK","default":"util/white"}"#,
+        )
+        .expect("sampler combo");
+        assert_eq!(
+            combos,
+            vec![ShaderSamplerCombo {
+                slot: 2,
+                name: "OPACITYMASK".to_owned(),
+            }]
+        );
     }
 }

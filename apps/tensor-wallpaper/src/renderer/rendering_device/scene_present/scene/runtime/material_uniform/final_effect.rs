@@ -6,7 +6,6 @@ pub(super) fn final_effect_program_values(
     draw: &SceneRenderingDeviceMeshDraw,
     shader_key: &str,
     scene_time_seconds: f32,
-    spectrum: Option<&[f32; 32]>,
     audio_material_values: &[ResolvedAudioBandMaterialValue],
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     match shader_key.to_ascii_lowercase().as_str() {
@@ -40,7 +39,6 @@ pub(super) fn final_effect_program_values(
                 SceneAudioBandMaterialTarget::TechCircleSectorWidth,
             ),
         ),
-        "we/audio-bars-final" => final_audio_bars_values(parameters, storage, draw, spectrum),
         "we/framebuffer-water-quantized-water-opacity" => {
             framebuffer_water_opacity_values(parameters, draw, scene_time_seconds)
         }
@@ -155,82 +153,6 @@ fn final_tech_circle_values(
         .unwrap_or_else(|| parameters.scalar(&["tech.ui_editor_properties_5_sector_1_width"], 0.3));
     values[17] = parameters.scalar(&["tech.ui_editor_properties_5_sector_segment_count"], 5.0);
     values[18] = parameters.scalar(&["tech.ui_editor_properties_5_sector_segment_width"], 0.75);
-    values
-}
-
-pub(super) fn final_audio_bars_values(
-    parameters: &MaterialParameters<'_>,
-    storage: &SceneStorage,
-    draw: &SceneRenderingDeviceMeshDraw,
-    spectrum: Option<&[f32; 32]>,
-) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
-    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
-    values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
-    values[4..7].copy_from_slice(&[1.0, 1.0, 1.0]);
-    set_vector(&mut values, 4, &parameters.values(&["audio.Bar Color"]), 3);
-    values[7] = if draw_effect_enabled(draw, 0) {
-        parameters.scalar(&["audio.ui_editor_properties_opacity"], 1.0)
-    } else {
-        0.0
-    };
-    values[8] = parameters.scalar(&["audio.Bar Count"], 32.0);
-    values[9] = parameters.scalar(&["audio.Bar Spacing"], 0.1);
-    values[10..12].copy_from_slice(&[0.0, 1.0]);
-    set_vector(
-        &mut values,
-        10,
-        &parameters.values(&["audio.Lower/Upper Bar Bounds"]),
-        2,
-    );
-    values[12] = parameters.scalar(
-        &["audio.Minimum Height (Will be multiplied by the bar width) "],
-        0.0,
-    );
-    values[13] = parameters.scalar(&["audio.Radius"], 1.0);
-    values[14] = parameters.scalar(&["audio.Volume Factor"], 1.0);
-    values[15] = parameters
-        .values(&["audio.Anti-alias blurring "])
-        .first()
-        .copied()
-        .unwrap_or(0.05);
-    if draw_effect_enabled(draw, 1) {
-        values[16] = parameters.scalar(&["skew.top"], 0.0);
-        values[17] = parameters.scalar(&["skew.bottom"], 0.0);
-        values[18] = parameters.scalar(&["skew.left"], 0.0);
-        values[19] = parameters.scalar(&["skew.right"], 0.0);
-    }
-    if draw_effect_enabled(draw, 2) {
-        values[20] = parameters.scalar(&["opacity.alpha", "opacity.opacity"], 1.0);
-        values[21] = parameters.scalar(&["opacity.mask_enabled"], 0.0);
-    } else {
-        values[20] = 1.0;
-    }
-    values[24..28].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 0));
-    values[28] = parameters
-        .values(&["audio.Anti-alias blurring "])
-        .get(1)
-        .copied()
-        .unwrap_or(0.0);
-    let source_width = draw.authored_source_extent[0];
-    let source_height = draw.authored_source_extent[1];
-    let (source_width, source_height) = if source_width.is_finite()
-        && source_height.is_finite()
-        && source_width > 0.0
-        && source_height > 0.0
-    {
-        (source_width, source_height)
-    } else {
-        (
-            storage.project().logical_width.max(1) as f32,
-            storage.project().logical_height.max(1) as f32,
-        )
-    };
-    values[29] = source_width / source_height;
-    values[30] = source_width.min(source_height);
-    if let Some(spectrum) = spectrum {
-        values[32..64].copy_from_slice(spectrum);
-        values[64..96].copy_from_slice(spectrum);
-    }
     values
 }
 

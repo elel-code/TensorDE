@@ -18,18 +18,13 @@ path = "src/main.rs"
 name = "tensor-files-privileged-helper"
 path = "src/bin/tensor-files-privileged-helper.rs"
 
-[[bin]]
-name = "tensor-files-xdp-filechooser"
-path = "src/bin/tensor-files-xdp-filechooser.rs"
-
 [dependencies]
 async-channel = "2"
-async-io = "2"
 async-lock = "3"
-async-process = "2"
 bevy_ecs = { version = "0.19", default-features = false, features = ["std"] }
 bytemuck = { version = "1", features = ["derive"] }
-compio = { version = "0.19", default-features = false, features = ["fs", "io", "io-uring", "macros", "runtime"] }
+compio = { version = "0.19", default-features = false, features = ["fs", "io", "io-uring", "macros", "runtime", "time"] }
+compio-process = "0.9"
 cosmic-text = "0.19"
 futures-channel = "0.3"
 futures-lite = "2"
@@ -39,17 +34,13 @@ image = "0.25"
 lyon = "1"
 notify = "8"
 roxmltree = "0.21"
-# Safe syscall wrappers (access). Already in the graph via async-io / wayland.
+serde = "1"
+# Safe syscall wrappers (access). Already in the graph via wayland.
 # `fs` covers memfd/seals used by dmabuf import smoke tests.
 rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 svgtypes = "0.16"
+tensor-dbus = { path = "../../crates/tensor-dbus" }
 # Default features include Compio event-loop integration.
 wayland-client-runtime = { path = "../../crates/wayland-client-runtime", features = ["compio"] }
 vulkan-renderer = { path = "../../crates/vulkan-renderer" }
 xkeysym = "0.2"
-# zbus 5 default executor is async-io; avoid the optional tokio feature so the
-# main runtime path can stay Compio-first without a second reactor island.
-zbus = { version = "5", default-features = false, features = ["async-io"] }
-# zbus_polkit has no standalone async-io feature; its default enables zbus/async-io
-# (and blocking-api). Avoid the optional `tokio` feature so polkit stays on async-io.
-zbus_polkit = "5"

@@ -155,7 +155,10 @@ impl EventLoop {
     ) -> Result<(), RuntimeError> {
         match event {
             Event::Surface(event) => self.dispatch_surface_event(app, event),
-            Event::LayerSurface(_) | Event::Output(_) | Event::Seat(_) => Ok(()),
+            Event::LayerSurface(_)
+            | Event::Output(_)
+            | Event::OutputPower(_)
+            | Event::Seat(_) => Ok(()),
             Event::Activation(_) => Ok(()),
             Event::IdleNotify(_) | Event::Foreign(_) => Ok(()),
             Event::PointerConstraint(_) | Event::RelativePointer(_) => Ok(()),

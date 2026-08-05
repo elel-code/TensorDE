@@ -20,6 +20,7 @@ pub(super) struct RetainedPointerParallaxSystem {
     fallback_camera_eye: [f32; 2],
     camera_position: [f32; 2],
     pointer_scene_offset: [f32; 2],
+    shader_position: [f32; 2],
     response: f32,
 }
 
@@ -67,6 +68,7 @@ impl RetainedPointerParallaxSystem {
                 camera_eye[1] + pointer_scene_offset[1],
             ],
             pointer_scene_offset,
+            shader_position: [0.5; 2],
             response: 0.0,
         }
     }
@@ -77,6 +79,20 @@ impl RetainedPointerParallaxSystem {
         frame_delta_seconds: f32,
         events: &SceneFrameEvents,
     ) {
+        let shader_pointer = events
+            .pointer
+            .normalized_position_top_left()
+            .unwrap_or([0.5; 2]);
+        self.shader_position = if self.camera.enabled {
+            [
+                0.5 * (1.0 - self.camera.mouse_influence)
+                    + shader_pointer[0] * self.camera.mouse_influence,
+                0.5 * (1.0 - self.camera.mouse_influence)
+                    + shader_pointer[1] * self.camera.mouse_influence,
+            ]
+        } else {
+            shader_pointer
+        };
         if !self.camera.enabled || self.root_bindings.is_empty() {
             return;
         }
@@ -98,6 +114,7 @@ impl RetainedPointerParallaxSystem {
     }
 
     pub(super) fn apply_frame(&mut self, frame: &mut ResolvedSemanticFrame) {
+        frame.parallax_position = self.shader_position;
         for object in &mut frame.objects {
             object.render_world_matrix = object.world_matrix;
         }
@@ -218,6 +235,34 @@ mod tests {
         };
 
         assert_eq!(retained_camera_pointer_position(&events), Some([0.9, 0.95]));
+    }
+
+    #[test]
+    fn shader_parallax_position_applies_authored_mouse_influence_in_top_left_space() {
+        let mut document = SceneBinaryDocument::default();
+        document.camera_parallax = SceneCameraParallaxRecord {
+            enabled: true,
+            amount: 0.5,
+            delay: 0.1,
+            mouse_influence: 0.5,
+        };
+        let storage = SceneStorage::from_document(document).expect("parallax storage");
+        let world = SceneSemanticWorld::from_storage(&storage).expect("parallax world");
+        let mut frame = world.resolve_frame().expect("initial semantic frame");
+        let mut parallax = RetainedPointerParallaxSystem::from_world(&world, &frame);
+        let events = SceneFrameEvents {
+            pointer: crate::engine::scene::ScenePointerState {
+                position: [90.0, 10.0],
+                surface_size: [100, 200],
+                ..crate::engine::scene::ScenePointerState::default()
+            },
+            ..SceneFrameEvents::default()
+        };
+
+        parallax.begin_frame(&world, 1.0 / 60.0, &events);
+        parallax.apply_frame(&mut frame);
+
+        assert_eq!(frame.parallax_position, [0.7, 0.275]);
     }
 
     #[test]

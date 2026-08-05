@@ -29,7 +29,6 @@ pub(super) const PUPPET_OPACITY_FINAL_SHADER: &str = "we/puppet-opacity-final";
 pub(super) const PUPPET_IRIS_WATERRIPPLE_FINAL_SHADER: &str = "we/puppet-iris-waterripple-final";
 pub(super) const FLAT_ROUNDED_OPACITY_FINAL_SHADER: &str = "we/flat-rounded-opacity-final";
 pub(super) const TECH_CIRCLE_FINAL_SHADER: &str = "we/tech-circle-final";
-pub(super) const AUDIO_BARS_FINAL_SHADER: &str = "we/audio-bars-final";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinalEffectKind {
     ImageWaterWaves,
@@ -41,7 +40,6 @@ enum FinalEffectKind {
     PuppetIrisWaterRipple,
     FlatRoundedOpacity,
     TechCircle,
-    AudioBars,
     FramebufferWater,
 }
 
@@ -181,7 +179,6 @@ fn final_effect_draw_primitive(kind: FinalEffectKind) -> RenderPassDrawPrimitive
         | FinalEffectKind::PuppetOpacity
         | FinalEffectKind::PuppetIrisWaterRipple
         | FinalEffectKind::TechCircle
-        | FinalEffectKind::AudioBars
         | FinalEffectKind::FramebufferWater => RenderPassDrawPrimitive::ObjectMesh,
     }
 }
@@ -225,9 +222,6 @@ fn final_effect_program(
         FinalEffectKind::FlatRoundedOpacity
         | FinalEffectKind::TechCircle
         | FinalEffectKind::FramebufferWater => Vec::new(),
-        FinalEffectKind::AudioBars => texture_at_slot(&inputs[2], 1)
-            .map(|texture| vec![remap_texture(texture, 0)])
-            .unwrap_or_default(),
         _ => vec![source_texture(source)?],
     };
     let mut constants = if kind == FinalEffectKind::FramebufferWater {
@@ -327,16 +321,6 @@ fn final_effect_program(
             append_effect_constants(&mut constants, "tech", &inputs[0]);
             TECH_CIRCLE_FINAL_SHADER
         }
-        FinalEffectKind::AudioBars => {
-            append_effect_constants(&mut constants, "audio", &inputs[0]);
-            append_effect_constants(&mut constants, "skew", &inputs[1]);
-            append_effect_constants(&mut constants, "opacity", &inputs[2]);
-            constants.push(synthetic_constant(
-                "opacity.mask_enabled",
-                texture_at_slot(&inputs[2], 1).is_some(),
-            ));
-            AUDIO_BARS_FINAL_SHADER
-        }
         FinalEffectKind::FramebufferWater => return framebuffer_water::final_program(&inputs),
     };
     Some((shader, textures, constants))
@@ -364,14 +348,6 @@ fn final_effect_kind(
         && tech_circle_is_supported(&effects[0])
     {
         return Some(FinalEffectKind::TechCircle);
-    }
-    if is_composelayer_shader(base_shader)
-        && effect_names.as_slice() == ["simple_audio_bars", "skew", "opacity"]
-        && audio_bars_is_supported(&effects[0])
-        && skew_is_supported(&effects[1])
-        && previous_only(&effects[2], &[0, 1])
-    {
-        return Some(FinalEffectKind::AudioBars);
     }
     if is_composelayer_shader(base_shader)
         && effect_names.as_slice() == ["caustics", "waterwaves", "opacity", "shake"]
@@ -470,14 +446,6 @@ fn tech_circle_is_supported(effect: &WeEffectPassContract) -> bool {
         && combo_value(effect, "RING_SEGMENTS", 0) == 0
         && combo_value(effect, "SECTOR_SEGMENTS", 0) == 1
         && combo_value(effect, "RATIO_CORRECTION", 0) == 0
-}
-
-fn audio_bars_is_supported(effect: &WeEffectPassContract) -> bool {
-    previous_only(effect, &[0]) && combo_value(effect, "SHAPE", 0) == 7
-}
-
-fn skew_is_supported(effect: &WeEffectPassContract) -> bool {
-    previous_only(effect, &[0]) && combo_value(effect, "REPEAT", 1) != 0
 }
 
 fn combo_value(effect: &WeEffectPassContract, name: &str, default: i64) -> i64 {

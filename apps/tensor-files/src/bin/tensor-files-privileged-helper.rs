@@ -24,7 +24,14 @@ fn main() {
         }
     };
 
-    if let Err(err) = async_io::block_on(run_dbus_service(bus)) {
+    let runtime = match compio::runtime::RuntimeBuilder::new().build() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("cannot create privileged helper Compio runtime: {err}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(err) = runtime.block_on(run_dbus_service(bus)) {
         eprintln!("{err}");
         std::process::exit(1);
     }

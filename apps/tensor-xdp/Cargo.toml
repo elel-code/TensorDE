@@ -1,0 +1,19 @@
+[package]
+name = "tensor-xdp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "Dedicated xdg-desktop-portal backend for TensorDE"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+tensor-dbus = { path = "../../crates/tensor-dbus" }
+tensor-kdl = { path = "../../crates/tensor-kdl" }
+tensor-runtime = { path = "../../crates/tensor-runtime" }
+thiserror = "2"
+
+[dev-dependencies]
+compio = { version = "0.19", default-features = false, features = ["runtime"] }
+
+[lints]
+workspace = true

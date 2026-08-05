@@ -6,11 +6,17 @@ standards live under `crates/`.
 
 ## Products
 
-- `apps/tensorland` — the Tensorland Wayland compositor.
-- `apps/tensor-shell` — Tensor Shell: panels, launcher, notifications and
-  OSD, control center, overview, and lock surfaces.
+- `apps/tensor-wm` — the Tensorland Wayland compositor.
+- `apps/tensor-shell` — Tensor Shell: panels, notifications and OSD, control
+  center, overview, launcher/settings entries, and lock surfaces.
+- `apps/tensor-launcher` — the retained, bounded Tensor application launcher.
+- `apps/tensor-greeter` — the standalone greetd frontend for Tensor sessions.
+- `apps/tensor-settings` — the standalone Tensor settings application.
+- `apps/tensor-idle` — the independent idle, power and lock policy service.
+- `apps/tensor-msg` — the independently installable Tensor product IPC client.
 - `apps/tensor-files` — the Tensor Files file manager.
 - `apps/tensor-wallpaper` — the Tensor Wallpaper scene and wallpaper engine.
+- `apps/tensor-xdp` — the dedicated TensorDE xdg-desktop-portal backend.
 
 ## Shared foundations
 
@@ -22,8 +28,8 @@ standards live under `crates/`.
   applications do not link it at runtime.
 - `crates/wayland-client-runtime` — native Wayland protocols and event-loop
   integration shared by applications and the shell.
-- `crates/tensor-*` — value-only event, runtime, host, DRM, presentation,
-  protocol, and geometry boundaries shared with the compositor.
+- `crates/tensor-*` — value-only event, runtime, D-Bus, host, DRM,
+  presentation, protocol, and geometry boundaries shared across products.
 
 Tensorland carries the compositor identity; Tensor Shell and Tensor Files form
 the companion product family. TensorDE remains the repository and desktop-

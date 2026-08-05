@@ -3,15 +3,19 @@
 //! The shell owns desktop-level surfaces. Application chrome belongs to the
 //! applications themselves and is deliberately outside this crate.
 
+mod config;
 mod layout;
 mod model;
 mod notification;
 mod notification_service;
+mod panel;
 mod present;
 mod render;
 mod runtime;
 mod surfaces;
+mod system_status;
 
+pub use config::{PanelConfig, ShellConfig, ShellConfigError, TensorlandConfigEndpoint};
 pub use layout::{ShellLayout, ShellLayoutError};
 pub use model::{ShellComponent, ShellModel};
 pub use notification::{
@@ -20,6 +24,10 @@ pub use notification::{
     NotificationStoreError, NotificationTimeout, NotificationUrgency,
 };
 pub use notification_service::NotificationServiceError;
+pub use panel::{
+    PanelAppletAvailability, PanelAppletEmphasis, PanelAppletState, PanelAppletStore,
+    PanelAppletUpdate, PanelScene, PanelWidget, PanelWidgetKind,
+};
 pub use present::ShellPresentError;
 pub use render::{
     LocalSceneColorPass, ShellCompositionPath, ShellEffect, ShellFramePlan, ShellFramePlanError,
@@ -27,4 +35,5 @@ pub use render::{
 };
 pub use runtime::{ShellRuntime, ShellRuntimeError};
 pub use surfaces::{SurfaceKey, SurfacePlan, surface_plan};
+pub use system_status::{PowerServiceSnapshot, power_applet_state};
 pub use vulkan_renderer as gpu;

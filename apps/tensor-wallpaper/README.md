@@ -27,7 +27,7 @@ Tensor Wallpaper 是面向 niri、Hyprland 等独立 compositor 的 Wayland 动�
 ## 仓库结构
 
 - `src/bin/tensor-wallpaperd.rs`：daemon 入口。
-- `src/bin/tensor-wallpaperctl.rs`：daemon CLI。
+- `../tensor-msg`：independently packaged control CLI (`tensor-msg wallpaper`)。
 - `src/bin/tensor-wallpaper-convert.rs`：Tensor Wallpaper 包 pack/unpack 和 Wallpaper Engine scene 到新
   `.gscene` 二进制转换。
 - `src/bin/tensor-wallpaper.rs`：场景、视频渲染与指令诊断入口。
@@ -47,8 +47,8 @@ cargo check -p tensor-wallpaper --features rendering-device --bin tensor-wallpap
 cargo check -p tensor-wallpaper --features video --bin tensor-wallpaper
 cargo test -p tensor-wallpaper --features video
 cargo run -p tensor-wallpaper --bin tensor-wallpaperd
-cargo run -p tensor-wallpaper --bin tensor-wallpaperctl -- ping
-cargo run -p tensor-wallpaper --bin tensor-wallpaperctl -- outputs
+cargo run -p tensor-msg -- wallpaper ping
+cargo run -p tensor-msg -- wallpaper outputs
 cargo run -p tensor-wallpaper --bin tensor-wallpaper-convert -- pack ./source.gwpdir ./out.gwp
 cargo run -p tensor-wallpaper --bin tensor-wallpaper-convert -- wallpaper-engine /path/to/we/project ./out.gscene
 ```

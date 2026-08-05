@@ -1,143 +1,151 @@
-#[zbus::interface(name = "org.tensorde.TensorFiles1.Privileged")]
 impl PrivilegedService {
-    #[zbus(name = "CreateFolder")]
-    async fn create_folder(
+    pub(super) async fn dispatch(
         &self,
-        parent: String,
-        name: String,
-        #[zbus(connection)] connection: &Connection,
-        #[zbus(header)] header: Header<'_>,
-    ) -> fdo::Result<String> {
-        let _authorized_uid = self.authorize(connection, header).await?;
-        ensure_privileged_local_path(Path::new(&parent)).map_err(fdo::Error::Failed)?;
-        Self::map_result(
-            file_ops::create_folder(Path::new(&parent), &name)
-                .map(|path| path.display().to_string()),
-        )
-    }
-
-    #[zbus(name = "CreateFile")]
-    async fn create_file(
-        &self,
-        parent: String,
-        name: String,
-        #[zbus(connection)] connection: &Connection,
-        #[zbus(header)] header: Header<'_>,
-    ) -> fdo::Result<String> {
-        let _authorized_uid = self.authorize(connection, header).await?;
-        ensure_privileged_local_path(Path::new(&parent)).map_err(fdo::Error::Failed)?;
-        Self::map_result(
-            file_ops::create_file(Path::new(&parent), &name).map(|path| path.display().to_string()),
-        )
-    }
-
-    #[zbus(name = "Rename")]
-    async fn rename(
-        &self,
-        path: String,
-        new_name: String,
-        #[zbus(connection)] connection: &Connection,
-        #[zbus(header)] header: Header<'_>,
-    ) -> fdo::Result<String> {
-        let _authorized_uid = self.authorize(connection, header).await?;
-        ensure_privileged_local_path(Path::new(&path)).map_err(fdo::Error::Failed)?;
-        Self::map_result(
-            file_ops::rename_path(Path::new(&path), &new_name)
-                .map(|path| path.display().to_string()),
-        )
-    }
-
-    #[zbus(name = "Trash")]
-    async fn trash(
-        &self,
-        paths: Vec<String>,
-        #[zbus(connection)] connection: &Connection,
-        #[zbus(header)] header: Header<'_>,
-    ) -> fdo::Result<String> {
-        let _authorized_uid = self.authorize(connection, header).await?;
-        let paths = paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
-        for path in &paths {
-            ensure_privileged_local_path(path).map_err(fdo::Error::Failed)?;
-        }
-        Self::map_result(file_ops::trash_paths(&paths).to_result_message("moved to trash"))
-    }
-
-    #[zbus(name = "Transfer")]
-    async fn transfer(
-        &self,
-        operation: String,
-        source: String,
-        target_dir: String,
-        #[zbus(connection)] connection: &Connection,
-        #[zbus(header)] header: Header<'_>,
-    ) -> fdo::Result<String> {
-        let _authorized_uid = self.authorize(connection, header).await?;
-        ensure_privileged_local_path(Path::new(&source)).map_err(fdo::Error::Failed)?;
-        ensure_privileged_local_path(Path::new(&target_dir)).map_err(fdo::Error::Failed)?;
-        Self::map_result(
-            file_ops::perform_transfer_with_progress(
-                &operation,
-                Path::new(&source),
-                Path::new(&target_dir),
-                "keep-both",
-                None,
-                |_| {},
-            )
-            .map(|path| path.display().to_string()),
-        )
-    }
-
-    #[zbus(name = "PrepareExternalEdit")]
-    async fn prepare_external_edit(
-        &self,
-        path: String,
-        #[zbus(connection)] connection: &Connection,
-        #[zbus(header)] header: Header<'_>,
-    ) -> fdo::Result<(String, String)> {
-        let authorized_uid = self.authorize(connection, header).await?;
-        ensure_privileged_local_path(Path::new(&path)).map_err(fdo::Error::Failed)?;
-        Self::map_result(self.prepare_external_edit_inner(PathBuf::from(path), authorized_uid))
-    }
-
-    #[zbus(name = "CommitExternalEdit")]
-    async fn commit_external_edit(
-        &self,
-        token: String,
-        scratch_path: String,
-        #[zbus(connection)] connection: &Connection,
-        #[zbus(header)] header: Header<'_>,
-    ) -> fdo::Result<String> {
-        let _authorized_uid = self.authorize(connection, header).await?;
-        Self::map_result(self.commit_external_edit_inner(&token, PathBuf::from(scratch_path)))
-    }
-
-    #[zbus(name = "DiscardExternalEdit")]
-    async fn discard_external_edit(
-        &self,
-        token: String,
-        #[zbus(connection)] connection: &Connection,
-        #[zbus(header)] header: Header<'_>,
-    ) -> fdo::Result<()> {
-        let _authorized_uid = self.authorize(connection, header).await?;
-        Self::map_result(self.discard_external_edit_inner(&token))
-    }
-
-    #[zbus(name = "AssociateExternalEditUnit")]
-    async fn associate_external_edit_unit(
-        &self,
-        token: String,
-        unit: String,
-        session_bus_address: String,
-        #[zbus(connection)] connection: &Connection,
-        #[zbus(header)] header: Header<'_>,
-    ) -> fdo::Result<()> {
-        let _authorized_uid = self.authorize(connection, header).await?;
-        let session_bus_address = if session_bus_address.is_empty() {
-            None
-        } else {
-            Some(session_bus_address)
+        connection: &mut Connection,
+        call: Message,
+    ) -> tensor_dbus::Result<()> {
+        let Some(call) = MethodCall::new(call) else {
+            return Ok(());
         };
-        Self::map_result(self.associate_external_edit_unit_inner(&token, unit, session_bus_address))
+        if let Err(error) = call.require_path(OBJECT_PATH, "unknown privileged helper object path")
+        {
+            return reply_method_error(connection, &call, error).await;
+        }
+        if let Err(error) =
+            call.require_interface(SERVICE_INTERFACE, "unknown privileged helper interface")
+        {
+            return reply_method_error(connection, &call, error).await;
+        }
+
+        match call.member() {
+            "CheckIdle" => reply_method(connection, &call, &()).await,
+            "CreateFolder" => {
+                let result = async {
+                    let (parent, name): (String, String) = call.body()?;
+                    self.authorize(connection, call.message()).await?;
+                    ensure_privileged_local_path(Path::new(&parent))
+                        .map_err(MethodError::failed)?;
+                    file_ops::create_folder(Path::new(&parent), &name)
+                        .map(|path| path.display().to_string())
+                        .map_err(MethodError::failed)
+                }
+                .await;
+                reply_method_result(connection, &call, result).await
+            }
+            "CreateFile" => {
+                let result = async {
+                    let (parent, name): (String, String) = call.body()?;
+                    self.authorize(connection, call.message()).await?;
+                    ensure_privileged_local_path(Path::new(&parent))
+                        .map_err(MethodError::failed)?;
+                    file_ops::create_file(Path::new(&parent), &name)
+                        .map(|path| path.display().to_string())
+                        .map_err(MethodError::failed)
+                }
+                .await;
+                reply_method_result(connection, &call, result).await
+            }
+            "Rename" => {
+                let result = async {
+                    let (path, new_name): (String, String) = call.body()?;
+                    self.authorize(connection, call.message()).await?;
+                    ensure_privileged_local_path(Path::new(&path)).map_err(MethodError::failed)?;
+                    file_ops::rename_path(Path::new(&path), &new_name)
+                        .map(|path| path.display().to_string())
+                        .map_err(MethodError::failed)
+                }
+                .await;
+                reply_method_result(connection, &call, result).await
+            }
+            "Trash" => {
+                let result = async {
+                    let (paths,): (Vec<String>,) = call.body()?;
+                    self.authorize(connection, call.message()).await?;
+                    let paths = paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+                    for path in &paths {
+                        ensure_privileged_local_path(path).map_err(MethodError::failed)?;
+                    }
+                    file_ops::trash_paths(&paths)
+                        .to_result_message("moved to trash")
+                        .map_err(MethodError::failed)
+                }
+                .await;
+                reply_method_result(connection, &call, result).await
+            }
+            "Transfer" => {
+                let result = async {
+                    let (operation, source, target_dir): (String, String, String) = call.body()?;
+                    self.authorize(connection, call.message()).await?;
+                    ensure_privileged_local_path(Path::new(&source))
+                        .map_err(MethodError::failed)?;
+                    ensure_privileged_local_path(Path::new(&target_dir))
+                        .map_err(MethodError::failed)?;
+                    file_ops::perform_transfer_with_progress(
+                        &operation,
+                        Path::new(&source),
+                        Path::new(&target_dir),
+                        "keep-both",
+                        None,
+                        |_| {},
+                    )
+                    .map(|path| path.display().to_string())
+                    .map_err(MethodError::failed)
+                }
+                .await;
+                reply_method_result(connection, &call, result).await
+            }
+            "PrepareExternalEdit" => {
+                let result = async {
+                    let (path,): (String,) = call.body()?;
+                    let authorized_uid = self.authorize(connection, call.message()).await?;
+                    ensure_privileged_local_path(Path::new(&path)).map_err(MethodError::failed)?;
+                    self.prepare_external_edit_inner(PathBuf::from(path), authorized_uid)
+                        .map_err(MethodError::failed)
+                }
+                .await;
+                reply_method_result(connection, &call, result).await
+            }
+            "CommitExternalEdit" => {
+                let result = async {
+                    let (token, scratch_path): (String, String) = call.body()?;
+                    self.authorize(connection, call.message()).await?;
+                    self.commit_external_edit_inner(&token, PathBuf::from(scratch_path))
+                        .map_err(MethodError::failed)
+                }
+                .await;
+                reply_method_result(connection, &call, result).await
+            }
+            "DiscardExternalEdit" => {
+                let result = async {
+                    let (token,): (String,) = call.body()?;
+                    self.authorize(connection, call.message()).await?;
+                    self.discard_external_edit_inner(&token)
+                        .map_err(MethodError::failed)
+                }
+                .await;
+                reply_method_result(connection, &call, result).await
+            }
+            "AssociateExternalEditUnit" => {
+                let result = async {
+                    let (token, unit, session_bus_address): (String, String, String) =
+                        call.body()?;
+                    self.authorize(connection, call.message()).await?;
+                    let address = (!session_bus_address.is_empty()).then_some(session_bus_address);
+                    self.associate_external_edit_unit_inner(&token, unit, address)
+                        .map_err(MethodError::failed)
+                }
+                .await;
+                reply_method_result(connection, &call, result).await
+            }
+            _ => {
+                reply_method_error(
+                    connection,
+                    &call,
+                    MethodError::unknown_method("unknown privileged helper method"),
+                )
+                .await
+            }
+        }
     }
 }
 
@@ -218,7 +226,16 @@ pub(super) fn sync_external_edit(edit: &mut ExternalEdit) -> Result<PathBuf, Str
 fn wait_for_user_unit_to_finish(unit: &str, session_bus_address: Option<&str>) {
     let unit = unit.to_string();
     let session_bus_address = session_bus_address.map(str::to_string);
-    async_io::block_on(wait_for_user_unit_to_finish_async(
+    let runtime = match compio::runtime::RuntimeBuilder::new().build() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!(
+                "[tensor-files privileged helper] cannot create Compio unit-watch runtime: {err}"
+            );
+            return;
+        }
+    };
+    runtime.block_on(wait_for_user_unit_to_finish_async(
         &unit,
         session_bus_address.as_deref(),
     ));
@@ -237,50 +254,71 @@ async fn wait_for_user_unit_to_finish_by_signal(
     unit: &str,
     session_bus_address: Option<&str>,
 ) -> Result<(), String> {
-    let connection = user_bus_connection(session_bus_address).await?;
-    let manager = zbus::Proxy::new(
-        &connection,
-        "org.freedesktop.systemd1",
+    let mut connection = user_bus_connection(session_bus_address).await?;
+    let mut manager = Proxy::new(
+        &mut connection,
+        Some("org.freedesktop.systemd1"),
         "/org/freedesktop/systemd1",
-        "org.freedesktop.systemd1.Manager",
+        Some("org.freedesktop.systemd1.Manager"),
     )
-    .await
     .map_err(|err| format!("cannot create systemd manager proxy: {err}"))?;
     let _: () = manager
         .call("Subscribe", &())
         .await
         .map_err(|err| format!("Subscribe failed: {err}"))?;
-    let unit_path: OwnedObjectPath = match manager.call("GetUnit", &(unit)).await {
+    let unit_path: OwnedObjectPath = match manager.call("GetUnit", &(unit,)).await {
         Ok(path) => path,
         Err(err) if err.to_string().contains("NoSuchUnit") => return Ok(()),
         Err(err) => return Err(format!("GetUnit failed: {err}")),
     };
-    let unit_proxy = zbus::Proxy::new(
-        &connection,
-        "org.freedesktop.systemd1",
+    drop(manager);
+    let mut unit_proxy = Proxy::new(
+        &mut connection,
+        Some("org.freedesktop.systemd1"),
         unit_path.as_str(),
-        "org.freedesktop.systemd1.Unit",
+        Some("org.freedesktop.DBus.Properties"),
     )
-    .await
     .map_err(|err| format!("cannot create systemd unit proxy: {err}"))?;
+    let properties_changed = unit_proxy
+        .subscribe("PropertiesChanged")
+        .await
+        .map_err(|err| format!("cannot subscribe to ActiveState changes: {err}"))?;
+    let active_state: OwnedValue = unit_proxy
+        .call("Get", &("org.freedesktop.systemd1.Unit", "ActiveState"))
+        .await
+        .map_err(|err| format!("Get ActiveState failed: {err}"))?;
+    let active_state = String::try_from(active_state)
+        .map_err(|err| format!("ActiveState was not a string: {err}"))?;
+    if is_finished_unit_state(&active_state) {
+        let _ = unit_proxy.signal_stream(properties_changed).close().await;
+        return Ok(());
+    }
 
-    let deadline = unit_watch_deadline();
-    let mut active_state_changes = unit_proxy
-        .receive_property_changed::<String>("ActiveState")
-        .await;
+    let mut changes = unit_proxy.signal_stream(properties_changed);
     loop {
-        if SystemTime::now() >= deadline {
-            eprintln!("[tensor-files privileged helper] external edit unit watch timed out: {unit}");
-            return Ok(());
+        let message = changes
+            .next()
+            .await
+            .map_err(|err| format!("ActiveState signal read failed: {err}"))?;
+        let (interface, changed, _invalidated): (String, HashMap<String, OwnedValue>, Vec<String>) =
+            message
+                .body()
+                .map_err(|err| format!("ActiveState signal body was invalid: {err}"))?;
+        if interface != "org.freedesktop.systemd1.Unit" {
+            continue;
         }
-
-        let Some(change) = active_state_changes.next().await else {
-            return Ok(());
+        let Some(value) = changed.get("ActiveState") else {
+            continue;
         };
-        match change.get().await {
-            Ok(state) if is_finished_unit_state(&state) => return Ok(()),
-            Ok(_) => {}
-            Err(err) => return Err(format!("ActiveState signal read failed: {err}")),
+        let state = String::try_from(
+            value
+                .try_clone()
+                .map_err(|err| format!("cannot clone ActiveState value: {err}"))?,
+        )
+        .map_err(|err| format!("ActiveState was not a string: {err}"))?;
+        if is_finished_unit_state(&state) {
+            let _ = changes.close().await;
+            return Ok(());
         }
     }
 }
@@ -291,7 +329,9 @@ async fn wait_for_user_unit_to_finish_by_poll(unit: &str, session_bus_address: O
         .unwrap_or_else(SystemTime::now);
     loop {
         if SystemTime::now() >= deadline {
-            eprintln!("[tensor-files privileged helper] external edit unit watch timed out: {unit}");
+            eprintln!(
+                "[tensor-files privileged helper] external edit unit watch timed out: {unit}"
+            );
             return;
         }
 
@@ -299,43 +339,38 @@ async fn wait_for_user_unit_to_finish_by_poll(unit: &str, session_bus_address: O
             Ok(Some(state)) if is_finished_unit_state(&state) => return,
             Ok(None) => return,
             Ok(Some(_)) => {}
-            Err(err) => eprintln!("[tensor-files privileged helper] cannot query unit {unit}: {err}"),
+            Err(err) => {
+                eprintln!("[tensor-files privileged helper] cannot query unit {unit}: {err}")
+            }
         }
-        async_io::Timer::after(Duration::from_secs(2)).await;
+        compio::time::sleep(Duration::from_secs(2)).await;
     }
-}
-
-fn unit_watch_deadline() -> SystemTime {
-    SystemTime::now()
-        .checked_add(Duration::from_secs(24 * 60 * 60))
-        .unwrap_or_else(SystemTime::now)
 }
 
 async fn user_unit_active_state(
     unit: &str,
     session_bus_address: Option<&str>,
 ) -> Result<Option<String>, String> {
-    let connection = user_bus_connection(session_bus_address).await?;
-    let manager = zbus::Proxy::new(
-        &connection,
-        "org.freedesktop.systemd1",
+    let mut connection = user_bus_connection(session_bus_address).await?;
+    let mut manager = Proxy::new(
+        &mut connection,
+        Some("org.freedesktop.systemd1"),
         "/org/freedesktop/systemd1",
-        "org.freedesktop.systemd1.Manager",
+        Some("org.freedesktop.systemd1.Manager"),
     )
-    .await
     .map_err(|err| format!("cannot create systemd manager proxy: {err}"))?;
-    let unit_path: OwnedObjectPath = match manager.call("GetUnit", &(unit)).await {
+    let unit_path: OwnedObjectPath = match manager.call("GetUnit", &(unit,)).await {
         Ok(path) => path,
         Err(err) if err.to_string().contains("NoSuchUnit") => return Ok(None),
         Err(err) => return Err(format!("GetUnit failed: {err}")),
     };
-    let properties = zbus::Proxy::new(
-        &connection,
-        "org.freedesktop.systemd1",
+    drop(manager);
+    let mut properties = Proxy::new(
+        &mut connection,
+        Some("org.freedesktop.systemd1"),
         unit_path.as_str(),
-        "org.freedesktop.DBus.Properties",
+        Some("org.freedesktop.DBus.Properties"),
     )
-    .await
     .map_err(|err| format!("cannot create systemd unit properties proxy: {err}"))?;
     let value: OwnedValue = properties
         .call("Get", &("org.freedesktop.systemd1.Unit", "ActiveState"))
@@ -348,12 +383,13 @@ async fn user_unit_active_state(
 
 async fn user_bus_connection(session_bus_address: Option<&str>) -> Result<Connection, String> {
     match session_bus_address {
-        Some(address) => zbus::connection::Builder::address(address)
-            .map_err(|err| format!("cannot use provided session bus address: {err}"))?
-            .build()
-            .await
-            .map_err(|err| format!("cannot connect to provided session bus: {err}")),
-        None => Connection::session()
+        Some(address) => Connection::connect_bus(
+            BusAddress::parse(address)
+                .map_err(|err| format!("cannot use provided session bus address: {err}"))?,
+        )
+        .await
+        .map_err(|err| format!("cannot connect to provided session bus: {err}")),
+        None => Connection::session_bus()
             .await
             .map_err(|err| format!("cannot connect to session bus: {err}")),
     }
@@ -376,6 +412,7 @@ pub(super) fn cleanup_scratch_token_dir(scratch_path: &Path) -> Result<(), Strin
     fs::remove_dir_all(token_dir).map_err(|err| err.to_string())
 }
 
+#[cfg(test)]
 pub(super) fn polkit_authority_unavailable_message(err: &str) -> String {
     format!(
         "cannot contact polkit authority for action {ACTION_ID}: {err}; ensure polkit is running, {POLICY_FILE} is installed, and a desktop polkit agent is available"

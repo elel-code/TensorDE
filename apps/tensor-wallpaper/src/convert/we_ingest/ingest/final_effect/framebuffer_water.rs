@@ -115,7 +115,9 @@ pub(super) fn chain_is_supported(effects: &[WeEffectPassContract]) -> bool {
 
 fn caustics_prepass_shader(input: &MaterialInput) -> &'static str {
     let key = input.pass.shader_key.as_str();
-    if key.contains("__TENSOR_WALLPAPER_PATTERN_GLOW_SHARED_1") && key.contains("__TENSOR_WALLPAPER_COLOR_EQUAL_1") {
+    if key.contains("__TENSOR_WALLPAPER_PATTERN_GLOW_SHARED_1")
+        && key.contains("__TENSOR_WALLPAPER_COLOR_EQUAL_1")
+    {
         CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_COLOR_EQUAL_PREPASS_SHADER
     } else if key.contains("__TENSOR_WALLPAPER_PATTERN_GLOW_SHARED_1") {
         CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_PREPASS_SHADER

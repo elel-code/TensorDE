@@ -10,6 +10,94 @@ struct EffectMaterialInstanceInput<'a> {
     shader_key: &'a str,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+    use std::fs;
+
+    fn scene_package(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut header = Vec::new();
+        header.extend_from_slice(&8u32.to_le_bytes());
+        header.extend_from_slice(b"PKGV0024");
+        header.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        let mut data = Vec::new();
+        for (path, payload) in entries {
+            header.extend_from_slice(&(path.len() as u32).to_le_bytes());
+            header.extend_from_slice(path.as_bytes());
+            header.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            header.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            data.extend_from_slice(payload);
+        }
+        header.extend(data);
+        header
+    }
+
+    #[test]
+    fn sampler_combo_uses_explicit_binding_not_shader_default() {
+        let root = std::env::temp_dir().join(format!(
+            "tensor-wallpaper-we-sampler-combo-binding-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("test directory");
+        fs::write(
+            root.join("project.json"),
+            r#"{"type":"scene","file":"scene.json","title":"Sampler combo"}"#,
+        )
+        .expect("project");
+        fs::write(
+            root.join("scene.pkg"),
+            scene_package(&[
+                (
+                    "scene.json",
+                    br#"{"objects":[{"id":1,"image":"models/layer.json","effects":[{"file":"effects/mask/effect.json"}]},{"id":2,"image":"models/layer.json","effects":[{"file":"effects/mask/effect.json","passes":[{"textures":[null,null,"_rt_authored_mask"]}]}]}]}"#,
+                ),
+                (
+                    "models/layer.json",
+                    br#"{"width":64,"height":64,"material":"materials/layer.json"}"#,
+                ),
+                (
+                    "materials/layer.json",
+                    br#"{"passes":[{"shader":"genericimage4","textures":[null]}]}"#,
+                ),
+                (
+                    "effects/mask/effect.json",
+                    br#"{"passes":[{"material":"materials/effects/mask.json"}]}"#,
+                ),
+                (
+                    "materials/effects/mask.json",
+                    br#"{"passes":[{"shader":"workshop/test/effects/mask"}]}"#,
+                ),
+                (
+                    "shaders/workshop/test/effects/mask.vert",
+                    br#"attribute vec3 a_Position;"#,
+                ),
+                (
+                    "shaders/workshop/test/effects/mask.frag",
+                    concat!(
+                        "uniform sampler2D g_Texture0; // {\"material\":\"previous\"}\n",
+                        "uniform sampler2D g_Texture2; // {\"combo\":\"OPACITYMASK\",\"default\":\"_rt_default_mask\"}"
+                    )
+                    .as_bytes(),
+                ),
+            ]),
+        )
+        .expect("scene package");
+
+        let ir = ingest_wallpaper_engine_project(&root).expect("effect IR");
+        let keys = ir
+            .shader_contracts
+            .iter()
+            .map(|contract| contract.shader_key.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(keys.contains("workshop/test/effects/mask__SLOTS_5"));
+        assert!(keys.contains("workshop/test/effects/mask__SLOTS_5__OPACITYMASK_1"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
 impl WeIrBuilder {
     pub(super) fn push_effect_contracts_for_instance(
         &mut self,
@@ -97,6 +185,17 @@ impl WeIrBuilder {
                 .map(|shader| self.shader_combo_defaults(shader))
                 .transpose()?
                 .unwrap_or_default();
+            if material_pass
+                .as_ref()
+                .is_some_and(|pass| pass.shader_origin == WeIrShaderOrigin::AuthoredPackage)
+                && let Some(base_shader) = base_shader_source.as_deref()
+            {
+                for sampler_combo in self.shader_sampler_combos(base_shader)? {
+                    combos
+                        .entry(sampler_combo.name)
+                        .or_insert_with(|| i64::from(binds.contains_key(&sampler_combo.slot)));
+                }
+            }
             apply_builtin_effect_texture_defaults(&effect_file, &combos, &mut binds);
             if let Some(base_shader) = base_shader_source.as_deref() {
                 let shader_defaults = self.shader_texture_defaults(base_shader)?;
@@ -256,5 +355,26 @@ impl WeIrBuilder {
             pass_count: 1,
         });
         Ok((handle, shader_key))
+    }
+
+    fn shader_sampler_combos(
+        &self,
+        shader_key: &str,
+    ) -> Result<Vec<ShaderSamplerCombo>, WeIngestError> {
+        let shader_key = shader_key.split("__").next().unwrap_or(shader_key);
+        let mut combos = Vec::new();
+        for extension in ["vert", "frag"] {
+            let path = format!("shaders/{shader_key}.{extension}");
+            let Some(asset) = self.source.read_optional_asset(&path)? else {
+                continue;
+            };
+            let source = String::from_utf8_lossy(&asset.bytes);
+            combos.extend(
+                parse_shader_sampler_combos(&source).map_err(|message| {
+                    WeIngestError::InvalidProject(format!("{path}: {message}"))
+                })?,
+            );
+        }
+        Ok(combos)
     }
 }

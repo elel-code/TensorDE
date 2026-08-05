@@ -267,6 +267,16 @@ impl WeIrUtilityLayerKind {
             Self::FramebufferComposite | Self::ProjectLayer | Self::FullscreenPostprocess
         )
     }
+
+    /// Whether graph-local targets derive their extent from the live physical surface.
+    ///
+    /// A composelayer samples its physical SceneColor snapshot explicitly, but its
+    /// object-local source/effect ping-pong targets retain the authored extent of the
+    /// owning layer. Only true project/fullscreen layers make the physical scene image
+    /// the extent source for their local targets.
+    pub const fn uses_physical_graph_source(self) -> bool {
+        matches!(self, Self::ProjectLayer | Self::FullscreenPostprocess)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,4 +1,0 @@
-[portal]
-DBusName=org.freedesktop.impl.portal.desktop.tensor_files
-Interfaces=org.freedesktop.impl.portal.FileChooser;
-UseIn=Tensorland

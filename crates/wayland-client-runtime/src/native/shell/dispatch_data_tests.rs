@@ -338,7 +338,7 @@ fn native_shell_layer_surface_gpu_and_outputs_refresh() {
         handle.window_handle().is_ok() && handle.display_handle().is_ok(),
         "GPU layer must export RWH for Vulkan WSI"
     );
-    // Frame + presentation arm on layers (Gilder present pacing).
+    // Frame + presentation arm on layers (Tensor Wallpaper present pacing).
     shell.request_frame(id).expect("layer frame");
     assert!(shell.is_frame_pending(id));
     // Coalesce: second arm is a no-op while pending.

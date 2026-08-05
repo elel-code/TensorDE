@@ -125,7 +125,7 @@ fn we_image_graph_keeps_pass_targets_and_derives_barriers() {
     assert_eq!(graph.passes.len(), 4);
     assert_eq!(
         graph.passes[0].state.pipeline_blend,
-        PipelineBlendMode::Translucent
+        PipelineBlendMode::Normal
     );
     assert_eq!(graph.passes[0].material_index, Some(3));
     assert!(
@@ -184,7 +184,7 @@ fn we_image_graph_keeps_pass_targets_and_derives_barriers() {
 }
 
 #[test]
-fn effect_target_base_keeps_authored_translucent_submesh_assembly() {
+fn effect_target_base_replaces_the_offscreen_source_before_terminal_blending() {
     let graph = we_image_graph(&WeImageGraphContract {
         object_index: 7,
         base_material_index: Some(3),
@@ -226,7 +226,7 @@ fn effect_target_base_keeps_authored_translucent_submesh_assembly() {
 
     assert_eq!(
         graph.passes[0].state.pipeline_blend,
-        PipelineBlendMode::Translucent
+        PipelineBlendMode::Normal
     );
     assert_eq!(graph.passes[0].target, RenderTargetRole::ImageLocalMain);
     assert_eq!(graph.passes[1].target, RenderTargetRole::ImageLocalSub);

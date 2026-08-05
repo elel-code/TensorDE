@@ -74,8 +74,9 @@ fn pulse_catalog_strictly_resolves_semantic_variants_and_preserves_typed_binding
 
 #[test]
 fn depth_parallax_catalog_resolves_quality_and_mask_without_legacy_keys() {
-    let quality = rendering_device_scene_shader_for_key("effects/depthparallax__SLOTS_3__QUALITY_2")
-        .expect("quality Depth Parallax catalog shader");
+    let quality =
+        rendering_device_scene_shader_for_key("effects/depthparallax__SLOTS_3__QUALITY_2")
+            .expect("quality Depth Parallax catalog shader");
     assert_eq!(
         quality.parameter_layout,
         BuiltinSceneParameterLayout::DepthParallax

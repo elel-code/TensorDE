@@ -30,7 +30,7 @@ fn lowers_authored_puppet_effect_stream_token_one_clipping_graph() {
     fs::write(root.join("models/clipped.mdl"), test_clipped_mdlv0023()).expect("mdl");
     fs::write(
         root.join("materials/clipped.json"),
-        r#"{"passes":[{"shader":"genericimage4","textures":[null]}]}"#,
+        r#"{"passes":[{"shader":"genericimage4","textures":[null],"cullmode":"nocull"}]}"#,
     )
     .expect("base material");
     fs::write(
@@ -68,6 +68,15 @@ fn lowers_authored_puppet_effect_stream_token_one_clipping_graph() {
     assert_eq!(graph.passes[9].role, RenderPassRole::MeshVisibleRemainder);
     assert_eq!(graph.passes[10].role, RenderPassRole::MeshVisiblePrefix);
     assert_eq!(graph.passes[16].role, RenderPassRole::MeshVisibleRemainder);
+    assert_eq!(graph.passes[0].state.cull_mode, CullMode::None);
+    assert!(graph.passes[3..10].iter().all(|pass| {
+        matches!(pass.role, RenderPassRole::MeshClippingMask)
+            == (pass.state.cull_mode == CullMode::Back)
+    }));
+    assert!(graph.passes[10..17].iter().all(|pass| {
+        matches!(pass.role, RenderPassRole::MeshClippingMask)
+            == (pass.state.cull_mode == CullMode::Back)
+    }));
     assert!(graph.passes[3..10].iter().all(|pass| {
         pass.effect_visibility
             == crate::engine::render_graph::RenderPassEffectVisibility::any_visible(1, 1)
@@ -93,6 +102,17 @@ fn lowers_authored_puppet_effect_stream_token_one_clipping_graph() {
                 .bindings
                 .iter()
                 .any(|binding| matches!(binding, TextureBindingRole::PreviousGraphTarget { .. }))
+    }));
+    let mask_materials = graph
+        .passes
+        .iter()
+        .filter(|pass| pass.role == RenderPassRole::MeshClippingMask)
+        .filter_map(|pass| pass.material_index)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(!mask_materials.is_empty());
+    assert!(mask_materials.into_iter().all(|material| {
+        let pass_start = ir.materials[material].pass_start as usize;
+        ir.material_passes[pass_start].cull_mode == SceneCullMode::Normal
     }));
     assert!(clipped_targets.iter().any(|pass| {
         pass.bindings.contains(&TextureBindingRole::GraphTarget {

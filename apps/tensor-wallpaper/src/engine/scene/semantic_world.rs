@@ -121,10 +121,7 @@ impl<'a> SceneSemanticWorld<'a> {
         }
         for (particle_index, particle) in storage.particles().iter().enumerate() {
             if let Some(entity) = world.index.entity_for_object(particle.object) {
-                let binding = particle_emitter_from_record(
-                    particle_index as u32,
-                    particle,
-                );
+                let binding = particle_emitter_from_record(particle_index as u32, particle);
                 let component = world.particle_components[entity.index()].get_or_insert(
                     ParticleEmitterComponent {
                         binding_start: world.particle_bindings.len() as u32,

@@ -60,6 +60,7 @@ one-state-owner-per-protocol layout, not ad hoc “whatever Niri ships.”
 | Gamma | `zwlr-gamma-control` (4, no tier-2 yet) | — |
 | Virtual pointer | `zwlr-virtual-pointer` (4, no tier-2 yet) | — |
 | Output management | `zwlr-output-management` if needed (4) | — until `wp`/`ext` exists |
+| Output power / DPMS | `zwlr-output-power-management` (4, no tier-2/3 equivalent) | disabling output topology for idle |
 | Color / HDR | `wp_color_manager` family (2) | wlr-only color hacks |
 | Pixel encoding / range | `wp_color_representation` (2) | compositor-private buffer tags |
 | Tearing | `wp_tearing_control` (2), implemented with fail-closed KMS policy | — |
@@ -148,7 +149,8 @@ not fork these protocol owners.
 wlr-layer-shell (no ext equivalent; full stack),
 wlr-data-control (compat beside ext-data-control),
 zwlr-virtual-pointer, zwlr-gamma-control (KMS LUT apply),
-**wlr-output-management** (enable/position/scale via `OutputRule`; mode switch deferred), …
+**wlr-output-management** (enable/position/scale via `OutputRule`; mode switch deferred),
+**wlr-output-power-management** (exclusive retained DPMS controls backed by atomic KMS), …
 
 ### Tier 5 — Out of scope
 hyprland-\*, kde-server-decoration (CSD policy), mutter-x11-interop, …
@@ -206,28 +208,30 @@ change notifications are complete.
 
 5. ~~**wlr-output-management** (tier 4 stopgap)~~ enable/disable/position/scale via `OutputRule` done; mode switch deferred until live KMS replacement is safe
 
-6. ~~**wp tearing-control** (tier 2)~~: double-buffered surface hint, value-only
+6. ~~**wlr-output-power-management** (tier 4 stopgap)~~ exclusive per-output controls, immediate current-mode event, explicit failure on unsupported/headless/conflicting outputs, hot-unplug failure, and atomic KMS CRTC power transitions without changing topology
+
+7. ~~**wp tearing-control** (tier 2)~~: double-buffered surface hint, value-only
    ECS extraction, explicit single-pass/exclusive policy, and typed atomic KMS
    async submission are implemented; FIFO latest-ready remains the default.
-7. ~~**ext-transient-seat** (tier 2)~~: creator-scoped temporary `wl_seat`
+8. ~~**ext-transient-seat** (tier 2)~~: creator-scoped temporary `wl_seat`
    globals, explicit denial/capacity, teardown, and isolated virtual pointer and
    keyboard capability routing are implemented.
-8. **wp color-management v3 + wp color-representation** (tier 2): implement as
+9. **wp color-management v3 + wp color-representation** (tier 2): implement as
    one HDR/color slice spanning surface state, shared renderer transforms,
    output feedback, formats, tone mapping, and KMS metadata. Parametric image
    descriptions, fixed SDR feedback, and surface commit state are implemented
    behind the completion gate; production output/HDR ownership remains.
-9. ~~**wp DRM lease** (tier 2)~~: completion-gated non-desktop connector
+10. ~~**wp DRM lease** (tier 2)~~: completion-gated non-desktop connector
    advertisement, verified non-master device FD, real kernel lease FD,
    connector/CRTC/primary-plane reservation, revocation on destroy, hotplug,
    session pause and device removal, plus ordinary output-plan exclusion.
-10. Finish already-advertised protocol depth: live output mode replacement,
+11. Finish already-advertised protocol depth: live output mode replacement,
     cross-output capture, cursor-only GPU capture, multi-plane/YUV dma-buf,
     implicit reservation-fence policy, and atomic cursor planes. Tablet cursor
     and xdg-toplevel-drag wire coverage are complete.
-11. Migrate remaining tier-3 surfaces upward when wayland-protocols promotes them.
+12. Migrate remaining tier-3 surfaces upward when wayland-protocols promotes them.
 
-The required ownership, failure, hardware, and test gates for items 6–10 are
+The required ownership, failure, hardware, and test gates for items 6–11 are
 defined in [`protocol-roadmap.md`](protocol-roadmap.md). An item is not complete
 merely because its global appears in `ProtocolCapabilities`.
 

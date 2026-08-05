@@ -166,7 +166,9 @@ mod tests {
     use crate::convert::we_ingest::ir::{
         WeIrImageTargetRole, WeIrShaderOrigin, WeIrUtilityLayerKind,
     };
-    use crate::engine::render_graph::RenderPassRole;
+    use crate::engine::render_graph::{
+        ColorWriteMask, PipelineBlendMode, RenderPassRole, RenderTargetRole,
+    };
     use std::fs;
 
     fn scene_package(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -580,6 +582,110 @@ uniform sampler2D g_Texture2; // {"default":"_rt_FullFrameBuffer","hidden":true,
                 name: "_rt_FullFrameBuffer".to_owned(),
             }
         ));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn static_audio_bars_keeps_package_owned_stages_and_authored_terminal() {
+        let root = std::env::temp_dir().join(format!(
+            "tensor-wallpaper-static-audio-bars-final-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("test directory");
+        fs::write(
+            root.join("project.json"),
+            r#"{"type":"scene","file":"scene.json","title":"Static audio bars"}"#,
+        )
+        .expect("project");
+        fs::write(
+            root.join("scene.pkg"),
+            scene_package(&[
+                (
+                    "scene.json",
+                    br#"{"objects":[{"id":7,"image":"models/util/composelayer.json","effects":[{"file":"effects/audio/effect.json","visible":true,"passes":[{"combos":{"SHAPE":7},"constantshadervalues":{"Bar Count":12,"Bar Spacing":0.31,"Lower/Upper Bar Bounds":"0.1 0.9","Minimum Height (Will be multiplied by the bar width) ":1,"Radius":1,"Volume Factor":0.5}}]},{"file":"effects/skew/effect.json","visible":true,"passes":[{"constantshadervalues":{"bottom":-0.39}}]},{"file":"effects/opacity/effect.json","visible":true,"passes":[{"constantshadervalues":{"alpha":0.79},"textures":[null,"masks/opacity_mask"]}]}]}]}"#,
+                ),
+                (
+                    "effects/audio/effect.json",
+                    br#"{"passes":[{"material":"materials/effects/audio.json"}]}"#,
+                ),
+                (
+                    "materials/effects/audio.json",
+                    br#"{"passes":[{"shader":"workshop/test/effects/Simple_Audio_Bars","blending":"normal"}]}"#,
+                ),
+                (
+                    "effects/skew/effect.json",
+                    br#"{"passes":[{"material":"materials/effects/skew.json"}]}"#,
+                ),
+                (
+                    "materials/effects/skew.json",
+                    br#"{"passes":[{"shader":"effects/skew","blending":"normal"}]}"#,
+                ),
+                (
+                    "effects/opacity/effect.json",
+                    br#"{"passes":[{"material":"materials/effects/opacity.json"}]}"#,
+                ),
+                (
+                    "materials/effects/opacity.json",
+                    br#"{"passes":[{"shader":"effects/opacity","blending":"normal"}]}"#,
+                ),
+                (
+                    "shaders/workshop/test/effects/Simple_Audio_Bars.vert",
+                    br#"// [COMBO] {"combo":"SHAPE","type":"options","default":0}
+// [COMBO] {"combo":"BAR_STYLE","type":"options","default":1}
+attribute vec3 a_Position;"#,
+                ),
+                (
+                    "shaders/workshop/test/effects/Simple_Audio_Bars.frag",
+                    br#"// [COMBO] {"combo":"TRANSPARENCY","type":"options","default":1}
+// [COMBO] {"combo":"RESOLUTION","type":"options","default":32}
+// [COMBO] {"combo":"SOURCE","type":"options","default":1}
+uniform sampler2D g_Texture0;"#,
+                ),
+            ]),
+        )
+        .expect("scene package");
+
+        let ir = ingest_wallpaper_engine_project(&root).expect("audio-bars IR");
+        let graph = &ir.render_graphs[0];
+        assert_eq!(graph.passes.len(), 5);
+        assert_eq!(graph.passes[0].role, RenderPassRole::CopyTarget);
+        assert_eq!(
+            graph.passes[2].shader.as_deref(),
+            Some("workshop/test/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7")
+        );
+        assert_eq!(graph.passes[2].target, RenderTargetRole::ImageLocalSub);
+        assert_eq!(
+            graph.passes[3].shader.as_deref(),
+            Some("effects/skew__SLOTS_1")
+        );
+        assert_eq!(graph.passes[3].target, RenderTargetRole::ImageLocalMain);
+        let final_pass = &graph.passes[4];
+        assert_eq!(final_pass.role, RenderPassRole::SceneComposite);
+        assert_eq!(
+            final_pass.shader.as_deref(),
+            Some("effects/opacity__SLOTS_3")
+        );
+        assert_eq!(final_pass.target, RenderTargetRole::SceneColor);
+        assert_eq!(
+            final_pass.state.pipeline_blend,
+            PipelineBlendMode::Translucent
+        );
+        assert_eq!(final_pass.state.color_write_mask, ColorWriteMask::Rgb);
+        assert!(
+            !ir.shader_contracts
+                .iter()
+                .any(|contract| { contract.shader_key == "we/audio-bars-final" })
+        );
+        let package_contract = ir
+            .shader_contracts
+            .iter()
+            .find(|contract| {
+                contract.shader_key == "workshop/test/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7"
+            })
+            .expect("retained package source contract");
+        assert_eq!(package_contract.origin, WeIrShaderOrigin::AuthoredPackage);
 
         let _ = fs::remove_dir_all(root);
     }

@@ -1,39 +1,6 @@
 use super::*;
 
 #[test]
-fn final_audio_bars_uses_object_local_source_resolution_for_deformity() {
-    let storage = storage_with_constants("we/audio-bars-final", &[]);
-    let mut draw = draw_with_material(SceneMaterialHandle(0));
-    draw.authored_source_extent = [1000.0, 1000.0];
-    let pass = first_material_pass(&storage, SceneMaterialHandle(0)).expect("material pass");
-    let parameters = MaterialParameters {
-        storage: &storage,
-        pass,
-        scalar_overrides: &[],
-    };
-
-    let values = final_audio_bars_values(&parameters, &storage, &draw, None);
-
-    assert_eq!(values[29], 1.0);
-    assert_eq!(values[30], 1000.0);
-}
-
-#[test]
-fn fused_engine_audio_program_requests_the_system_spectrum_adapter() {
-    let final_storage = storage_with_constants("we/audio-bars-final", &[]);
-    let unrelated_storage = storage_with_constants("we/image-scroll-final", &[]);
-
-    assert!(material_uses_audio_spectrum(
-        &final_storage,
-        SceneMaterialHandle(0)
-    ));
-    assert!(!material_uses_audio_spectrum(
-        &unrelated_storage,
-        SceneMaterialHandle(0)
-    ));
-}
-
-#[test]
 fn pulse_uniform_keeps_author_parameters_and_stereo_16_band_max_pooling_typed() {
     let storage = storage_with_constants(
         "effects/pulse__SLOTS_3__AUDIOPROCESSING_3__BLENDMODE_2__PULSEALPHA_1__PULSECOLOR_0",

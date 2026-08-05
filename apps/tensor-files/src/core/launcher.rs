@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+use tensor_dbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
 mod ark;
 mod results;
@@ -279,17 +279,9 @@ pub async fn launch_with_systemd_user(
     let target = systemd_manager_target().map_err(|err| LauncherError::SystemdManager {
         message: err.to_string(),
     })?;
-    let manager = bus.proxy(&target).await.map_err(|err| {
-        let message = err.to_string();
-        match err {
-            BusError::Connect { .. } => LauncherError::SessionBus { message },
-            _ => LauncherError::SystemdManager { message },
-        }
-    })?;
-
     let mut started = Vec::with_capacity(units.len());
     for unit in &units {
-        start_systemd_launch_unit(bus, &target, &manager, unit).await?;
+        start_systemd_launch_unit(&bus, &target, unit).await?;
         started.push(unit.unit_name.clone());
     }
     Ok(SystemdLaunchResult { units: started })

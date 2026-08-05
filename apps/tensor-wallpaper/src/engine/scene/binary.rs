@@ -383,10 +383,16 @@ impl fmt::Display for SceneBinaryError {
             Self::Write(err) => write!(f, "failed to write scene binary: {err}"),
             Self::InvalidMagic => f.write_str("invalid Tensor Wallpaper scene binary magic"),
             Self::UnsupportedVersion(version) => {
-                write!(f, "unsupported Tensor Wallpaper scene binary version {version}")
+                write!(
+                    f,
+                    "unsupported Tensor Wallpaper scene binary version {version}"
+                )
             }
             Self::UnsupportedEndianness(value) => {
-                write!(f, "unsupported Tensor Wallpaper scene binary endianness tag {value}")
+                write!(
+                    f,
+                    "unsupported Tensor Wallpaper scene binary endianness tag {value}"
+                )
             }
             Self::MissingChunk(kind) => write!(f, "scene binary missing required chunk {kind:#x}"),
             Self::DuplicateChunk(kind) => write!(f, "scene binary has duplicate chunk {kind:#x}"),

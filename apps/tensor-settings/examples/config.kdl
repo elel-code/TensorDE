@@ -1,0 +1,3 @@
+max-diagnostics 32
+read-only #false
+confirm-privileged-changes #true

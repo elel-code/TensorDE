@@ -20,7 +20,7 @@ import tarfile
 from pathlib import Path
 
 
-BINARIES = ["tensor-wallpaperd", "tensor-wallpaperctl", "tensor-wallpaper-convert", "tensor-wallpaper"]
+BINARIES = ["tensor-wallpaperd", "tensor-wallpaper-convert", "tensor-wallpaper"]
 PYTHON_HELPERS = [
     "video_decode_matrix.py",
     "performance_snapshot.py",

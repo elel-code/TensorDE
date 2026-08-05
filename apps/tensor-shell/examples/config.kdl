@@ -1,0 +1,20 @@
+layout {
+    panel-height 40
+    popover-width 420
+    popover-height 560
+    osd-width 320
+    osd-height 96
+    edge-gap 12
+}
+
+panel {
+    left "launcher" "workspaces" "active-window"
+    center "clock"
+    right "media" "system-status" "notifications" "control-center"
+}
+
+// Usually resolved from TENSOR_CONFIG/TENSOR_IPC_SOCKET or XDG defaults.
+// tensorland {
+//     config-path "/etc/tensor/config.kdl"
+//     ipc-socket "/run/user/1000/tensor.sock"
+// }

@@ -6,7 +6,7 @@ use crate::convert::we_ingest::ir::{
 };
 use crate::convert::we_ingest::shader_key::canonical_scene_shader_key;
 use crate::engine::render_graph::{
-    ColorWriteMask, DepthTestMode, PassState, PipelineBlendMode, RenderGraph,
+    ColorWriteMask, CullMode, DepthTestMode, PassState, PipelineBlendMode, RenderGraph,
     RenderPassDrawPrimitive, RenderPassNode, RenderPassRole, RenderTargetExtentDomain,
     RenderTargetRole, RenderTargetSpec, TextureBindingRole, UnsupportedGraphBoundary,
 };
@@ -219,6 +219,9 @@ pub(super) fn apply_token_one_graph(
                 state: PassState {
                     pipeline_blend: PipelineBlendMode::Translucent,
                     depth_test: DepthTestMode::Disabled,
+                    // WE's engine-owned materials/util/clippingmaskimage4.json uses the
+                    // default normal raster state independently of the consumer material.
+                    cull_mode: CullMode::Back,
                     clear_target: true,
                     ..PassState::default()
                 },
@@ -348,7 +351,7 @@ fn clipping_mask_material(
         pipeline_blend: ScenePipelineBlend::Translucent,
         depth_test: SceneDepthTest::Disabled,
         depth_write: false,
-        cull_mode: SceneCullMode::None,
+        cull_mode: SceneCullMode::Normal,
         alpha_writing: String::new(),
         clear_target: false,
     });

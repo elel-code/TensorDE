@@ -445,8 +445,8 @@ operation dispatcher。
   也不再 `tokio_handle.enter()`。
 - `zbus` / `zbus_polkit` 切到 **async-io**（zbus 5 默认路径），不再启用 `tokio` feature。
 - `BusController` 去掉 `with_bus_tokio_context`；timeout / backoff 使用 `async_io::Timer`。
-- privilege helper、XDP filechooser backend 入口改为 `async_io::block_on`。
-- Ark extract-and-trash、XDP chooser 子进程改为 `async_process`。
+- privilege helper 入口改为 `async_io::block_on`。
+- Ark extract-and-trash 子进程改为 `async_process`。
 - 直接依赖中已移除 `tokio`。
 - UI 侧 transfer / trash-view / navigation / clipboard / launch / ark extract 去掉
   `thread::spawn + pollster::block_on(run_operation_task)` 包装，改为

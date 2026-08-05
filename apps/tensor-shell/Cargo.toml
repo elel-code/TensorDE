@@ -8,12 +8,15 @@ publish = false
 description = "Native GPU-first Tensor Shell"
 
 [dependencies]
-async-io = "2"
-futures-lite = "2"
+async-channel = "2"
+futures-util = "0.3"
+serde = "1"
+tensor-dbus = { path = "../../crates/tensor-dbus" }
+tensor-kdl = { path = "../../crates/tensor-kdl" }
+tensor-runtime = { path = "../../crates/tensor-runtime" }
 thiserror = "2"
 vulkan-renderer = { path = "../../crates/vulkan-renderer" }
 wayland-client-runtime = { path = "../../crates/wayland-client-runtime", features = ["compio"] }
-zbus = { version = "5", default-features = false, features = ["async-io"] }
 
 [lints]
 workspace = true

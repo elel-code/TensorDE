@@ -1,17 +1,19 @@
 use std::{
     collections::HashMap,
     num::NonZeroU64,
-    sync::{
-        Arc, Mutex,
-        mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
-    },
+    sync::{Arc, Mutex, mpsc},
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-use async_io::Timer;
-use futures_lite::future::block_on;
-use zbus::{fdo, object_server::SignalEmitter, zvariant::OwnedValue};
+use futures_util::{FutureExt, pin_mut, select_biased};
+#[cfg(test)]
+use tensor_dbus::zvariant::Value;
+use tensor_dbus::{
+    BusAddress, Connection, MethodError, MethodResult, ObjectServer, RequestNameFlags,
+    RequestNameReply, zvariant::OwnedValue,
+};
+use tensor_runtime::io_uring_runtime;
 
 use crate::{
     CloseReason, ClosedNotification, NotificationAction, NotificationId, NotificationRequest,
@@ -20,46 +22,51 @@ use crate::{
 
 const BUS_NAME: &str = "org.freedesktop.Notifications";
 const OBJECT_PATH: &str = "/org/freedesktop/Notifications";
+const INTERFACE: &str = "org.freedesktop.Notifications";
 const SIGNAL_CAPACITY: usize = 128;
+
+type NotifyBody = (
+    String,
+    u32,
+    String,
+    String,
+    String,
+    Vec<String>,
+    HashMap<String, OwnedValue>,
+    i32,
+);
 
 pub(crate) type SharedNotificationStore = Arc<Mutex<NotificationStore>>;
 
 pub(crate) struct NotificationServiceHandle {
     store: SharedNotificationStore,
     clock: Instant,
-    closed_tx: SyncSender<ClosedNotification>,
-    stop_tx: mpsc::Sender<()>,
+    commands: async_channel::Sender<ServiceCommand>,
     join: Option<JoinHandle<()>>,
 }
 
 impl NotificationServiceHandle {
     pub(crate) fn start(store: SharedNotificationStore) -> Result<Self, NotificationServiceError> {
+        Self::start_with_address(store, None)
+    }
+
+    fn start_with_address(
+        store: SharedNotificationStore,
+        address: Option<BusAddress>,
+    ) -> Result<Self, NotificationServiceError> {
         let clock = Instant::now();
-        let (closed_tx, closed_rx) = mpsc::sync_channel(SIGNAL_CAPACITY);
-        let (stop_tx, stop_rx) = mpsc::channel();
+        let (commands, command_rx) = async_channel::bounded(SIGNAL_CAPACITY);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let service_store = Arc::clone(&store);
         let join = thread::Builder::new()
             .name("tensor-shell-notifications".into())
-            .spawn(move || {
-                let result = block_on(run_service(
-                    service_store,
-                    clock,
-                    closed_rx,
-                    stop_rx,
-                    ready_tx,
-                ));
-                if let Err(error) = result {
-                    eprintln!("Tensor Shell notification service stopped: {error}");
-                }
-            })
+            .spawn(move || run_thread(service_store, clock, command_rx, ready_tx, address))
             .map_err(NotificationServiceError::Spawn)?;
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(Self {
                 store,
                 clock,
-                closed_tx,
-                stop_tx,
+                commands,
                 join: Some(join),
             }),
             Ok(Err(message)) => {
@@ -78,25 +85,25 @@ impl NotificationServiceHandle {
     }
 
     pub(crate) fn now_ms(&self) -> u64 {
-        u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX)
+        elapsed_ms(self.clock)
     }
 
     pub(crate) fn emit_closed(
         &self,
         notification: ClosedNotification,
     ) -> Result<(), NotificationServiceError> {
-        self.closed_tx
-            .try_send(notification)
+        self.commands
+            .try_send(ServiceCommand::Closed(notification))
             .map_err(|error| match error {
-                TrySendError::Full(_) => NotificationServiceError::SignalQueueFull,
-                TrySendError::Disconnected(_) => NotificationServiceError::ServiceStopped,
+                async_channel::TrySendError::Full(_) => NotificationServiceError::SignalQueueFull,
+                async_channel::TrySendError::Closed(_) => NotificationServiceError::ServiceStopped,
             })
     }
 }
 
 impl Drop for NotificationServiceHandle {
     fn drop(&mut self) {
-        let _ = self.stop_tx.send(());
+        self.commands.close();
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -117,143 +124,199 @@ pub enum NotificationServiceError {
     ServiceStopped,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ServiceCommand {
+    Closed(ClosedNotification),
+}
+
+fn run_thread(
+    store: SharedNotificationStore,
+    clock: Instant,
+    commands: async_channel::Receiver<ServiceCommand>,
+    ready: mpsc::SyncSender<Result<(), String>>,
+    address: Option<BusAddress>,
+) {
+    let runtime = match io_uring_runtime(4) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let message = format!("create Compio io_uring runtime: {error}");
+            let _ = ready.send(Err(message));
+            return;
+        }
+    };
+    if let Err(error) = runtime.block_on(run_service(store, clock, commands, ready, address)) {
+        eprintln!("Tensor Shell notification service stopped: {error}");
+    }
+}
+
 async fn run_service(
     store: SharedNotificationStore,
     clock: Instant,
-    closed_rx: Receiver<ClosedNotification>,
-    stop_rx: Receiver<()>,
-    ready_tx: SyncSender<Result<(), String>>,
+    commands: async_channel::Receiver<ServiceCommand>,
+    ready: mpsc::SyncSender<Result<(), String>>,
+    address: Option<BusAddress>,
 ) -> Result<(), String> {
-    let builder = zbus::connection::Builder::session()
-        .map_err(|error| format!("connect to session D-Bus: {error}"))?
-        .name(BUS_NAME)
-        .map_err(|error| format!("request {BUS_NAME}: {error}"))?
-        .allow_name_replacements(true)
-        .replace_existing_names(true)
-        .serve_at(OBJECT_PATH, NotificationDbus { store, clock })
-        .map_err(|error| format!("register {OBJECT_PATH}: {error}"))?;
-    let connection = match builder.build().await {
+    let connected = match address {
+        Some(address) => Connection::connect_bus(address).await,
+        None => Connection::session_bus().await,
+    };
+    let mut connection = match connected {
         Ok(connection) => connection,
+        Err(error) => return startup_error(ready, format!("connect to session D-Bus: {error}")),
+    };
+    let flags = RequestNameFlags::ALLOW_REPLACEMENT | RequestNameFlags::REPLACE_EXISTING;
+    let ownership = match connection.request_name(BUS_NAME, flags).await {
+        Ok(ownership) => ownership,
+        Err(error) => return startup_error(ready, format!("request {BUS_NAME}: {error}")),
+    };
+    if !matches!(
+        ownership,
+        RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner
+    ) {
+        return startup_error(
+            ready,
+            format!("request {BUS_NAME}: bus returned ownership result {ownership:?}"),
+        );
+    }
+    let mut objects = match notification_object_server(Arc::clone(&store), clock) {
+        Ok(objects) => objects,
         Err(error) => {
-            let message = format!("build D-Bus service: {error}");
-            let _ = ready_tx.send(Err(message.clone()));
-            return Err(message);
+            return startup_error(ready, format!("register notification objects: {error}"));
         }
     };
-    let interface = connection
-        .object_server()
-        .interface::<_, NotificationDbus>(OBJECT_PATH)
-        .await
-        .map_err(|error| format!("resolve notification interface: {error}"))?;
-    let emitter = interface.signal_emitter().clone();
-    if ready_tx.send(Ok(())).is_err() {
+    if ready.send(Ok(())).is_err() {
         return Ok(());
     }
 
     loop {
-        match stop_rx.try_recv() {
-            Ok(()) | Err(TryRecvError::Disconnected) => return Ok(()),
-            Err(TryRecvError::Empty) => {}
-        }
-        loop {
-            match closed_rx.try_recv() {
-                Ok(closed) => NotificationDbus::notification_closed(
-                    &emitter,
-                    closed.id.get(),
-                    close_reason_code(closed.reason),
-                )
-                .await
-                .map_err(|error| format!("emit NotificationClosed: {error}"))?,
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return Ok(()),
+        let mut received_message = None;
+        let mut received_command = None;
+        {
+            let message = objects.serve_next(&mut connection).fuse();
+            let command = commands.recv().fuse();
+            pin_mut!(message, command);
+            select_biased! {
+                command = command => received_command = Some(command),
+                message = message => received_message = Some(message),
             }
         }
-        Timer::after(Duration::from_millis(20)).await;
+        if let Some(command) = received_command {
+            match command {
+                Ok(ServiceCommand::Closed(closed)) => {
+                    emit_closed(&mut connection, closed)
+                        .await
+                        .map_err(|error| format!("emit NotificationClosed: {error}"))?;
+                }
+                Err(_) => return Ok(()),
+            }
+        } else {
+            match received_message.expect("select completed one service event") {
+                Ok(message) => drop(message),
+                Err(error) => return Err(format!("serve D-Bus message: {error}")),
+            }
+        }
     }
 }
 
-struct NotificationDbus {
+fn notification_object_server(
     store: SharedNotificationStore,
     clock: Instant,
+) -> tensor_dbus::Result<ObjectServer> {
+    let mut objects = ObjectServer::new();
+    objects.register::<(), Vec<String>, _, _>(
+        OBJECT_PATH,
+        INTERFACE,
+        "GetCapabilities",
+        |()| async { Ok(vec!["actions".to_owned(), "body".to_owned()]) },
+    )?;
+    objects.register::<(), (String, String, String, String), _, _>(
+        OBJECT_PATH,
+        INTERFACE,
+        "GetServerInformation",
+        |()| async {
+            Ok((
+                "Tensor Shell".to_owned(),
+                "TensorDE".to_owned(),
+                env!("CARGO_PKG_VERSION").to_owned(),
+                "1.2".to_owned(),
+            ))
+        },
+    )?;
+    let notify_store = Arc::clone(&store);
+    objects.register::<NotifyBody, u32, _, _>(OBJECT_PATH, INTERFACE, "Notify", move |body| {
+        let result = notify(&notify_store, clock, body);
+        async move { result }
+    })?;
+    objects.register_with_connection::<u32, (), _>(
+        OBJECT_PATH,
+        INTERFACE,
+        "CloseNotification",
+        async move |connection: &mut Connection, _context, id| {
+            if let Some(closed) = close_notification(&store, clock, id)? {
+                emit_closed(connection, closed)
+                    .await
+                    .map_err(|error| MethodError::failed(error.to_string()))?;
+            }
+            Ok(())
+        },
+    )?;
+    objects.register_signal::<(u32, u32)>(OBJECT_PATH, INTERFACE, "NotificationClosed")?;
+    objects.register_signal::<(u32, String)>(OBJECT_PATH, INTERFACE, "ActionInvoked")?;
+    Ok(objects)
 }
 
-#[zbus::interface(name = "org.freedesktop.Notifications")]
-impl NotificationDbus {
-    #[zbus(name = "GetCapabilities")]
-    fn get_capabilities(&self) -> Vec<&str> {
-        vec!["actions", "body"]
-    }
+fn notify(store: &SharedNotificationStore, clock: Instant, body: NotifyBody) -> MethodResult<u32> {
+    let (app_name, replaces_id, app_icon, summary, body, actions, hints, expire_timeout) = body;
+    let request = notification_request(WireNotification {
+        app_name,
+        replaces_id,
+        app_icon,
+        summary,
+        body,
+        actions,
+        hints: &hints,
+        expire_timeout,
+    });
+    store
+        .lock()
+        .map(|mut store| store.notify(request, elapsed_ms(clock)).get())
+        .map_err(|_| MethodError::failed("notification store lock poisoned"))
+}
 
-    #[zbus(name = "GetServerInformation")]
-    fn get_server_information(&self) -> (&str, &str, &str, &str) {
-        ("Tensor Shell", "TensorDE", env!("CARGO_PKG_VERSION"), "1.2")
-    }
+fn close_notification(
+    store: &SharedNotificationStore,
+    clock: Instant,
+    id: u32,
+) -> MethodResult<Option<ClosedNotification>> {
+    store
+        .lock()
+        .map(|mut store| {
+            NotificationId::from_raw(id)
+                .and_then(|id| store.close(id, CloseReason::ClosedByApplication, elapsed_ms(clock)))
+        })
+        .map_err(|_| MethodError::failed("notification store lock poisoned"))
+}
 
-    #[zbus(name = "Notify")]
-    #[allow(clippy::too_many_arguments)]
-    fn notify(
-        &self,
-        app_name: String,
-        replaces_id: u32,
-        app_icon: String,
-        summary: String,
-        body: String,
-        actions: Vec<String>,
-        hints: HashMap<String, OwnedValue>,
-        expire_timeout: i32,
-    ) -> fdo::Result<u32> {
-        let request = notification_request(WireNotification {
-            app_name,
-            replaces_id,
-            app_icon,
-            summary,
-            body,
-            actions,
-            hints: &hints,
-            expire_timeout,
-        });
-        let mut store = self
-            .store
-            .lock()
-            .map_err(|_| fdo::Error::Failed("notification store lock poisoned".into()))?;
-        Ok(store.notify(request, elapsed_ms(self.clock)).get())
-    }
+async fn emit_closed(
+    connection: &mut Connection,
+    closed: ClosedNotification,
+) -> tensor_dbus::Result<()> {
+    connection
+        .emit_signal(
+            OBJECT_PATH,
+            INTERFACE,
+            "NotificationClosed",
+            &(closed.id.get(), close_reason_code(closed.reason)),
+        )
+        .await
+}
 
-    #[zbus(name = "CloseNotification")]
-    async fn close_notification(
-        &self,
-        id: u32,
-        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-    ) -> fdo::Result<()> {
-        let Some(id) = NotificationId::from_raw(id) else {
-            return Ok(());
-        };
-        let closed = self
-            .store
-            .lock()
-            .map_err(|_| fdo::Error::Failed("notification store lock poisoned".into()))?
-            .close(id, CloseReason::ClosedByApplication, elapsed_ms(self.clock));
-        if let Some(closed) = closed {
-            Self::notification_closed(&emitter, closed.id.get(), close_reason_code(closed.reason))
-                .await
-                .map_err(|error| fdo::Error::Failed(error.to_string()))?;
-        }
-        Ok(())
-    }
-
-    #[zbus(signal, name = "NotificationClosed")]
-    async fn notification_closed(
-        emitter: &SignalEmitter<'_>,
-        id: u32,
-        reason: u32,
-    ) -> zbus::Result<()>;
-
-    #[zbus(signal, name = "ActionInvoked")]
-    async fn action_invoked(
-        emitter: &SignalEmitter<'_>,
-        id: u32,
-        action_key: &str,
-    ) -> zbus::Result<()>;
+fn startup_error(
+    ready: mpsc::SyncSender<Result<(), String>>,
+    message: String,
+) -> Result<(), String> {
+    let _ = ready.send(Err(message.clone()));
+    Err(message)
 }
 
 struct WireNotification<'a> {
@@ -330,8 +393,74 @@ const fn close_reason_code(reason: CloseReason) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        io::{BufRead, BufReader},
+        path::PathBuf,
+        process::{Child, Command, Stdio},
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
     use super::*;
-    use zbus::zvariant::Value;
+
+    struct PrivateBus {
+        child: Child,
+        socket: PathBuf,
+        address: BusAddress,
+    }
+
+    impl PrivateBus {
+        fn start() -> Option<Self> {
+            static NEXT_BUS: AtomicU64 = AtomicU64::new(1);
+            let socket = std::env::current_dir()
+                .unwrap()
+                .join("target")
+                .join(format!(
+                    "tensor-shell-dbus-{}-{}.sock",
+                    std::process::id(),
+                    NEXT_BUS.fetch_add(1, Ordering::Relaxed)
+                ));
+            fs::create_dir_all(socket.parent().unwrap()).unwrap();
+            let _ = fs::remove_file(&socket);
+            let address_text = format!("unix:path={}", socket.display());
+            let mut child = match Command::new("dbus-daemon")
+                .args([
+                    "--session",
+                    "--nofork",
+                    "--nopidfile",
+                    "--print-address=1",
+                    "--address",
+                    &address_text,
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+                Err(error) => panic!("failed to start private dbus-daemon: {error}"),
+            };
+            let mut announced = String::new();
+            BufReader::new(child.stdout.take().unwrap())
+                .read_line(&mut announced)
+                .expect("dbus-daemon did not announce its address");
+            assert!(announced.trim().starts_with(&address_text));
+            Some(Self {
+                child,
+                socket,
+                address: BusAddress::parse(&address_text).unwrap(),
+            })
+        }
+    }
+
+    impl Drop for PrivateBus {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = fs::remove_file(&self.socket);
+        }
+    }
 
     #[test]
     fn wire_request_maps_replacement_hints_timeout_and_action_pairs() {
@@ -398,23 +527,32 @@ mod tests {
 
     #[test]
     fn private_session_bus_round_trip_updates_the_store() {
-        if std::env::var_os("TENSOR_SHELL_DBUS_TEST").is_none() {
+        let Some(bus) = PrivateBus::start() else {
             return;
-        }
+        };
         let store = Arc::new(Mutex::new(NotificationStore::default()));
-        let service = NotificationServiceHandle::start(Arc::clone(&store)).unwrap();
-        block_on(async {
-            let connection = zbus::Connection::session().await.unwrap();
-            let proxy = zbus::Proxy::new(
-                &connection,
-                BUS_NAME,
+        let service = NotificationServiceHandle::start_with_address(
+            Arc::clone(&store),
+            Some(bus.address.clone()),
+        )
+        .unwrap();
+        io_uring_runtime(4).unwrap().block_on(async {
+            let mut connection = Connection::connect_bus(bus.address.clone()).await.unwrap();
+            let mut proxy = tensor_dbus::Proxy::new(
+                &mut connection,
+                Some(BUS_NAME),
                 OBJECT_PATH,
-                "org.freedesktop.Notifications",
+                Some(INTERFACE),
             )
-            .await
             .unwrap();
             let capabilities: Vec<String> = proxy.call("GetCapabilities", &()).await.unwrap();
             assert_eq!(capabilities, ["actions", "body"]);
+            let information: (String, String, String, String) =
+                proxy.call("GetServerInformation", &()).await.unwrap();
+            assert_eq!(information.0, "Tensor Shell");
+            assert_eq!(information.1, "TensorDE");
+            assert_eq!(information.2, env!("CARGO_PKG_VERSION"));
+            assert_eq!(information.3, "1.2");
             let id: u32 = proxy
                 .call(
                     "Notify",
@@ -433,8 +571,34 @@ mod tests {
                 .unwrap();
             let id = NotificationId::from_raw(id).unwrap();
             assert_eq!(store.lock().unwrap().active(id).unwrap().summary, "Subject");
-            let _: () = proxy.call("CloseNotification", &(id.get(),)).await.unwrap();
+            let closed = proxy.subscribe("NotificationClosed").await.unwrap();
+            let _: () = proxy.call("CloseNotification", &id.get()).await.unwrap();
             assert!(store.lock().unwrap().active(id).is_none());
+            let mut signals = proxy.signal_stream(closed);
+            let signal = signals.next().await.unwrap();
+            assert_eq!(signal.body::<(u32, u32)>().unwrap(), (id.get(), 3));
+            let _ = signals.close().await.unwrap();
+            drop(proxy);
+
+            let mut introspectable = tensor_dbus::Proxy::new(
+                &mut connection,
+                Some(BUS_NAME),
+                OBJECT_PATH,
+                Some("org.freedesktop.DBus.Introspectable"),
+            )
+            .unwrap();
+            let xml: String = introspectable.call("Introspect", &()).await.unwrap();
+            for name in [
+                "GetCapabilities",
+                "GetServerInformation",
+                "Notify",
+                "CloseNotification",
+                "NotificationClosed",
+                "ActionInvoked",
+            ] {
+                assert!(xml.contains(name), "missing {name} from {xml}");
+            }
+            assert!(!xml.contains("GetMachineId"));
         });
         drop(service);
     }

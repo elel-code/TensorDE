@@ -67,8 +67,11 @@ pub(super) fn build_video_present_shaders() {
         scene_fragment.push_bytes,
         binding_expressions(&scene_fragment.bindings),
     );
-    fs::write(out_dir.join("tensor_wallpaper_video_present_shaders.rs"), generated)
-        .expect("write generated video-present shader catalog");
+    fs::write(
+        out_dir.join("tensor_wallpaper_video_present_shaders.rs"),
+        generated,
+    )
+    .expect("write generated video-present shader catalog");
     let scene_generated = format!(
         "static SCENE_VIDEO_LAYER_VERTEX_SPIRV: &[u32] = vulkan_renderer::include_spirv!({:?});\n\
          static SCENE_VIDEO_LAYER_FRAGMENT_SPIRV: &[u32] = vulkan_renderer::include_spirv!({:?});\n\

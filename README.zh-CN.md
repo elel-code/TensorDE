@@ -5,11 +5,17 @@ TensorDE 以一个统一系统的形式开发原生、GPU-first 的桌面环境�
 
 ## 产品
 
-- `apps/tensorland`：Tensorland Wayland 合成器。
-- `apps/tensor-shell`：Tensor Shell，包括顶栏、启动器、通知与 OSD、控制中心、
-  概览和锁屏 surface。
+- `apps/tensor-wm`：Tensorland Wayland 合成器。
+- `apps/tensor-shell`：Tensor Shell，包括顶栏、通知与 OSD、控制中心、概览、
+  启动器/设置入口和锁屏 surface。
+- `apps/tensor-launcher`：独立的 Tensor 应用启动器。
+- `apps/tensor-greeter`：独立的 greetd 登录前端。
+- `apps/tensor-settings`：独立的 Tensor 设置应用。
+- `apps/tensor-idle`：独立的 idle、电源与锁定策略服务。
+- `apps/tensor-msg`：可独立安装的 Tensor 产品 IPC 客户端。
 - `apps/tensor-files`：Tensor Files 文件管理器。
 - `apps/tensor-wallpaper`：Tensor Wallpaper 场景与壁纸引擎。
+- `apps/tensor-xdp`：TensorDE 专用 xdg-desktop-portal 后端。
 
 ## 共享基础设施
 

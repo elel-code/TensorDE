@@ -81,8 +81,7 @@ pub(super) fn compile_slang_scene_input_attachment(
         }],
         "built-in local-read binding must remain the exact typed input attachment"
     );
-    fs::write(&slang_path, &lowered.source)
-        .expect("write Slang input-attachment heap proxy");
+    fs::write(&slang_path, &lowered.source).expect("write Slang input-attachment heap proxy");
     SlangCompiler::from_environment()
         .compile_input_attachment(&ShaderCompileRequest {
             source: slang_path,
@@ -142,29 +141,28 @@ fn compile_slang_scene_stage(
     let slang_path = shader_dir.join(format!("{safe_name}.{extension}.slang"));
     let spirv_path = shader_dir.join(format!("{safe_name}.{extension}.spv"));
     fs::write(&source_path, source).expect("write exact Slang scene source");
-    let (slang_source, push_constant_bytes, bindings, contract) =
-        if slang_exposes_resources(source) {
-            let lowered =
-                lower_slang_bindings_to_descriptor_heap_at_offset(source, "main", push_base_bytes)
-                    .unwrap_or_else(|error| {
-                        panic!("lower exact Slang scene shader {key} {extension}: {error}")
-                    });
-            (
-                lowered.source,
-                lowered.push_constant_bytes,
-                lowered.bindings,
-                ShaderContract::descriptor_heap(u64::from(lowered.push_constant_bytes)),
-            )
-        } else {
-            (
-                source.to_owned(),
-                0,
-                Vec::new(),
-                ShaderContract::descriptor_free(0),
-            )
-        };
-    fs::write(&slang_path, slang_source)
-        .expect("write descriptor-heap Slang scene source");
+    let (slang_source, push_constant_bytes, bindings, contract) = if slang_exposes_resources(source)
+    {
+        let lowered =
+            lower_slang_bindings_to_descriptor_heap_at_offset(source, "main", push_base_bytes)
+                .unwrap_or_else(|error| {
+                    panic!("lower exact Slang scene shader {key} {extension}: {error}")
+                });
+        (
+            lowered.source,
+            lowered.push_constant_bytes,
+            lowered.bindings,
+            ShaderContract::descriptor_heap(u64::from(lowered.push_constant_bytes)),
+        )
+    } else {
+        (
+            source.to_owned(),
+            0,
+            Vec::new(),
+            ShaderContract::descriptor_free(0),
+        )
+    };
+    fs::write(&slang_path, slang_source).expect("write descriptor-heap Slang scene source");
     SlangCompiler::from_environment()
         .compile(&ShaderCompileRequest {
             source: slang_path,

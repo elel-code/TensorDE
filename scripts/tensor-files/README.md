@@ -5,8 +5,8 @@ Run these paths from the TensorDE workspace root.
 ## Static and installation checks
 
 - `check-install-data.sh` stages metadata and checks the installation scripts.
-- `check-runtime-integration.sh` verifies installed D-Bus, portal, Polkit, and
-  desktop integration.
+- `check-runtime-integration.sh` verifies installed D-Bus, Polkit, and desktop
+  integration.
 - `check-native-wayland-smoke.sh` runs the optional native Wayland capability
   smoke test.
 - `install-data.sh` installs Tensor Files integration metadata into `DESTDIR`/`PREFIX`.

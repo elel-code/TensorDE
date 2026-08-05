@@ -1,3 +1,4 @@
+use serde::Serialize;
 use tensor_wallpaper::engine::scene::{
     INVALID_OBJECT_ID, ResolvedSemanticFrame, SceneCameraParallaxRecord,
     SceneDynamicTextGlyphRecord, SceneDynamicTextRecord, SceneImageTargetRecord,
@@ -9,11 +10,9 @@ use tensor_wallpaper::engine::scene::{
     SceneShaderUniformMemberRecord, SceneStorage, SceneTextureRecord,
 };
 use tensor_wallpaper::renderer::rendering_device::{
-    SceneExecutionPlan, RenderingDeviceSceneOwnedUniformArenaPlanSnapshot,
-    scene_execution_plan_from_semantic_frame,
-    rendering_device_scene_owned_uniform_arena_plan,
+    RenderingDeviceSceneOwnedUniformArenaPlanSnapshot, SceneExecutionPlan,
+    rendering_device_scene_owned_uniform_arena_plan, scene_execution_plan_from_semantic_frame,
 };
-use serde::Serialize;
 
 pub(super) const SCENE_EXECUTION_PLAN_REPORT_VERSION: u32 = 14;
 const SCENE_EXECUTION_PLAN_UNIFORM_ALIGNMENT: u64 = 256;
@@ -67,8 +66,7 @@ pub(super) fn scene_execution_plan_report<'a>(
     semantic_frame: &'a ResolvedSemanticFrame,
     surface_extent: Option<(u32, u32)>,
 ) -> Result<SceneExecutionPlanReport<'a>, String> {
-    let execution_plan =
-        scene_execution_plan_from_semantic_frame(storage, semantic_frame);
+    let execution_plan = scene_execution_plan_from_semantic_frame(storage, semantic_frame);
     let project = storage.project();
     let output_extent = scene_execution_plan_output_extent(
         [project.logical_width.max(1), project.logical_height.max(1)],

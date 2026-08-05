@@ -1,0 +1,80 @@
+#compdef tensor-msg
+
+local -a products land_commands wallpaper_commands
+products=(
+  'land:control the Tensor compositor'
+  'wallpaper:control Tensor Wallpaper'
+)
+land_commands=(
+  'ping:check compositor availability'
+  'get-state:show compositor state'
+  'get-outputs:list outputs'
+  'get-workspaces:list workspaces'
+  'get-overview:show overview state'
+  'get-config-status:show config generation and diagnostics'
+  'reload-config:reload compositor KDL'
+  'watch-config:stream config reload events'
+  'set-layout:set the active layout'
+  'spawn:launch an argv through the compositor'
+  'set-workspace:activate a workspace'
+  'move-focused-to-workspace:move the focused view'
+  'activate-view:activate a view'
+  'move-view-to-workspace:move a view'
+  'close-view:close a view'
+  'minimize-focused:minimize the focused view'
+  'restore-minimized:restore a minimized view'
+  'set-output-position:set output position'
+  'set-output-enabled:enable or disable an output'
+  'set-output-scale:set output scale percent'
+  'quit:stop the compositor'
+)
+wallpaper_commands=(
+  'ping:check daemon availability'
+  'status:show daemon state'
+  'outputs:list desktop outputs'
+  'watch:stream daemon events'
+  'properties:read or write wallpaper properties'
+  'set:set wallpaper package'
+  'pause:pause wallpapers'
+  'resume:resume wallpapers'
+  'stop:remove wallpapers'
+)
+
+_arguments -C \
+  '1:product:->product' \
+  '2:command:->command' \
+  '*::argument:->args'
+
+case $state in
+  product)
+    _describe 'product' products
+    ;;
+  command)
+    case $words[2] in
+      land) _describe 'command' land_commands ;;
+      wallpaper) _describe 'command' wallpaper_commands ;;
+    esac
+    ;;
+  args)
+    case "$words[2]:$words[3]" in
+      wallpaper:properties)
+        _arguments \
+          '1:subcommand:(get set unset)' \
+          '*:argument:_files' \
+          '--output[select output]:output:'
+        ;;
+      wallpaper:set)
+        _arguments \
+          '1:wallpaper package:_files' \
+          '--output[select output]:output:' \
+          '--variant[select variant]:variant:'
+        ;;
+      wallpaper:pause|wallpaper:resume|wallpaper:stop)
+        _arguments '--output[select output]:output:'
+        ;;
+      land:set-layout)
+        _arguments '1:layout:(scrolling floating master-stack)'
+        ;;
+    esac
+    ;;
+esac

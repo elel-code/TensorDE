@@ -51,8 +51,12 @@ pub(super) fn animation_layer_initial_progress(layer: &Value) -> Result<f32, Str
     context.with(|ctx| {
         ctx.eval::<(), _>(ANIMATION_HOST)
             .map_err(|error| error.to_string())?;
-        let module = Module::declare(ctx.clone(), "tensor-wallpaper:animation-layer", source.as_bytes())
-            .map_err(|error| error.to_string())?;
+        let module = Module::declare(
+            ctx.clone(),
+            "tensor-wallpaper:animation-layer",
+            source.as_bytes(),
+        )
+        .map_err(|error| error.to_string())?;
         let (module, promise) = module.eval().map_err(|error| error.to_string())?;
         promise.finish::<()>().map_err(|error| error.to_string())?;
         let namespace = module.namespace().map_err(|error| error.to_string())?;

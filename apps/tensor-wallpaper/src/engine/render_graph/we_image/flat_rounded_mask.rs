@@ -158,7 +158,7 @@ fn compatible_effect(effect: &WeEffectPassContract) -> bool {
         && effect
             .binds
             .iter()
-            .all(|(slot, source)| (*slot == 0 && is_previous(source)) || *slot == 2)
+            .all(|(slot, source)| *slot == 0 && is_previous(source))
         && effect_combo_value(effect, "B_SQUARE", 1) == 0
         && effect_combo_value(effect, "C_ALPHA_ONLY", 1) == 0
         && effect_combo_value(effect, "SOFT", 0) == 1

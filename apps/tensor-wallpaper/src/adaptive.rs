@@ -169,7 +169,10 @@ pub fn output_throttle_max_fps(config: &TensorWallpaperConfig, output_name: &str
         .max(1)
 }
 
-pub fn output_action(config: &TensorWallpaperConfig, output_name: &str) -> crate::config::AdaptiveAction {
+pub fn output_action(
+    config: &TensorWallpaperConfig,
+    output_name: &str,
+) -> crate::config::AdaptiveAction {
     config
         .outputs
         .get(output_name)

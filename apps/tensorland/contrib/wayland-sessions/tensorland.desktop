@@ -1,6 +1,0 @@
-[Desktop Entry]
-Name=Tensorland
-Comment=A high-performance Wayland compositor
-Exec=tensorland-session
-Type=Application
-DesktopNames=Tensorland

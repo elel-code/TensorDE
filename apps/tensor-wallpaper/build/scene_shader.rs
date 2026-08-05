@@ -2,6 +2,8 @@
 mod blend;
 #[path = "scene_shader/blur.rs"]
 mod blur;
+#[path = "scene_shader/builtin_slang.rs"]
+mod builtin_slang;
 #[path = "scene_shader/catalog.rs"]
 mod catalog;
 #[path = "scene_shader/core_material.rs"]
@@ -16,8 +18,6 @@ mod final_effect;
 mod flat_rounded_hsl;
 #[path = "scene_shader/local_read.rs"]
 mod local_read;
-#[path = "scene_shader/builtin_slang.rs"]
-mod builtin_slang;
 #[path = "scene_shader/particle.rs"]
 mod particle;
 #[path = "scene_shader/particle_compute.rs"]
@@ -45,6 +45,11 @@ mod waterwaves_composite;
 #[path = "scene_shader/waterwaves_direct.rs"]
 mod waterwaves_direct;
 
+pub(super) use builtin_slang::{
+    composelayer_sources, generic_image_sources, image_effect_source_sources,
+    iris_object_mesh_vertex_source, mesh_vertex_source, puppet_effect_composite_clipping_sources,
+    waterripple_slots_5_sources,
+};
 pub(crate) use catalog::build_scene_shader_origin_catalog;
 pub(super) use core_material::{
     color_fragment_source, minimal_alpha_fragment_source, passthrough_fragment_source,
@@ -59,11 +64,6 @@ pub(super) use final_effect::{
 use flat_rounded_hsl::flat_rounded_hsl_source_sources;
 pub(crate) use local_read::{
     flat_passthrough_input_attachment_source, input_attachment_catalog_type_source,
-};
-pub(super) use builtin_slang::{
-    composelayer_sources, generic_image_sources, image_effect_source_sources,
-    iris_object_mesh_vertex_source, mesh_vertex_source, puppet_effect_composite_clipping_sources,
-    waterripple_slots_5_sources,
 };
 pub(super) use particle::generic_particle_sources;
 pub(super) use particle_compute::particle_compute_source;

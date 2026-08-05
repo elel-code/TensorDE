@@ -313,7 +313,9 @@ fn compile_stage(input: StageCompileInput<'_>) -> Result<WeIrShaderProgram, WeIn
     let stem = format!("program-{}-{stage_name}", input.program_index);
     let source_path = input.temporary.join(format!("{stem}.source.slang"));
     let direct_path = input.temporary.join(format!("{stem}.direct.slang"));
-    let slang_path = input.temporary.join(format!("{stem}.descriptor-heap.slang"));
+    let slang_path = input
+        .temporary
+        .join(format!("{stem}.descriptor-heap.slang"));
     let spirv_path = input.temporary.join(format!("{stem}.spv"));
     fs::write(&source_path, input.source).map_err(|error| {
         shader_error(
@@ -529,18 +531,29 @@ struct TemporaryShaderDirectory {
 
 impl TemporaryShaderDirectory {
     fn new() -> Result<Self, WeIngestError> {
-        let id = TEMP_ID.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("tensor-wallpaper-we-shaders-{}-{id}", std::process::id()));
-        fs::create_dir(&path).map_err(|error| WeIngestError::Io {
-            path: path.clone(),
-            source: error,
-        })?;
+        let prefix = format!("tensor-wallpaper-we-shaders-{}", std::process::id());
+        let path = create_unique_shader_directory(&std::env::temp_dir(), &prefix, &TEMP_ID)?;
         Ok(Self { path })
     }
 
     fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+fn create_unique_shader_directory(
+    root: &Path,
+    prefix: &str,
+    ids: &AtomicU64,
+) -> Result<PathBuf, WeIngestError> {
+    loop {
+        let id = ids.fetch_add(1, Ordering::Relaxed);
+        let path = root.join(format!("{prefix}-{id}"));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(source) => return Err(WeIngestError::Io { path, source }),
+        }
     }
 }
 
@@ -651,6 +664,34 @@ mod tests {
         assert_eq!(ir.material_constants[0].value_json, "\"4 5\"");
         assert_eq!(ir.material_constants[1].name, "Sample shift amount");
         assert_eq!(ir.material_constants[1].value_json, "1");
+    }
+
+    #[test]
+    fn unique_shader_directory_preserves_existing_diagnostics() {
+        let roots = AtomicU64::new(0);
+        let root = create_unique_shader_directory(
+            &std::env::temp_dir(),
+            &format!(
+                "tensor-wallpaper-authored-shader-test-{}",
+                std::process::id()
+            ),
+            &roots,
+        )
+        .expect("unique test root");
+        let preserved = root.join("evidence-0");
+        fs::create_dir(&preserved).expect("preserved evidence directory");
+
+        let ids = AtomicU64::new(0);
+        let created = create_unique_shader_directory(&root, "evidence", &ids)
+            .expect("next unique evidence directory");
+
+        assert_eq!(
+            created.file_name().and_then(|name| name.to_str()),
+            Some("evidence-1")
+        );
+        assert!(preserved.is_dir());
+
+        let _ = fs::remove_dir_all(root);
     }
 
     fn empty_ir() -> WeSceneIr {

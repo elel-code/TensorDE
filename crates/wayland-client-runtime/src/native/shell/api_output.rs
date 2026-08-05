@@ -61,7 +61,7 @@ impl NativeShell {
     /// Find an output by compositor-advertised name (`wl_output.name`, v4+).
     ///
     /// Comparison is case-sensitive and exact. Useful for binding a layer
-    /// surface to a specific monitor (Gilder `output_name` option).
+    /// surface to a specific monitor (Tensor Wallpaper `output_name` option).
     pub fn find_output_by_name(&self, name: &str) -> Option<crate::output::OutputInfo> {
         self.state
             .outputs

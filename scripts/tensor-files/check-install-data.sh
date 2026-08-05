@@ -48,8 +48,6 @@ require_file /usr/share/dbus-1/system-services/org.tensorde.TensorFiles1.Privile
 require_file /etc/dbus-1/system.d/org.tensorde.TensorFiles1.Privileged.conf
 require_file /usr/share/polkit-1/actions/org.tensorde.TensorFiles.policy
 require_file /usr/share/dbus-1/interfaces/org.tensorde.TensorFiles1.Privileged.xml
-require_file /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.tensor_files.service
-require_file /usr/share/xdg-desktop-portal/portals/tensor-files.portal
 
 require_contains \
     /usr/share/dbus-1/system-services/org.tensorde.TensorFiles1.Privileged.service \
@@ -78,12 +76,6 @@ for method in CreateFolder CreateFile Rename Trash Transfer PrepareExternalEdit 
         "<method name=\"$method\">"
 done
 require_contains \
-    /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.tensor_files.service \
-    "Name=org.freedesktop.impl.portal.desktop.tensor_files"
-require_contains \
-    /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.tensor_files.service \
-    "Exec=/usr/lib/tensor-files/tensor-files-xdp-filechooser"
-require_contains \
     /usr/share/polkit-1/actions/org.tensorde.TensorFiles.policy \
     "org.tensorde.TensorFiles.privileged-helper"
 require_contains \
@@ -98,16 +90,6 @@ require_contains \
 require_contains \
     /usr/share/polkit-1/actions/org.tensorde.TensorFiles.policy \
     "<allow_any>no</allow_any>"
-require_contains \
-    /usr/share/xdg-desktop-portal/portals/tensor-files.portal \
-    "DBusName=org.freedesktop.impl.portal.desktop.tensor_files"
-require_contains \
-    /usr/share/xdg-desktop-portal/portals/tensor-files.portal \
-    "Interfaces=org.freedesktop.impl.portal.FileChooser;"
-require_contains \
-    /usr/share/xdg-desktop-portal/portals/tensor-files.portal \
-    "UseIn=Tensorland"
-
 if grep -R "@bindir@" "$tmpdir" >/dev/null; then
     echo "installed data still contains @bindir@ placeholder" >&2
     exit 1

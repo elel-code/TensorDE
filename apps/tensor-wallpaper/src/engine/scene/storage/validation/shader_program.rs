@@ -357,10 +357,7 @@ fn validate_spirv(
         );
     }
     if !requires_heap && (heap_capability || heap_extension) {
-        return invalid(
-            program,
-            "descriptor-heap SPIR-V has no binding metadata",
-        );
+        return invalid(program, "descriptor-heap SPIR-V has no binding metadata");
     }
     Ok(())
 }

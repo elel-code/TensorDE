@@ -25,7 +25,9 @@ UI runtime 已经从源码树移除。
 - Vulkan 资源只由持久原生 renderer 路径创建和持有。
 - 父子 dialog、popup 定位/重定位、cursor-shape 回退和 drag icon 均由通用
   Wayland 层管理。
-- Portal 与 privileged helper 继续作为独立集成二进制保留。
+- Privileged helper 继续作为独立的系统集成二进制保留。
+- XDG Desktop Portal 集成不再由 Tensor Files 持有；后续由整个 DE 共用的 portal
+  服务统一负责。
 
 ## 源码布局
 
@@ -37,14 +39,10 @@ src/
   windowing_event_loop.rs        Tensor Files 调度和事件翻译
   windowing_types.rs             Tensor Files 自有窗口与输入类型
   core.rs                        Core 模块重导出
-  cli.rs                         共享 CLI 解析入口
-  cli/
-    args.rs                      Manager/chooser 参数解析
   core/                          Directory、pane、operations、launcher、
                                  Places、devices、thumbnails、trash、D-Bus
   ui/                            Tensor Files 自有 UI 模块
   bin/
-    tensor-files-xdp-filechooser.rs      XDG Desktop Portal FileChooser 后端
     tensor-files-privileged-helper.rs    特权操作 D-Bus helper
 ../../crates/
   vulkan-renderer/               可复用的 Vulkan 1.4 渲染标准与后端

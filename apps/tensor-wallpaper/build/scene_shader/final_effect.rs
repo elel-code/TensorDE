@@ -58,10 +58,6 @@ pub(crate) const FINAL_EFFECT_SHADER_SPECS: &[super::SceneShaderSpec] = &[
         family: super::super::SceneShaderFamily::MeshFinalEffect,
     },
     super::super::SceneShaderSpec {
-        key: "we/audio-bars-final",
-        family: super::super::SceneShaderFamily::MeshFinalEffect,
-    },
-    super::super::SceneShaderSpec {
         key: "we/framebuffer-water-quantized-water-opacity",
         family: super::super::SceneShaderFamily::MeshFinalEffect,
     },
@@ -85,7 +81,6 @@ pub(crate) fn final_effect_parameter_layout(key: &str) -> &'static str {
         | "we/puppet-iris-waterripple-clipping-final"
         | "we/flat-rounded-opacity-final"
         | "we/tech-circle-final"
-        | "we/audio-bars-final"
         | "we/framebuffer-water-quantized-water-opacity"
         | "we/framebuffer-water-quantized-shake-final" => "FinalEffectProgram",
         _ => "None",
@@ -110,7 +105,6 @@ pub(crate) fn final_effect_sources(key: &str) -> (String, String) {
         }
         "we/flat-rounded-opacity-final" => final_flat_rounded_opacity_fragment_source(),
         "we/tech-circle-final" => final_tech_circle_fragment_source(),
-        "we/audio-bars-final" => final_audio_bars_fragment_source(),
         "we/framebuffer-water-quantized-water-opacity" => {
             framebuffer_water_opacity_fragment_source()
         }
@@ -125,7 +119,6 @@ pub(crate) fn final_effect_sources(key: &str) -> (String, String) {
             super::super::scene_puppet_skinning_clippingtarget_vertex_source()
         }
         "we/flat-rounded-opacity-final" => flat_rounded_mask_support_vertex_source(),
-        "we/audio-bars-final" => final_audio_bars_vertex_source(),
         "we/framebuffer-water-quantized-water-opacity" => framebuffer_water_opacity_vertex_source(),
         "we/framebuffer-water-quantized-shake-final" => framebuffer_water_shake_vertex_source(),
         _ => super::super::scene_mesh_vertex_source(),
@@ -364,149 +357,6 @@ void main() {
     o_Color = vec4(
         u_Effect.g_ColorAlpha.rgb * u_Effect.g_ResolvedColorAlpha.rgb,
         alpha);
-}
-"#
-    .to_owned()
-}
-
-fn final_audio_bars_fragment_source() -> String {
-    r#"#version 450
-layout(location = 0) in vec2 v_TexCoord;
-layout(location = 1) in float v_VertexAlpha;
-layout(location = 0) out vec4 o_Color;
-layout(set = 0, binding = 0) uniform sampler2D g_MaskTexture;
-layout(set = 0, binding = 3) uniform FinalAudioBarsProgram {
-    vec4 g_ResolvedColorAlpha;
-    vec4 g_ColorOpacity;
-    vec4 g_CountSpacingBounds;
-    vec4 g_MinHeightRadiusVolumeAaX;
-    vec4 g_SkewTopBottomLeftRight;
-    vec4 g_OpacityMask;
-    vec4 g_MaskResolution;
-    vec4 g_Reserved;
-    vec4 g_SpectrumLeft[8];
-    vec4 g_SpectrumRight[8];
-} u_Effect;
-float spectrumLeft(int band) {
-    int index = clamp(band, 0, 31);
-    return u_Effect.g_SpectrumLeft[index / 4][index % 4];
-}
-float spectrumRight(int band) {
-    int index = clamp(band, 0, 31);
-    return u_Effect.g_SpectrumRight[index / 4][index % 4];
-}
-float roundedBoxSdf(vec2 current_position, vec3 size, float correction, float radius_factor) {
-    size *= 0.5;
-    size.x *= correction;
-    current_position.y -= size.y + size.z;
-    size.y -= size.z;
-    float radius = radius_factor * min(size.x, size.y);
-    current_position.x *= correction;
-    return length(max(abs(current_position) - size.xy + radius, 0.0)) - radius;
-}
-void main() {
-    // Authored chain: Simple_Audio_Bars(SHAPE=7, BAR_STYLE=1), then skew MODE=0/REPEAT=1.
-    // Fuse the latter by evaluating the audio source at the skewed source UV instead of rotating
-    // each bar independently.
-    vec2 output_uv = v_TexCoord;
-    vec2 uv = output_uv;
-    // The authored skew source computes `step` in the vertex shader. On a quad those four
-    // corner values are linearly interpolated, so the fragment-equivalent mapping is a
-    // continuous mix, not a per-fragment half-plane jump.
-    uv.x -= mix(
-        u_Effect.g_SkewTopBottomLeftRight.x,
-        u_Effect.g_SkewTopBottomLeftRight.y,
-        output_uv.y);
-    uv.y += mix(
-        u_Effect.g_SkewTopBottomLeftRight.z,
-        u_Effect.g_SkewTopBottomLeftRight.w,
-        output_uv.x);
-    uv = fract(uv);
-    uv.y = fract(0.5 - uv.y) + floor(uv.y);
-
-    float count = max(u_Effect.g_CountSpacingBounds.x, 1.0);
-    float correction = max(u_Effect.g_Reserved.y, 0.000001);
-    float bar_distance = abs(fract(uv.x * count) * 2.0 - 1.0);
-    float frequency = floor(uv.x * count) / count * 32.0;
-    int frequency0 = int(mod(frequency, 32.0));
-    int frequency1 = (frequency0 + 1) % 32;
-    float blend = smoothstep(0.0, 1.0, fract(frequency));
-    float left = mix(spectrumLeft(frequency0), spectrumLeft(frequency1), blend);
-    float right = mix(spectrumRight(frequency0), spectrumRight(frequency1), blend);
-    float volume_left = left * u_Effect.g_MinHeightRadiusVolumeAaX.z;
-    float volume_right = right * u_Effect.g_MinHeightRadiusVolumeAaX.z;
-
-    float rounded_width = (1.0 - u_Effect.g_CountSpacingBounds.y) / count;
-    float minimum_height = u_Effect.g_MinHeightRadiusVolumeAaX.x
-        * rounded_width * correction;
-    float lower_bound = u_Effect.g_CountSpacingBounds.z;
-    float upper_bound = u_Effect.g_CountSpacingBounds.w;
-    float height_left = 0.5 * mix(
-        max(lower_bound, minimum_height) * 2.0,
-        upper_bound,
-        volume_left);
-    float height_right = 0.5 * mix(
-        max(lower_bound, minimum_height) * 2.0,
-        upper_bound,
-        volume_right);
-
-    vec2 center_left = vec2(bar_distance / count * 0.5, uv.y);
-    vec2 center_right = vec2(bar_distance / count * 0.5, 1.0 - uv.y);
-    float center_offset = min(rounded_width, max(height_left, height_right))
-        * 0.5 * correction;
-    center_left.y += center_offset;
-    center_right.y += center_offset;
-    float distance_left = roundedBoxSdf(
-        center_left,
-        vec3(rounded_width, height_left, 0.0),
-        correction,
-        u_Effect.g_MinHeightRadiusVolumeAaX.y);
-    float distance_right = roundedBoxSdf(
-        center_right,
-        vec3(rounded_width, height_right, 0.0),
-        correction,
-        u_Effect.g_MinHeightRadiusVolumeAaX.y);
-    float aa_factor = 15.0 / max(u_Effect.g_Reserved.z, 1.0);
-    float aa_start = -u_Effect.g_MinHeightRadiusVolumeAaX.w * aa_factor;
-    float aa_end = u_Effect.g_Reserved.x * aa_factor;
-    float bar = 1.0 - min(
-        smoothstep(aa_start, aa_end, distance_left),
-        smoothstep(aa_start, aa_end, distance_right));
-    float mask = 1.0;
-    if (u_Effect.g_OpacityMask.y > 0.5) {
-        vec2 mask_uv = output_uv * u_Effect.g_MaskResolution.zw
-            / max(u_Effect.g_MaskResolution.xy, vec2(1.0));
-        mask = texture(g_MaskTexture, mask_uv).r;
-    }
-    float alpha = bar * u_Effect.g_ColorOpacity.a * u_Effect.g_OpacityMask.x
-        * mask * u_Effect.g_ResolvedColorAlpha.a * v_VertexAlpha;
-    o_Color = vec4(
-        u_Effect.g_ColorOpacity.rgb * u_Effect.g_ResolvedColorAlpha.rgb,
-        alpha);
-}
-"#
-    .to_owned()
-}
-
-fn final_audio_bars_vertex_source() -> String {
-    r#"#version 450
-layout(location = 0) in vec2 a_Position;
-layout(location = 1) in vec2 a_TexCoord;
-layout(location = 2) in float a_Opacity;
-layout(location = 0) out vec2 v_TexCoord;
-layout(location = 1) out float v_VertexAlpha;
-layout(set = 0, binding = 2) uniform SceneDrawTransform {
-    vec4 g_ModelViewProjectionMatrix[4];
-} g_Draw;
-void main() {
-    v_TexCoord = a_TexCoord;
-    v_VertexAlpha = a_Opacity;
-    vec4 local_position = vec4(a_Position.xy, 0.0, 1.0);
-    gl_Position = vec4(
-        dot(g_Draw.g_ModelViewProjectionMatrix[0], local_position),
-        dot(g_Draw.g_ModelViewProjectionMatrix[1], local_position),
-        dot(g_Draw.g_ModelViewProjectionMatrix[2], local_position),
-        dot(g_Draw.g_ModelViewProjectionMatrix[3], local_position));
 }
 "#
     .to_owned()

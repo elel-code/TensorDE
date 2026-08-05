@@ -5,9 +5,11 @@ use std::collections::BTreeSet;
 use crate::convert::we_ingest::ir::{
     WeIrImageTarget, WeIrImageTargetExtentDomain, WeIrImageTargetRole,
 };
+use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
-    ColorWriteMask, PassState, RenderGraph, RenderPassDrawPrimitive, RenderPassEffectVisibility,
-    RenderPassNode, RenderPassRole, RenderTargetExtentDomain, RenderTargetRole, TextureBindingRole,
+    ColorWriteMask, PassState, PipelineBlendMode, RenderGraph, RenderPassDrawPrimitive,
+    RenderPassEffectVisibility, RenderPassNode, RenderPassRole, RenderTargetExtentDomain,
+    RenderTargetRole, TextureBindingRole,
 };
 
 use super::WeIrBuilder;
@@ -112,8 +114,12 @@ fn materialize_graph_target(
             RenderTargetRole::SceneColor => RenderTargetExtentDomain::GraphSource,
             _ => unreachable!("image-layer composite producer target is prefiltered"),
         };
-        graph.passes[producer].target = RenderTargetRole::FirstClassEffectTarget;
-        graph.passes[producer].target_name = Some(target_name.to_owned());
+        let producer = &mut graph.passes[producer];
+        producer.target = RenderTargetRole::FirstClassEffectTarget;
+        producer.target_name = Some(target_name.to_owned());
+        producer.state.pipeline_blend = PipelineBlendMode::Normal;
+        producer.state.scene_blend = SceneBlendMode::Normal;
+        producer.state.color_write_mask = ColorWriteMask::Rgba;
         if let Some(consumer) = self_consumer {
             promote_terminal_self_consumer(graph, consumer);
         }
@@ -248,7 +254,12 @@ mod tests {
                 target_format: None,
                 bindings: vec![TextureBindingRole::SourceTexture],
                 effect_visibility: RenderPassEffectVisibility::NONE,
-                state: PassState::default(),
+                state: PassState {
+                    pipeline_blend: PipelineBlendMode::Translucent,
+                    scene_blend: SceneBlendMode::Alpha,
+                    color_write_mask: ColorWriteMask::Rgb,
+                    ..PassState::default()
+                },
             }],
             ..RenderGraph::default()
         };
@@ -267,6 +278,9 @@ mod tests {
         );
         assert_eq!(pass.draw_primitive, RenderPassDrawPrimitive::ObjectMesh);
         assert_eq!(pass.bindings, [TextureBindingRole::SourceTexture]);
+        assert_eq!(pass.state.pipeline_blend, PipelineBlendMode::Normal);
+        assert_eq!(pass.state.scene_blend, SceneBlendMode::Normal);
+        assert_eq!(pass.state.color_write_mask, ColorWriteMask::Rgba);
     }
 
     #[test]

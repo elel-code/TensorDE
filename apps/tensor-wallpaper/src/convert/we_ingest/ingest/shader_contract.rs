@@ -21,10 +21,12 @@ pub(super) fn build_shader_contract_records(
     material_passes: &[WeIrMaterialPass],
     material_textures: &[WeIrMaterialTexture],
     material_constants: &[WeIrMaterialConstant],
+    fused_authored_source_materials: &[usize],
 ) -> Vec<WeIrShaderContract> {
     let used_materials = render_graphs
         .iter()
         .flat_map(|graph| graph.passes.iter().filter_map(|pass| pass.material_index))
+        .chain(fused_authored_source_materials.iter().copied())
         .collect::<BTreeSet<_>>();
     let mut contracts = Vec::new();
     let mut seen_pipeline_keys = BTreeSet::new();
@@ -239,7 +241,6 @@ pub(super) fn declared_texture_slot_mask(
         "we/puppet-iris-waterripple-final" => mask |= 0x0f,
         "we/puppet-iris-waterripple-clipping-final" => mask |= 0x10f,
         "we/puppet-effect-composite-clipping" => mask |= 0x101,
-        "we/audio-bars-final" => mask |= 0x01,
         _ => {}
     }
     mask
@@ -370,7 +371,6 @@ fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
         || key == "we/flat-rounded-opacity-final"
         || key == "we/flat-rounded-hsl-source"
         || key == "we/tech-circle-final"
-        || key == "we/audio-bars-final"
         || key == "we/color"
         || key.starts_with("we/color__")
         || key == "text"
@@ -563,7 +563,7 @@ mod tests {
             unsupported: Vec::new(),
         }];
 
-        let contracts = build_shader_contract_records(&graphs, &[], &[], &[]);
+        let contracts = build_shader_contract_records(&graphs, &[], &[], &[], &[]);
         let opacity = contracts
             .iter()
             .find(|contract| contract.shader_key == "we/puppet-opacity-clipping-final")
@@ -582,8 +582,7 @@ mod tests {
 
     #[test]
     fn framebuffer_water_contracts_declare_every_texture_and_both_uniforms() {
-        let prepass_shader =
-            "effects/caustics__SLOTS_3d__BLENDMODE_6__TENSOR_WALLPAPER_FRAMEBUFFER_QUANTIZED_OVERLAY_1";
+        let prepass_shader = "effects/caustics__SLOTS_3d__BLENDMODE_6__TENSOR_WALLPAPER_FRAMEBUFFER_QUANTIZED_OVERLAY_1";
         let intermediate_shader = "we/framebuffer-water-quantized-water-opacity";
         let final_shader = "we/framebuffer-water-quantized-shake-final";
         let material_pass =
@@ -667,7 +666,7 @@ mod tests {
         ];
 
         let contracts =
-            build_shader_contract_records(&[graph], &material_passes, &material_textures, &[]);
+            build_shader_contract_records(&[graph], &material_passes, &material_textures, &[], &[]);
         let prepass = contracts
             .iter()
             .find(|contract| contract.shader_key == prepass_shader)

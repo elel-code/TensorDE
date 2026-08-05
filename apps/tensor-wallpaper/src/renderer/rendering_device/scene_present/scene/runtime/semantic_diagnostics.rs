@@ -3,12 +3,17 @@
 use serde::Serialize;
 
 use super::SemanticFrameResolver;
+use super::descriptor_layout::ScenePipelineDescriptorLayout;
 use super::draw_recording::{SceneGpuDrawCommand, SceneGpuScissor};
 use super::material_uniform::{SCENE_MATERIAL_UNIFORM_BYTES, resolved_standard_material_color};
+use super::sampled_binding::{
+    SceneSampledImageBindingPlan, SceneSampledImageSource, SceneVideoPlane,
+};
 use super::scene_owned_uniform::SceneOwnedUniformArenaPlan;
 use crate::engine::scene::{
     INVALID_OBJECT_ID, SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan,
-    SceneScriptTarget, SceneStorage,
+    SceneScriptTarget, SceneStorage, SceneTextureFormat, SceneTextureSamplerAddressMode,
+    SceneTextureSamplerFilter,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -17,15 +22,26 @@ pub struct RenderingDeviceSceneSemanticDiagnosticsSnapshot {
     pub retained_script_deltas: Vec<RenderingDeviceSceneScriptDeltaSnapshot>,
     pub resolved_objects: Vec<RenderingDeviceSceneResolvedObjectSnapshot>,
     pub puppet_bone_palettes: Vec<RenderingDeviceScenePuppetBonePaletteSnapshot>,
+    /// Typed sampled-image source and sampler evidence for every retained
+    /// descriptor phase. This is diagnostic-only and exposes the same lane
+    /// identity that command recording pushes through `vkCmdPushDataEXT`.
+    pub sampled_binding_phases: Vec<RenderingDeviceSceneSampledBindingPhaseSnapshot>,
     pub draws: Vec<RenderingDeviceSceneDrawActivationSnapshot>,
     pub enabled_draw_count: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RenderingDeviceSceneDescriptorHeapSnapshot {
     pub resource_descriptor_count: usize,
     pub sampler_descriptor_count: usize,
     pub reference_phase_count: usize,
+    /// Absolute sampled-image slot order used by every per-draw descriptor lane.
+    ///
+    /// This turns a recorded descriptor-push index back into an authored shader
+    /// register without relying on API-dump heap-range heuristics.
+    pub sampled_slots: Vec<u32>,
+    /// Absolute input-attachment slot order, kept separate from sampled images.
+    pub input_attachment_slots: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -108,11 +124,62 @@ pub struct RenderingDeviceSceneScissorSnapshot {
     pub extent: [u32; 2],
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RenderingDeviceSceneSampledBindingPhaseSnapshot {
+    pub reference_phase: usize,
+    pub initial_reference_physical_slots: Vec<u32>,
+    pub bindings: Vec<RenderingDeviceSceneSampledBindingSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RenderingDeviceSceneSampledBindingSnapshot {
+    pub draw_index: u32,
+    pub slot: u32,
+    pub resource_descriptor_index: usize,
+    pub sampler_descriptor_index: usize,
+    pub source: RenderingDeviceSceneSampledImageSourceSnapshot,
+    pub sampler: RenderingDeviceSceneSamplerSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum RenderingDeviceSceneSampledImageSourceSnapshot {
+    FallbackWhite,
+    SceneTexture {
+        resource: u32,
+        path: String,
+        format: SceneTextureFormat,
+        logical_extent: [u32; 2],
+        storage_extent: [u32; 2],
+    },
+    SceneColorSnapshot,
+    EffectTarget {
+        physical_slot: u32,
+        batch_atlas_tile: u32,
+    },
+    VideoFramePlane {
+        media_instance: u32,
+        plane: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum RenderingDeviceSceneSamplerSnapshot {
+    AuthoredTexture {
+        filter: SceneTextureSamplerFilter,
+        address_mode: SceneTextureSamplerAddressMode,
+    },
+    LinearClamp,
+}
+
 pub(super) fn scene_semantic_diagnostics_snapshot(
     storage: &SceneStorage,
     resolver: &SemanticFrameResolver,
     graph: &SceneRenderingDeviceGraphPlan,
     draws: &[SceneGpuDrawCommand],
+    descriptor_layout: &ScenePipelineDescriptorLayout,
+    sampled_binding_cycle: &[SceneSampledImageBindingPlan],
     material_uniform_payload: Option<&[u8]>,
     scene_owned_uniform_plan: &SceneOwnedUniformArenaPlan,
     scene_owned_uniform_payload: &[u8],
@@ -125,6 +192,8 @@ pub(super) fn scene_semantic_diagnostics_snapshot(
             draws.len()
         ));
     }
+    let sampled_binding_phases =
+        sampled_binding_phase_snapshots(storage, descriptor_layout, sampled_binding_cycle, draws)?;
     let retained_script_deltas = resolver
         .retained_script_deltas()
         .iter()
@@ -298,9 +367,151 @@ pub(super) fn scene_semantic_diagnostics_snapshot(
         retained_script_deltas,
         resolved_objects,
         puppet_bone_palettes,
+        sampled_binding_phases,
         draws,
         enabled_draw_count,
     })
+}
+
+fn sampled_binding_phase_snapshots(
+    storage: &SceneStorage,
+    descriptor_layout: &ScenePipelineDescriptorLayout,
+    sampled_binding_cycle: &[SceneSampledImageBindingPlan],
+    draws: &[SceneGpuDrawCommand],
+) -> Result<Vec<RenderingDeviceSceneSampledBindingPhaseSnapshot>, String> {
+    sampled_binding_cycle
+        .iter()
+        .enumerate()
+        .map(|(reference_phase, plan)| {
+            if plan.sampled_slot_count != descriptor_layout.sampled_slots.len() {
+                return Err(format!(
+                    "scene diagnostic sampled binding phase {reference_phase} has {} slots, descriptor layout has {}",
+                    plan.sampled_slot_count,
+                    descriptor_layout.sampled_slots.len()
+                ));
+            }
+            let mut bindings = Vec::with_capacity(
+                draws
+                    .len()
+                    .saturating_mul(descriptor_layout.sampled_slots.len()),
+            );
+            for (draw_index, draw) in draws.iter().enumerate() {
+                for (sampled_index, slot) in descriptor_layout.sampled_slots.iter().copied().enumerate() {
+                    let source = plan.source(draw_index, sampled_index).ok_or_else(|| {
+                        format!(
+                            "scene diagnostic sampled binding phase {reference_phase} is missing draw {draw_index} slot {slot}"
+                        )
+                    })?;
+                    let (source, sampler) = sampled_source_snapshot(storage, source)?;
+                    bindings.push(RenderingDeviceSceneSampledBindingSnapshot {
+                        draw_index: u32::try_from(draw_index).map_err(|_| {
+                            "scene diagnostic sampled binding draw index exceeds u32".to_owned()
+                        })?,
+                        slot,
+                        resource_descriptor_index: draw
+                            .sampled_resource_descriptor_base
+                            .checked_add(sampled_index)
+                            .ok_or_else(|| {
+                                "scene diagnostic sampled resource descriptor index overflows"
+                                    .to_owned()
+                            })?,
+                        sampler_descriptor_index: draw
+                            .sampler_descriptor_base
+                            .checked_add(sampled_index)
+                            .ok_or_else(|| {
+                                "scene diagnostic sampled sampler descriptor index overflows"
+                                    .to_owned()
+                            })?,
+                        source,
+                        sampler,
+                    });
+                }
+            }
+            Ok(RenderingDeviceSceneSampledBindingPhaseSnapshot {
+                reference_phase,
+                initial_reference_physical_slots: plan.initial_reference_physical_slots.clone(),
+                bindings,
+            })
+        })
+        .collect()
+}
+
+fn sampled_source_snapshot(
+    storage: &SceneStorage,
+    source: SceneSampledImageSource,
+) -> Result<
+    (
+        RenderingDeviceSceneSampledImageSourceSnapshot,
+        RenderingDeviceSceneSamplerSnapshot,
+    ),
+    String,
+> {
+    match source {
+        SceneSampledImageSource::FallbackWhite => Ok((
+            RenderingDeviceSceneSampledImageSourceSnapshot::FallbackWhite,
+            RenderingDeviceSceneSamplerSnapshot::LinearClamp,
+        )),
+        SceneSampledImageSource::SceneTexture { resource } => {
+            let resource_record = storage.resource(resource).ok_or_else(|| {
+                format!(
+                    "scene diagnostic sampled texture resource {} is missing from storage",
+                    resource.0
+                )
+            })?;
+            let path = storage.string(resource_record.path).ok_or_else(|| {
+                format!(
+                    "scene diagnostic sampled texture resource {} has an invalid path",
+                    resource.0
+                )
+            })?;
+            let texture = storage.texture(resource).ok_or_else(|| {
+                format!(
+                    "scene diagnostic sampled texture resource {} has no texture record",
+                    resource.0
+                )
+            })?;
+            Ok((
+                RenderingDeviceSceneSampledImageSourceSnapshot::SceneTexture {
+                    resource: resource.0,
+                    path: path.to_owned(),
+                    format: texture.format,
+                    logical_extent: [texture.width, texture.height],
+                    storage_extent: [texture.storage_width, texture.storage_height],
+                },
+                RenderingDeviceSceneSamplerSnapshot::AuthoredTexture {
+                    filter: texture.sampler_filter,
+                    address_mode: texture.sampler_address_mode,
+                },
+            ))
+        }
+        SceneSampledImageSource::SceneColorSnapshot => Ok((
+            RenderingDeviceSceneSampledImageSourceSnapshot::SceneColorSnapshot,
+            RenderingDeviceSceneSamplerSnapshot::LinearClamp,
+        )),
+        SceneSampledImageSource::EffectTarget {
+            physical_slot,
+            batch_atlas_tile,
+        } => Ok((
+            RenderingDeviceSceneSampledImageSourceSnapshot::EffectTarget {
+                physical_slot,
+                batch_atlas_tile,
+            },
+            RenderingDeviceSceneSamplerSnapshot::LinearClamp,
+        )),
+        SceneSampledImageSource::VideoFramePlane {
+            media_instance,
+            plane,
+        } => Ok((
+            RenderingDeviceSceneSampledImageSourceSnapshot::VideoFramePlane {
+                media_instance,
+                plane: match plane {
+                    SceneVideoPlane::Y => "y",
+                    SceneVideoPlane::Uv => "uv",
+                },
+            },
+            RenderingDeviceSceneSamplerSnapshot::LinearClamp,
+        )),
+    }
 }
 
 fn material_uniform_words_for_draw(draw_index: usize, payload: &[u8]) -> Result<Vec<u32>, String> {
@@ -338,6 +549,113 @@ fn object_identity(storage: &SceneStorage, handle: u32) -> Result<(u32, String),
         ""
     };
     Ok((object.we_id, name.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn descriptor_heap_snapshot_keeps_explicit_resource_lane_order() {
+        let snapshot = RenderingDeviceSceneDescriptorHeapSnapshot {
+            resource_descriptor_count: 7,
+            sampler_descriptor_count: 3,
+            reference_phase_count: 2,
+            sampled_slots: vec![0, 3, 7],
+            input_attachment_slots: vec![1, 4],
+        };
+
+        let json = serde_json::to_value(snapshot).expect("serialize descriptor diagnostics");
+
+        assert_eq!(json["sampled_slots"], serde_json::json!([0, 3, 7]));
+        assert_eq!(json["input_attachment_slots"], serde_json::json!([1, 4]));
+    }
+
+    #[test]
+    fn sampled_binding_snapshot_ties_phase_sources_to_dense_heap_lanes() {
+        let storage =
+            SceneStorage::from_document(crate::engine::scene::SceneBinaryDocument::default())
+                .expect("diagnostic storage");
+        let layout = ScenePipelineDescriptorLayout {
+            sampled_slots: vec![0, 3],
+            input_attachment_slots: Vec::new(),
+            material_uniform_enabled: false,
+            skinning_storage_enabled: false,
+            particle_storage_enabled: false,
+            scene_owned_uniform_count: 0,
+        };
+        let plan = SceneSampledImageBindingPlan {
+            sampled_slot_count: 2,
+            sources: vec![
+                SceneSampledImageSource::SceneColorSnapshot,
+                SceneSampledImageSource::EffectTarget {
+                    physical_slot: 9,
+                    batch_atlas_tile: 2,
+                },
+            ],
+            initial_reference_physical_slots: vec![9],
+            fallback_descriptor_count: 0,
+            scene_texture_descriptor_count: 0,
+            scene_color_snapshot_descriptor_count: 1,
+            effect_target_descriptor_count: 1,
+            video_frame_descriptor_count: 0,
+        };
+        let draw = SceneGpuDrawCommand {
+            enabled: true,
+            primitive: SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+            pipeline_index: 0,
+            authored_pipeline_index: 0,
+            disabled_pipeline_index: None,
+            first_index: 0,
+            index_count: 0,
+            vertex_offset: 0,
+            vertex_buffer_byte_offset: None,
+            vertex_count: 3,
+            instance_count: 1,
+            instance_capacity: 1,
+            first_instance: 0,
+            dynamic_text: false,
+            video_media_instance: None,
+            video_vertex_byte_offset: None,
+            particle_indirect_index: None,
+            resource_descriptor_base: 0,
+            material_resource_descriptor: None,
+            skinning_resource_descriptor: None,
+            particle_resource_descriptor: None,
+            scene_owned_uniform_descriptor_base: 0,
+            sampled_resource_descriptor_base: 17,
+            input_attachment_resource_descriptor_base: 19,
+            sampler_descriptor_base: 23,
+            descriptor_push: None,
+            disabled_descriptor_push: None,
+            skinning_byte_offset: 0,
+            skinning_byte_count: 0,
+            scissor: None,
+        };
+
+        let phases = sampled_binding_phase_snapshots(&storage, &layout, &[plan], &[draw])
+            .expect("sampled binding diagnostics");
+
+        assert_eq!(phases.len(), 1);
+        assert_eq!(phases[0].reference_phase, 0);
+        assert_eq!(phases[0].bindings[0].slot, 0);
+        assert_eq!(phases[0].bindings[0].resource_descriptor_index, 17);
+        assert_eq!(phases[0].bindings[0].sampler_descriptor_index, 23);
+        assert_eq!(phases[0].bindings[1].slot, 3);
+        assert_eq!(phases[0].bindings[1].resource_descriptor_index, 18);
+        assert_eq!(phases[0].bindings[1].sampler_descriptor_index, 24);
+        assert!(matches!(
+            phases[0].bindings[1].source,
+            RenderingDeviceSceneSampledImageSourceSnapshot::EffectTarget {
+                physical_slot: 9,
+                batch_atlas_tile: 2,
+            }
+        ));
+        assert!(matches!(
+            phases[0].bindings[1].sampler,
+            RenderingDeviceSceneSamplerSnapshot::LinearClamp
+        ));
+    }
 }
 
 fn scissor_snapshot(scissor: SceneGpuScissor) -> RenderingDeviceSceneScissorSnapshot {

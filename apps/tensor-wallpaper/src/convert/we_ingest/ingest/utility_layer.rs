@@ -85,9 +85,79 @@ mod tests {
             WeIrUtilityLayerKind::ProjectLayer.samples_scene_color(),
             "a project layer consumes the scene framebuffer"
         );
+        assert!(
+            WeIrUtilityLayerKind::FramebufferComposite.samples_scene_color(),
+            "a composelayer consumes an explicit SceneColor snapshot"
+        );
+        assert!(
+            !WeIrUtilityLayerKind::FramebufferComposite.uses_physical_graph_source(),
+            "a composelayer's object-local targets keep its authored extent"
+        );
+        assert!(
+            WeIrUtilityLayerKind::ProjectLayer.uses_physical_graph_source(),
+            "a project layer's local targets follow the physical scene surface"
+        );
         assert!(builtin_utility_asset("models/util/projectlayer.json").is_some());
         assert!(builtin_utility_asset("materials/util/solidlayer.json").is_some());
         assert!(is_runtime_render_target(FULL_FRAMEBUFFER_TARGET));
+    }
+
+    #[test]
+    fn composelayer_keeps_local_target_seed_authored_while_snapshot_stays_physical() {
+        let root = std::env::temp_dir().join(format!(
+            "tensor-wallpaper-we-composelayer-target-domain-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("effects/post")).expect("effect directory");
+        fs::create_dir_all(root.join("materials/effects")).expect("material directory");
+        fs::write(
+            root.join("project.json"),
+            r#"{"type":"scene","file":"scene.json"}"#,
+        )
+        .expect("project");
+        fs::write(
+            root.join("scene.json"),
+            r#"{"objects":[{"id":7,"image":"models/util/composelayer.json","size":"1000 1000","effects":[{"file":"effects/post/effect.json","id":8}]}]}"#,
+        )
+        .expect("scene");
+        fs::write(
+            root.join("effects/post/effect.json"),
+            r#"{"fbos":[{"name":"_rt_HalfSource","format":"rgba_backbuffer","scale":2}],"passes":[{"material":"materials/effects/post.json","target":"_rt_HalfSource","bind":[{"index":0,"target":"previous"}]},{"material":"materials/effects/post.json","bind":[{"index":0,"target":"_rt_HalfSource"}]}]}"#,
+        )
+        .expect("effect");
+        fs::write(
+            root.join("materials/effects/post.json"),
+            r#"{"passes":[{"shader":"passthrough","blending":"normal"}]}"#,
+        )
+        .expect("effect material");
+
+        let ir = ingest_wallpaper_engine_project(&root).expect("composelayer IR");
+        assert_eq!(
+            ir.objects[0].utility_layer,
+            Some(WeIrUtilityLayerKind::FramebufferComposite)
+        );
+        assert_eq!(
+            ir.objects[0].render_source_extent_domain,
+            crate::convert::we_ingest::ir::WeIrRenderSourceExtentDomain::OwnerAuthored
+        );
+        assert_eq!(
+            ir.image_targets
+                .iter()
+                .find(|target| target.name == FULL_FRAMEBUFFER_TARGET)
+                .expect("SceneColor snapshot target")
+                .extent_domain,
+            crate::convert::we_ingest::ir::WeIrImageTargetExtentDomain::PhysicalSurface
+        );
+
+        let scene =
+            crate::convert::we_ingest::lower_ir_to_scene_binary(&ir).expect("lower composelayer");
+        assert_eq!(
+            scene.render_graphs[0].source_extent_domain,
+            crate::engine::scene::SceneRenderSourceExtentDomain::OwnerAuthored
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

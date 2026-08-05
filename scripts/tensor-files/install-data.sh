@@ -42,14 +42,6 @@ install_file \
     "$root_dir/data/dbus-1/interfaces/org.tensorde.TensorFiles1.Privileged.xml" \
     "$datadir/dbus-1/interfaces/org.tensorde.TensorFiles1.Privileged.xml"
 
-install_template \
-    "$root_dir/data/dbus-1/services/org.freedesktop.impl.portal.desktop.tensor_files.service.in" \
-    "$datadir/dbus-1/services/org.freedesktop.impl.portal.desktop.tensor_files.service"
-
-install_file \
-    "$root_dir/data/xdg-desktop-portal/portals/tensor-files.portal" \
-    "$datadir/xdg-desktop-portal/portals/tensor-files.portal"
-
 cat <<EOF
 Installed Tensor Files desktop integration data:
   bindir:     $bindir

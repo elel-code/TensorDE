@@ -166,7 +166,8 @@ pub async fn execute_ark_dnd_extract(
     payload: &ArkDndExtractPayload,
     destination: &Path,
 ) -> Result<(), ArkDndExtractError> {
-    execute_ark_dnd_extract_with_bus(BusController::shared(), payload, destination).await
+    let bus = BusController::shared();
+    execute_ark_dnd_extract_with_bus(&bus, payload, destination).await
 }
 
 pub async fn execute_ark_dnd_extract_with_bus(
@@ -175,15 +176,8 @@ pub async fn execute_ark_dnd_extract_with_bus(
     destination: &Path,
 ) -> Result<(), ArkDndExtractError> {
     let request = ark_dnd_extract_request(payload, destination)?;
-    let proxy = bus.proxy(&request.target).await?;
-    let method = request.target.method().to_string();
-    bus.call_with_retry(&request.target, || {
-        let destination = request.destination.clone();
-        let method = method.clone();
-        let proxy = &proxy;
-        async move { proxy.call::<_, _, ()>(method.as_str(), &destination).await }
-    })
-    .await?;
+    bus.call::<_, ()>(&request.target, &request.destination)
+        .await?;
     Ok(())
 }
 

@@ -29,7 +29,7 @@ description: Evolve and validate the GPU-first TensorDE monorepo containing Tens
   plans before wiring protocol objects and GPU rendering.
 - For Tensor compositor, session, direct protocol, input, DRM/KMS, XWayland,
   ECS, or renderer work, also use `.codex/skills/tensor-compositor/` and read
-  `apps/tensorland/AGENTS.md` plus the relevant record under `docs/tensorland/`.
+  `apps/tensor-wm/AGENTS.md` plus the relevant record under `docs/tensorland/`.
 - For shared rendering work, evolve `crates/vulkan-renderer` through typed,
   WebGPU-style descriptors while preserving explicit Vulkan semantics.
 

@@ -234,7 +234,8 @@ pub(super) fn update_scene_composite_scissors(
         command.scissor = None;
     }
     let consumer_cull_enabled = *COMPOSITE_CONSUMER_CULL_ENABLED.get_or_init(|| {
-        std::env::var_os("TENSOR_WALLPAPER_RENDERING_DEVICE_DISABLE_COMPOSITE_CONSUMER_CULL").is_none()
+        std::env::var_os("TENSOR_WALLPAPER_RENDERING_DEVICE_DISABLE_COMPOSITE_CONSUMER_CULL")
+            .is_none()
     });
     let mut graph_pass_start = 0usize;
     while graph_pass_start < graph.pass_nodes.len() {

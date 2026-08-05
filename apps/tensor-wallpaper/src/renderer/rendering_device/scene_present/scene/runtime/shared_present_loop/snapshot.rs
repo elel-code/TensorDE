@@ -150,6 +150,8 @@ pub(super) fn build(
                 semantic_resolver,
                 scene.frame_topology.graph(),
                 &scene.draw_commands,
+                &scene.descriptor_layout,
+                &scene.sampled_binding_cycle,
                 scene.material_scratch.as_deref(),
                 &scene.scene_owned_uniform_plan,
                 &scene.scene_owned_uniform_scratch,
@@ -157,6 +159,8 @@ pub(super) fn build(
                     resource_descriptor_count: descriptor_heap_resource_count,
                     sampler_descriptor_count: descriptor_heap_sampler_count,
                     reference_phase_count: scene.sampled_binding_cycle.len(),
+                    sampled_slots: scene.descriptor_layout.sampled_slots.clone(),
+                    input_attachment_slots: scene.descriptor_layout.input_attachment_slots.clone(),
                 },
             )
         })

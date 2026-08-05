@@ -17,7 +17,7 @@ Environment:
 Options:
   --metadata-only
       Check installed metadata files only. This is safe for DESTDIR package
-      checks and skips live D-Bus, polkit, portal, and binary checks.
+      checks and skips live D-Bus, polkit, and binary checks.
 
   --activate-system-helper
       Also introspect org.tensorde.TensorFiles1.Privileged on the system bus.
@@ -83,16 +83,12 @@ privileged_bus_name="org.tensorde.TensorFiles1.Privileged"
 privileged_object_path="/org/tensorde/TensorFiles1/Privileged"
 privileged_interface="org.tensorde.TensorFiles1.Privileged"
 polkit_action="org.tensorde.TensorFiles.privileged-helper"
-portal_bus_name="org.freedesktop.impl.portal.desktop.tensor_files"
 
 privileged_service="$datadir/dbus-1/system-services/$privileged_bus_name.service"
 privileged_policy="$sysconfdir/dbus-1/system.d/$privileged_bus_name.conf"
 polkit_policy="$datadir/polkit-1/actions/org.tensorde.TensorFiles.policy"
 privileged_interface_xml="$datadir/dbus-1/interfaces/$privileged_bus_name.xml"
-portal_service="$datadir/dbus-1/services/$portal_bus_name.service"
-portal_descriptor="$datadir/xdg-desktop-portal/portals/tensor-files.portal"
 tensor_files_binary="$bindir/tensor-files"
-portal_interface="org.freedesktop.impl.portal.FileChooser"
 
 failures=0
 warnings=0
@@ -172,13 +168,6 @@ command_probe() {
     fi
 }
 
-trim() {
-    local value="$1"
-    value="${value#"${value%%[![:space:]]*}"}"
-    value="${value%"${value##*[![:space:]]}"}"
-    printf '%s' "$value"
-}
-
 env_state() {
     local name="$1"
     if [[ -n "${!name:-}" ]]; then
@@ -186,104 +175,6 @@ env_state() {
     else
         printf '<unset>'
     fi
-}
-
-backend_list_contains() {
-    local value="$1"
-    local backend="$2"
-    local token
-    local -a portal_backend_tokens
-
-    IFS=';' read -r -a portal_backend_tokens <<< "$value"
-    for token in "${portal_backend_tokens[@]}"; do
-        token="$(trim "$token")"
-        if [[ "$token" == "$backend" ]]; then
-            return 0
-        fi
-    done
-
-    return 1
-}
-
-portal_config_names() {
-    local desktop
-    local lowered
-    local -a desktop_tokens
-
-    IFS=':' read -r -a desktop_tokens <<< "${XDG_CURRENT_DESKTOP:-}"
-    for desktop in "${desktop_tokens[@]}"; do
-        desktop="$(trim "$desktop")"
-        [[ -n "$desktop" ]] || continue
-        lowered="${desktop,,}"
-        printf '%s-portals.conf\n' "$lowered"
-    done
-
-    printf 'portals.conf\n'
-}
-
-portal_config_dirs() {
-    local seen=":"
-    local xdg_config_home="${XDG_CONFIG_HOME:-}"
-    local config_dirs="${XDG_CONFIG_DIRS:-/etc/xdg}"
-    local xdg_data_home="${XDG_DATA_HOME:-}"
-    local data_dirs="${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
-    local dir
-    local -a dirs=()
-    local -a split_dirs=()
-
-    if [[ -n "$xdg_config_home" ]]; then
-        dirs+=("$xdg_config_home/xdg-desktop-portal")
-    elif [[ -n "${HOME:-}" ]]; then
-        dirs+=("$HOME/.config/xdg-desktop-portal")
-    fi
-
-    IFS=':' read -r -a split_dirs <<< "$config_dirs"
-    for dir in "${split_dirs[@]}"; do
-        [[ -n "$dir" ]] && dirs+=("$dir/xdg-desktop-portal")
-    done
-
-    dirs+=("$sysconfdir/xdg-desktop-portal")
-
-    if [[ -n "$xdg_data_home" ]]; then
-        dirs+=("$xdg_data_home/xdg-desktop-portal")
-    elif [[ -n "${HOME:-}" ]]; then
-        dirs+=("$HOME/.local/share/xdg-desktop-portal")
-    fi
-
-    IFS=':' read -r -a split_dirs <<< "$data_dirs"
-    for dir in "${split_dirs[@]}"; do
-        [[ -n "$dir" ]] && dirs+=("$dir/xdg-desktop-portal")
-    done
-
-    dirs+=("$datadir/xdg-desktop-portal")
-
-    for dir in "${dirs[@]}"; do
-        case "$seen" in
-            *":$dir:"*) continue ;;
-        esac
-        seen="${seen}${dir}:"
-
-        printf '%s\n' "$dir"
-    done
-}
-
-portal_config_candidates() {
-    local dir
-    local name
-    local -a names=()
-
-    while IFS= read -r name; do
-        [[ -n "$name" ]] && names+=("$name")
-    done < <(portal_config_names)
-
-    while IFS= read -r dir; do
-        [[ -d "$dir" ]] || continue
-        for name in "${names[@]}"; do
-            if [[ -f "$dir/$name" ]]; then
-                printf '%s\n' "$dir/$name"
-            fi
-        done
-    done < <(portal_config_dirs)
 }
 
 systemctl_user_probe() {
@@ -368,7 +259,6 @@ print_runtime_context() {
     echo "  runtime:    ${XDG_RUNTIME_DIR:-<unset>}"
     echo "  session dbus: $(env_state DBUS_SESSION_BUS_ADDRESS)"
     echo "  systemd user: $(systemctl_user_probe)"
-    echo "  xdp service:  $(systemctl_user_service_probe xdg-desktop-portal.service)"
     echo "  polkit agent: $(polkit_agent_probe)"
     echo "  gvfs monitor: $(systemctl_user_service_probe gvfs-udisks2-volume-monitor.service)"
     echo "  tool dbus-send: $(command_probe dbus-send --version)"
@@ -582,132 +472,6 @@ check_devices_runtime() {
     echo
 }
 
-portal_selection_has_preferred=0
-portal_selection_filechooser_seen=0
-portal_selection_filechooser_value=""
-portal_selection_filechooser_tensor_files=0
-portal_selection_default_seen=0
-portal_selection_default_value=""
-portal_selection_default_tensor_files=0
-
-read_portal_selection_file() {
-    local file="$1"
-    local in_preferred=false
-    local line
-    local stripped
-    local key
-    local value
-    local line_no=0
-
-    portal_selection_has_preferred=0
-    portal_selection_filechooser_seen=0
-    portal_selection_filechooser_value=""
-    portal_selection_filechooser_tensor_files=0
-    portal_selection_default_seen=0
-    portal_selection_default_value=""
-    portal_selection_default_tensor_files=0
-
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        line_no=$((line_no + 1))
-        stripped="${line%%#*}"
-        stripped="$(trim "$stripped")"
-
-        [[ -z "$stripped" ]] && continue
-
-        if [[ "$stripped" == \[*\] ]]; then
-            if [[ "$stripped" == "[preferred]" ]]; then
-                in_preferred=true
-                portal_selection_has_preferred=1
-            else
-                in_preferred=false
-            fi
-            continue
-        fi
-
-        [[ "$in_preferred" == true ]] || continue
-        [[ "$stripped" == *=* ]] || continue
-
-        key="$(trim "${stripped%%=*}")"
-        value="$(trim "${stripped#*=}")"
-
-        case "$key" in
-            "$portal_interface")
-                portal_selection_filechooser_seen=1
-                portal_selection_filechooser_value="$value"
-                if backend_list_contains "$value" "tensor-files"; then
-                    portal_selection_filechooser_tensor_files=1
-                fi
-                ;;
-            default)
-                portal_selection_default_seen=1
-                portal_selection_default_value="$value"
-                if backend_list_contains "$value" "tensor-files"; then
-                    portal_selection_default_tensor_files=1
-                fi
-                ;;
-        esac
-    done < "$file"
-}
-
-check_portal_selection_config() {
-    local active_config=""
-    local file
-    local -a configs=()
-
-    echo "Checking portal backend selection"
-    echo "  backend:    $portal_bus_name"
-    echo "  interface:  $portal_interface"
-    echo "  note:       installing tensor-files.portal registers an independent backend; xdg-desktop-portal reads only the highest-priority matching portals.conf"
-
-    while IFS= read -r file || [[ -n "$file" ]]; do
-        [[ -n "$file" ]] || continue
-        configs+=("$file")
-    done < <(portal_config_candidates)
-
-    if [[ "${#configs[@]}" -eq 0 ]]; then
-        warn "no portals.conf files found in XDG config/data search paths; descriptor UseIn/default selection will decide the active backend"
-    else
-        active_config="${configs[0]}"
-        echo "  active config: $active_config"
-        if [[ "${#configs[@]}" -gt 1 ]]; then
-            echo "  ignored lower-priority config(s):"
-            for file in "${configs[@]:1}"; do
-                echo "    $file"
-            done
-        fi
-
-        read_portal_selection_file "$active_config"
-
-        if [[ "$portal_selection_has_preferred" -eq 0 ]]; then
-            warn "$active_config does not contain a [preferred] section"
-        elif [[ "$portal_selection_filechooser_seen" -eq 1 ]]; then
-            if [[ "$portal_selection_filechooser_tensor_files" -eq 1 ]]; then
-                ok "$active_config explicitly selects tensor-files for $portal_interface"
-            elif backend_list_contains "$portal_selection_filechooser_value" "none"; then
-                warn "$active_config disables $portal_interface with none"
-            elif backend_list_contains "$portal_selection_filechooser_value" "*"; then
-                warn "$active_config uses wildcard selection for $portal_interface; cannot prove tensor-files will win"
-            else
-                warn "$active_config selects $portal_interface without tensor-files: $portal_selection_filechooser_value"
-            fi
-        elif [[ "$portal_selection_default_seen" -eq 1 ]]; then
-            if [[ "$portal_selection_default_tensor_files" -eq 1 ]]; then
-                ok "$active_config default preference includes tensor-files and no explicit FileChooser override is present"
-            elif backend_list_contains "$portal_selection_default_value" "none"; then
-                warn "$active_config disables default portal selection with none"
-            elif backend_list_contains "$portal_selection_default_value" "*"; then
-                warn "$active_config uses wildcard default portal selection; cannot prove tensor-files will win"
-            else
-                warn "$active_config default preference does not include tensor-files and no explicit FileChooser override is present: $portal_selection_default_value"
-            fi
-        else
-            warn "$active_config has no $portal_interface or default preference"
-        fi
-    fi
-
-    echo
-}
-
 print_live_validation_notes() {
     if [[ "$metadata_only" == true ]]; then
         return
@@ -716,7 +480,6 @@ print_live_validation_notes() {
     echo "Live validation notes"
     echo "  - Keep this output with the distro name, desktop, session type, and package version."
     echo "  - Re-run with --activate-system-helper when validating packaged system-bus activation."
-    echo "  - Portal backend metadata is independent from FileChooser selection; use portals.conf to opt in to tensor-files for XDP FileChooser validation."
     echo "  - Test with real removable media before closing GIO/GVfs mount/unmount/eject validation."
     echo
 }
@@ -788,8 +551,6 @@ require_file "$privileged_service"
 require_file "$privileged_policy"
 require_file "$polkit_policy"
 require_file "$privileged_interface_xml"
-require_file "$portal_service"
-require_file "$portal_descriptor"
 
 require_contains "$privileged_service" "Name=$privileged_bus_name"
 require_contains "$privileged_service" "Exec=$bindir/tensor-files-privileged-helper --system-bus"
@@ -800,27 +561,18 @@ require_contains "$privileged_policy" '<policy context="default">'
 require_contains "$privileged_policy" "<allow send_destination=\"$privileged_bus_name\"/>"
 require_contains "$polkit_policy" "$polkit_action"
 require_contains "$polkit_policy" "<allow_active>auth_admin_keep</allow_active>"
-require_contains "$portal_service" "Name=$portal_bus_name"
-require_contains "$portal_service" "Exec=$bindir/tensor-files-xdp-filechooser"
-require_contains "$portal_descriptor" "DBusName=$portal_bus_name"
-require_contains "$portal_descriptor" "Interfaces=org.freedesktop.impl.portal.FileChooser;"
-require_contains "$portal_descriptor" "UseIn=Tensorland"
 
 for metadata_path in \
     "$privileged_service" \
     "$privileged_policy" \
     "$polkit_policy" \
-    "$privileged_interface_xml" \
-    "$portal_service" \
-    "$portal_descriptor"; do
+    "$privileged_interface_xml"; do
     require_not_contains "$metadata_path" "@bindir@"
     require_not_contains "$metadata_path" "example.invalid"
 done
 
 require_not_contains "$privileged_service" "pkexec"
 require_not_contains "$privileged_service" "--session-bus"
-require_not_contains "$portal_service" "pkexec"
-require_not_contains "$portal_service" "--session-bus"
 
 for method in CreateFolder CreateFile Rename Trash Transfer PrepareExternalEdit CommitExternalEdit DiscardExternalEdit AssociateExternalEditUnit; do
     require_contains "$privileged_interface_xml" "<method name=\"$method\">"
@@ -832,11 +584,8 @@ if [[ -n "$destdir" ]]; then
 fi
 
 if [[ "$metadata_only" == false ]]; then
-    check_portal_selection_config
     check_executable "$bindir/tensor-files-privileged-helper"
-    check_executable "$bindir/tensor-files-xdp-filechooser"
     dbus_list_activatable_contains system "$privileged_bus_name"
-    dbus_list_activatable_contains session "$portal_bus_name"
     check_polkit_action
 fi
 

@@ -389,7 +389,9 @@ mod tests {
 
     #[test]
     fn missing_config_loads_defaults() {
-        let config = TensorWallpaperConfig::load("/tmp/tensor-wallpaper-config-that-should-not-exist.toml").unwrap();
+        let config =
+            TensorWallpaperConfig::load("/tmp/tensor-wallpaper-config-that-should-not-exist.toml")
+                .unwrap();
         assert_eq!(config.performance.fullscreen, ThrottlePolicy::Pause);
         assert!(config.adapters.hyprland);
     }

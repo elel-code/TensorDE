@@ -148,11 +148,7 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
             effect_visibility: RenderPassEffectVisibility::NONE,
             state: PassState {
                 pipeline_blend: if has_offscreen_chain {
-                    if authored_texture_effects || effect_only_layer {
-                        PipelineBlendMode::Normal
-                    } else {
-                        base_pipeline_blend(contract)
-                    }
+                    PipelineBlendMode::Normal
                 } else {
                     final_pipeline_blend
                 },
@@ -347,6 +343,16 @@ fn promote_static_terminal_effect_to_scene(
     let Some(effect) = contract.effect_passes.last() else {
         return false;
     };
+    if contract
+        .framebuffer_snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.usage == WeFramebufferSnapshotUsage::EffectOnlyLayer)
+        && effect_only_final_material_composites_to_scene(effect)
+    {
+        // The effect-only route already promoted this authored terminal to SceneColor.
+        // It is not the synthetic object-composite pass that this optimization can remove.
+        return false;
+    }
     if effect.runtime_visibility
         || effect.command.is_some()
         || effect.source.is_some()

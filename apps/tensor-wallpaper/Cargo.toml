@@ -29,10 +29,6 @@ name = "tensor-wallpaperd"
 path = "src/bin/tensor-wallpaperd.rs"
 
 [[bin]]
-name = "tensor-wallpaperctl"
-path = "src/bin/tensor-wallpaperctl.rs"
-
-[[bin]]
 name = "tensor-wallpaper-convert"
 path = "src/bin/tensor-wallpaper-convert.rs"
 
@@ -54,6 +50,7 @@ oxc_span = "0"
 rquickjs = { version = "0", features = ["loader"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+tensor-ipc = { path = "../../crates/tensor-ipc" }
 toml = "1"
 vulkan-renderer = { path = "../../crates/vulkan-renderer", optional = true }
 vulkan-renderer-build = { path = "../../crates/vulkan-renderer-build" }

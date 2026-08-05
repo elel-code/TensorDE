@@ -90,7 +90,8 @@ use script_program::{
 use shader_combo::parse_shader_combo_definitions;
 use shader_contract::{build_shader_contract_records, material_shader_program_base};
 use shader_texture_default::{
-    ShaderTextureDefault, apply_shader_texture_defaults, parse_shader_texture_defaults,
+    ShaderSamplerCombo, ShaderTextureDefault, apply_shader_texture_defaults,
+    parse_shader_sampler_combos, parse_shader_texture_defaults,
 };
 use text_font_binding::text_font_overrides;
 use text_layer::{
@@ -220,6 +221,9 @@ struct WeIrBuilder {
     render_graphs: Vec<crate::engine::render_graph::RenderGraph>,
     image_targets: Vec<WeIrImageTarget>,
     shader_contracts: Vec<WeIrShaderContract>,
+    // Exact package stages whose semantics are consumed by a proven engine-owned final fusion.
+    // Keep their native-Slang programs in the scene as source evidence, never as a fallback path.
+    fused_authored_source_materials: Vec<usize>,
     text_font_overrides: BTreeMap<String, String>,
     unsupported: Vec<WeIrUnsupported>,
     effect_visibility_mutation_policy: SceneEffectVisibilityMutationPolicy,
@@ -289,6 +293,7 @@ impl WeIrBuilder {
             render_graphs: Vec::new(),
             image_targets: Vec::new(),
             shader_contracts: Vec::new(),
+            fused_authored_source_materials: Vec::new(),
             text_font_overrides,
             unsupported: Vec::new(),
             effect_visibility_mutation_policy,
@@ -704,7 +709,7 @@ impl WeIrBuilder {
                 .unwrap_or([0.0; 2]),
             utility_layer,
             render_source_extent_domain: if utility_layer
-                .is_some_and(WeIrUtilityLayerKind::samples_scene_color)
+                .is_some_and(WeIrUtilityLayerKind::uses_physical_graph_source)
             {
                 WeIrRenderSourceExtentDomain::PhysicalSurface
             } else {

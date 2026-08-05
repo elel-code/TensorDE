@@ -37,7 +37,9 @@ client runtime; the previous UI runtimes have been removed from the source tree.
 - Local and inter-application drag-and-drop share the same Wayland
   source/offer, MIME-pipe and drop lifecycle after the local press threshold;
   scene state only owns the pre-protocol gesture, preview and target policy.
-- Portal and privileged-helper binaries remain separate integration pieces.
+- The privileged helper remains a separate system integration binary.
+- XDG Desktop Portal integration is intentionally not owned by Tensor Files;
+  it belongs to the future DE-wide portal service.
 
 ## Source Layout
 
@@ -49,14 +51,10 @@ src/
   windowing_event_loop.rs        Tensor Files scheduling and event translation
   windowing_types.rs             Tensor Files-owned window/input vocabulary
   core.rs                        Core module re-exports
-  cli.rs                         Shared CLI parsing entry point
-  cli/
-    args.rs                      Manager/chooser argument parsing
   core/                          Directory, pane, operations, launcher,
                                  Places, devices, thumbnails, trash, D-Bus
   ui/                            Tensor Files-owned UI modules
   bin/
-    tensor-files-xdp-filechooser.rs      XDG Desktop Portal FileChooser backend
     tensor-files-privileged-helper.rs    D-Bus helper for privileged operations
 ../../crates/
   vulkan-renderer/               Reusable Vulkan 1.4 rendering standard/backend

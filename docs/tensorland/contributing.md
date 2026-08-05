@@ -39,38 +39,38 @@ Byte-for-byte verify all checked-in Tensorland shaders with:
 
 ```sh
 cargo run -p vulkan-renderer-build -- \
-  verify apps/tensorland/shaders/client.slang vertexMain vertex \
-  apps/tensorland/shaders/spirv/client.vert.spv 64 descriptor-free
+  verify apps/tensor-wm/shaders/client.slang vertexMain vertex \
+  apps/tensor-wm/shaders/spirv/client.vert.spv 64 descriptor-free
 cargo run -p vulkan-renderer-build -- \
-  verify apps/tensorland/shaders/client.slang fragmentMain fragment \
-  apps/tensorland/shaders/spirv/client.frag.spv 64 descriptor-heap
+  verify apps/tensor-wm/shaders/client.slang fragmentMain fragment \
+  apps/tensor-wm/shaders/spirv/client.frag.spv 64 descriptor-heap
 cargo run -p vulkan-renderer-build -- \
-  verify apps/tensorland/shaders/client_color.slang fragmentMain fragment \
-  apps/tensorland/shaders/spirv/client_color.frag.spv 128 descriptor-heap
+  verify apps/tensor-wm/shaders/client_color.slang fragmentMain fragment \
+  apps/tensor-wm/shaders/spirv/client_color.frag.spv 128 descriptor-heap
 cargo run -p vulkan-renderer-build -- \
-  verify apps/tensorland/shaders/cursor.slang vertexMain vertex \
-  apps/tensorland/shaders/spirv/cursor.vert.spv 16 descriptor-free
+  verify apps/tensor-wm/shaders/cursor.slang vertexMain vertex \
+  apps/tensor-wm/shaders/spirv/cursor.vert.spv 16 descriptor-free
 cargo run -p vulkan-renderer-build -- \
-  verify apps/tensorland/shaders/cursor.slang fragmentMain fragment \
-  apps/tensorland/shaders/spirv/cursor.frag.spv 0 descriptor-free
+  verify apps/tensor-wm/shaders/cursor.slang fragmentMain fragment \
+  apps/tensor-wm/shaders/spirv/cursor.frag.spv 0 descriptor-free
 cargo run -p vulkan-renderer-build -- \
-  verify apps/tensorland/shaders/focus_ring.slang vertexMain vertex \
-  apps/tensorland/shaders/spirv/focus_ring.vert.spv 64 descriptor-free
+  verify apps/tensor-wm/shaders/focus_ring.slang vertexMain vertex \
+  apps/tensor-wm/shaders/spirv/focus_ring.vert.spv 64 descriptor-free
 cargo run -p vulkan-renderer-build -- \
-  verify apps/tensorland/shaders/focus_ring.slang fragmentMain fragment \
-  apps/tensorland/shaders/spirv/focus_ring.frag.spv 64 descriptor-free
+  verify apps/tensor-wm/shaders/focus_ring.slang fragmentMain fragment \
+  apps/tensor-wm/shaders/spirv/focus_ring.frag.spv 64 descriptor-free
 cargo run -p vulkan-renderer-build -- \
-  verify apps/tensorland/shaders/shadow.slang vertexMain vertex \
-  apps/tensorland/shaders/spirv/shadow.vert.spv 64 descriptor-free
+  verify apps/tensor-wm/shaders/shadow.slang vertexMain vertex \
+  apps/tensor-wm/shaders/spirv/shadow.vert.spv 64 descriptor-free
 cargo run -p vulkan-renderer-build -- \
-  verify apps/tensorland/shaders/shadow.slang fragmentMain fragment \
-  apps/tensorland/shaders/spirv/shadow.frag.spv 64 descriptor-free
+  verify apps/tensor-wm/shaders/shadow.slang fragmentMain fragment \
+  apps/tensor-wm/shaders/spirv/shadow.frag.spv 64 descriptor-free
 cargo run -p vulkan-renderer-build -- \
-  verify apps/tensorland/shaders/backdrop_filter.slang vertexMain vertex \
-  apps/tensorland/shaders/spirv/backdrop_filter.vert.spv 64 descriptor-free
+  verify apps/tensor-wm/shaders/backdrop_filter.slang vertexMain vertex \
+  apps/tensor-wm/shaders/spirv/backdrop_filter.vert.spv 64 descriptor-free
 cargo run -p vulkan-renderer-build -- \
-  verify apps/tensorland/shaders/backdrop_filter.slang fragmentMain fragment \
-  apps/tensorland/shaders/spirv/backdrop_filter.frag.spv 64 descriptor-heap
+  verify apps/tensor-wm/shaders/backdrop_filter.slang fragmentMain fragment \
+  apps/tensor-wm/shaders/spirv/backdrop_filter.frag.spv 64 descriptor-heap
 ```
 
 Use the same commands with `compile` in place of `verify` to regenerate the

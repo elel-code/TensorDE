@@ -14,7 +14,7 @@ count, frame size, and the request bridge are fixed-capacity. Each connection aw
 compositor reply without blocking the runtime thread, so a slow IPC peer cannot stall Wayland
 dispatch or grow compositor memory without limit. Runtime failure and graceful-shutdown completion
 use a reserved control slot that cannot be consumed by request load.
-`tensorctl` exposes `ping`, `get-state`, `get-outputs`, `get-workspaces`, `get-overview`,
+`tensor-msg land` exposes `ping`, `get-state`, `get-outputs`, `get-workspaces`, `get-overview`,
 `get-config-status`, `reload-config`, `watch-config`, layout/workspace/output controls,
 `minimize-focused`, `restore-minimized`, stable-view activation/movement/close, `spawn`, and `quit`
 using the same codec.
@@ -25,8 +25,8 @@ family count. Attached dialogs move and restore with their root and do not infla
 `get-workspaces` includes hidden/overview/minimize-target metadata while normal workspace
 indices and `ext-workspace-v1` remain limited to the regular pool.
 
-`tensorctl minimize-focused` moves the focused view family to the configured minimize target.
-`tensorctl restore-minimized <view-id>` restores it and follows its recorded regular workspace;
+`tensor-msg land minimize-focused` moves the focused view family to the configured minimize target.
+`tensor-msg land restore-minimized <view-id>` restores it and follows its recorded regular workspace;
 `--stay` restores without switching away from the current workspace. These operations reuse the
 retained protocol window and renderer resource identity rather than asking the client to remap.
 Restore reports `unknown_view` for a stale stable ID and `not_minimized` only for a live view that
@@ -102,12 +102,14 @@ The first topic, `config_reload`, publishes both applied and rejected transactio
 stream sequence, originating request ID, and resulting configuration generation. A rejected event
 contains only bounded diagnostic category, path, error code, line, column, short summary, and a
 config-validation command; the full KDL source remains in Tensorland's retained diagnostic and logs.
-`tensorctl watch-config` consumes this stream. Tensor Shell will use the same value-only event while
+`tensor-msg land watch-config` consumes this stream. Tensor Shell will use the same value-only event while
 remaining the owner of visual and accessibility notification.
 
-XDP means xdg-desktop-portal in this repository. The future portal implementation is an optional
-D-Bus/PipeWire adapter for controlled capture and sharing. It follows the same command gate as IPC
-and cannot bypass renderer extraction policy.
+XDP means xdg-desktop-portal in this repository. `apps/tensor-xdp` is the
+dedicated D-Bus backend and currently publishes only its completed Settings
+interface. Future PipeWire capture/sharing support must use an explicit,
+permission-scoped, versioned Tensorland capability; it cannot bypass renderer
+extraction policy or receive Wayland, ECS, Vulkan, DRM/KMS, or input owners.
 
 systemd is separately optional. Readiness is an output of the completed startup state, not a
 prerequisite or an owner of the compositor lifecycle.

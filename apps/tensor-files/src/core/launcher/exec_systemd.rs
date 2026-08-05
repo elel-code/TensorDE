@@ -271,7 +271,7 @@ fn systemd_properties_for_launch_unit(
 
 fn systemd_property<T>(name: &'static str, value: T) -> Result<SystemdProperty, LauncherError>
 where
-    T: zbus::zvariant::DynamicType + Into<Value<'static>>,
+    T: tensor_dbus::zvariant::DynamicType + Into<Value<'static>>,
 {
     let value = OwnedValue::try_from(Value::new(value)).map_err(|err| {
         LauncherError::InvalidSystemdProperty {
@@ -312,27 +312,20 @@ fn systemd_manager_target() -> Result<BusCallTarget, BusError> {
 async fn start_systemd_launch_unit(
     bus: &BusController,
     target: &BusCallTarget,
-    manager: &zbus::Proxy<'_>,
     unit: &SystemdLaunchUnit,
 ) -> Result<OwnedObjectPath, LauncherError> {
     let properties = systemd_properties_for_launch_unit(unit)?;
     let aux: Vec<SystemdAuxUnit> = Vec::new();
-    bus.call_with_retry(target, || {
-        let properties = properties.clone();
-        let aux = aux.clone();
-        async move {
-            manager
-                .call(
-                    target.method(),
-                    &(unit.unit_name.as_str(), "fail", properties, aux),
-                )
-                .await
-        }
-    })
-    .await
-    .map_err(|err| LauncherError::StartTransientUnit {
-        unit_name: unit.unit_name.clone(),
-        message: err.to_string(),
-    })
+    bus.call(target, &(unit.unit_name.as_str(), "fail", properties, aux))
+        .await
+        .map_err(|error| {
+            let message = error.to_string();
+            match error {
+                BusError::Connect { .. } => LauncherError::SessionBus { message },
+                _ => LauncherError::StartTransientUnit {
+                    unit_name: unit.unit_name.clone(),
+                    message,
+                },
+            }
+        })
 }
-

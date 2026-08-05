@@ -97,7 +97,7 @@ fn lowers_direct_genericimage_puppet_token_one_clipping_graph() {
     fs::write(root.join("models/clipped.mdl"), test_clipped_mdlv0023()).expect("mdl");
     fs::write(
         root.join("materials/clipped.json"),
-        r#"{"passes":[{"shader":"genericimage4","textures":[null]}]}"#,
+        r#"{"passes":[{"shader":"genericimage4","textures":[null],"cullmode":"normal"}]}"#,
     )
     .expect("material");
     fs::write(root.join("masks/eye-clip.png"), b"raw-mask-fixture").expect("mask");
@@ -147,6 +147,12 @@ fn lowers_direct_genericimage_puppet_token_one_clipping_graph() {
         .collect::<Vec<_>>();
     assert_eq!(mask_producers.len(), 2);
     assert!(mask_producers.iter().all(|pass| pass.state.clear_target));
+    assert!(
+        graph
+            .passes
+            .iter()
+            .all(|pass| pass.state.cull_mode == CullMode::Back)
+    );
     assert_eq!(
         graph.passes[2].state.pipeline_blend,
         PipelineBlendMode::Translucent
@@ -162,6 +168,10 @@ fn lowers_direct_genericimage_puppet_token_one_clipping_graph() {
     assert_eq!(
         ir.material_passes[mask_material.pass_start as usize].pipeline_blend,
         ScenePipelineBlend::Translucent
+    );
+    assert_eq!(
+        ir.material_passes[mask_material.pass_start as usize].cull_mode,
+        SceneCullMode::Normal
     );
     assert!(
         graph.passes[2]

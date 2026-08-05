@@ -1,0 +1,46 @@
+_tensor_msg()
+{
+    local cur prev words cword
+    _init_completion || return
+
+    local products="land wallpaper"
+    local land_commands="ping get-state get-outputs get-workspaces get-overview get-config-status reload-config watch-config set-layout spawn set-workspace move-focused-to-workspace activate-view move-view-to-workspace close-view minimize-focused restore-minimized set-output-position set-output-enabled set-output-scale quit"
+    local wallpaper_commands="ping status outputs watch properties set pause resume stop"
+
+    if [[ ${cword} -eq 1 ]]; then
+        COMPREPLY=($(compgen -W "${products}" -- "${cur}"))
+        return
+    fi
+    if [[ ${cword} -eq 2 ]]; then
+        case "${words[1]}" in
+            land) COMPREPLY=($(compgen -W "${land_commands}" -- "${cur}")) ;;
+            wallpaper) COMPREPLY=($(compgen -W "${wallpaper_commands}" -- "${cur}")) ;;
+        esac
+        return
+    fi
+
+    case "${words[1]}:${words[2]}" in
+        wallpaper:properties)
+            if [[ ${cword} -eq 3 ]]; then
+                COMPREPLY=($(compgen -W "get set unset" -- "${cur}"))
+            elif [[ "${prev}" != "--output" ]]; then
+                COMPREPLY=($(compgen -W "--output" -- "${cur}"))
+            fi
+            ;;
+        wallpaper:set)
+            if [[ "${prev}" != "--output" ]]; then
+                COMPREPLY=($(compgen -f -W "--output --variant" -- "${cur}"))
+            fi
+            ;;
+        wallpaper:pause|wallpaper:resume|wallpaper:stop)
+            if [[ "${prev}" != "--output" ]]; then
+                COMPREPLY=($(compgen -W "--output" -- "${cur}"))
+            fi
+            ;;
+        land:set-layout)
+            COMPREPLY=($(compgen -W "scrolling floating master-stack" -- "${cur}"))
+            ;;
+    esac
+}
+
+complete -F _tensor_msg tensor-msg

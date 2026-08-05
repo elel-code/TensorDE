@@ -62,18 +62,18 @@ unwinds the logical device, instance, loader, sockets, and other owned handles i
 
 Niri is the primary lifecycle reference, particularly its ordering of configuration, Wayland
 display/socket, IPC, environment publication, watcher registration, and final run loop.
-Niri waits for both `systemctl --user import-environment` and
-`dbus-update-activation-environment` before notifying readiness and spawning configured commands.
-Tensorland preserves that ordering without invoking a shell: it writes explicit values through
-`systemctl --user set-environment`, waits for completion, updates D-Bus activation when available,
-then notifies readiness. A failed user-manager update or readiness notification aborts startup
-before any `spawn-at-startup` command runs.
+Niri waits for both the systemd user-manager environment and the D-Bus activation environment before
+notifying readiness and spawning configured commands. Tensorland preserves that ordering without
+invoking a shell: it writes explicit values through `systemctl --user set-environment`, waits for
+completion, then calls `org.freedesktop.DBus.UpdateActivationEnvironment` through the Compio-native
+`tensor-dbus` connection before notifying readiness. A failed user-manager update or readiness
+notification aborts startup before any `spawn-at-startup` command runs.
 
-`tensorland-session` is a Rust session launcher modeled on `niri-session`. It auto-detects the systemd
+`tensor-session` is a Rust session launcher modeled on `niri-session`. It auto-detects the systemd
 user manager, imports the login environment, starts `tensorland.service` with `--wait`, triggers
 `tensorland-shutdown.target` during teardown, and clears session-only variables. Without a usable user
 manager it executes `tensorland --session` directly. No shell is used for this policy.
-Display managers launch `tensorland-session` through the Wayland-only desktop entry in
+Display managers launch `tensor-session` through the Wayland-only desktop entry in
 `contrib/wayland-sessions`; an X11 `xsessions` entry is intentionally forbidden.
 
 After readiness, session startup consumes its permit and queues every validated

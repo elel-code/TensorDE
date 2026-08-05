@@ -21,8 +21,11 @@ pub(super) fn build_scene_present_shaders() {
          static SCENE_TERMINAL_PRESENT_FRAGMENT_SPIRV: &[u32] = vulkan_renderer::include_spirv!({fragment_spirv:?});\n\
          const SCENE_TERMINAL_PRESENT_PUSH_BYTES: u32 = {push_bytes};\n"
     );
-    fs::write(out_dir.join("tensor_wallpaper_scene_present_shaders.rs"), generated)
-        .expect("write generated scene-present shader catalog");
+    fs::write(
+        out_dir.join("tensor_wallpaper_scene_present_shaders.rs"),
+        generated,
+    )
+    .expect("write generated scene-present shader catalog");
 }
 
 fn compile_vertex(shader_dir: &Path) -> PathBuf {

@@ -209,8 +209,10 @@ mod tests {
 
     #[test]
     fn converts_wallpaper_engine_project_to_scene_binary_with_ir_mesh_summary() {
-        let root =
-            std::env::temp_dir().join(format!("tensor-wallpaper-we-convert-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "tensor-wallpaper-we-convert-test-{}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("models")).expect("models");
         fs::create_dir_all(root.join("materials")).expect("materials");

@@ -1,8 +1,46 @@
 use super::projection::scene_clip_transform_for_frame;
 use super::*;
+use crate::engine::scene::SceneBinaryDocument;
 use crate::engine::scene::semantic_world::{
     ResolvedObjectState, ResolvedSemanticFrame, SemanticEntity,
 };
+
+#[test]
+fn default_camera_still_applies_the_we_orthographic_depth_span() {
+    let storage = SceneStorage::from_document(SceneBinaryDocument::default())
+        .expect("default-camera storage");
+    let transform = scene_clip_transform_for_frame(
+        &storage,
+        &ResolvedSemanticFrame::from_resolved_parts(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ),
+        [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.998_308_24,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ],
+    );
+
+    assert!((transform[2][2] - 0.000_249_577_06).abs() <= 1.0e-10);
+    assert_eq!(transform[2][3], 0.5);
+}
 
 #[test]
 fn authored_camera_layer_changes_scene_projection_zoom_translation_and_depth() {

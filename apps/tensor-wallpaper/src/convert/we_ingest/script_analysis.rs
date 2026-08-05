@@ -100,8 +100,7 @@ pub(super) fn analyze_scene_script(
         uses_local_time_subseconds: visitor.uses_local_time_subseconds,
         uses_scene_api: visitor.uses_scene_api,
         may_mutate_effect_visibility: visitor.may_mutate_effect_visibility,
-        has_unresolved_effect_visibility_target: visitor
-            .has_unresolved_effect_visibility_target,
+        has_unresolved_effect_visibility_target: visitor.has_unresolved_effect_visibility_target,
         effect_visibility_targets: visitor.effect_visibility_targets,
         may_assign_font: visitor.assigns_font,
         imports: parsed
@@ -234,9 +233,12 @@ fn literal_string_argument<'a>(call: &'a CallExpression<'a>) -> Option<&'a str> 
     }
     match call.arguments.first()? {
         Argument::StringLiteral(literal) => Some(literal.value.as_str()),
-        Argument::TemplateLiteral(literal) if literal.expressions.is_empty() => {
-            literal.quasis.first()?.value.cooked.map(|value| value.as_str())
-        }
+        Argument::TemplateLiteral(literal) if literal.expressions.is_empty() => literal
+            .quasis
+            .first()?
+            .value
+            .cooked
+            .map(|value| value.as_str()),
         _ => None,
     }
 }

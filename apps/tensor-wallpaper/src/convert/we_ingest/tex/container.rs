@@ -108,11 +108,15 @@ fn parse_texs(
             cursor.f32("TEXS frame axis y.x")? / width,
             cursor.f32("TEXS frame axis y.y")? / height,
         ];
-        let finite = [duration, origin[0], origin[1], axis_x[0], axis_x[1], axis_y[0], axis_y[1]]
-            .into_iter()
-            .all(f32::is_finite);
+        let finite = [
+            duration, origin[0], origin[1], axis_x[0], axis_x[1], axis_y[0], axis_y[1],
+        ]
+        .into_iter()
+        .all(f32::is_finite);
         if !finite {
-            return Err(TexParseError::InvalidPayload("TEXS frame contains non-finite values"));
+            return Err(TexParseError::InvalidPayload(
+                "TEXS frame contains non-finite values",
+            ));
         }
         frames.push(TexSequenceFrame {
             resource_index,

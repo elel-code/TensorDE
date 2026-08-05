@@ -96,13 +96,13 @@ def main() -> int:
         "duration_seconds": args.duration,
         "interval_seconds": args.interval,
         "dgop": shutil.which("dgop") or "",
-        "tensor-wallpaperctl": resolve_tensor_wallpaperctl(args.tensor-wallpaperctl) or "",
+        "tensor-msg": resolve_tensor_msg(args.tensor_msg) or "",
         "socket": args.socket,
         "unsupported_expectations": args.unsupported_expectations,
     }
     metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False) + "\n")
 
-    tensor-wallpaperctl = resolve_tensor_wallpaperctl(args.tensor-wallpaperctl)
+    tensor_msg = resolve_tensor_msg(args.tensor_msg)
     sample_count = max(1, int(args.duration / args.interval) + 1)
     samples: list[Sample] = []
     dgop_cursor = ""
@@ -117,9 +117,9 @@ def main() -> int:
             sample = Sample(sample=index, elapsed_ms=elapsed_ms, pid=pid)
             apply_proc_sample(sample)
             dgop_cursor = apply_dgop_sample(sample, dgop_cursor, args.sample_cpu)
-            if tensor-wallpaperctl and args.status:
+            if tensor_msg and args.status:
                 status_path = sample_status(
-                    tensor-wallpaperctl, args.socket, out_dir, index, args.allow_missing
+                    tensor_msg, args.socket, out_dir, index, args.allow_missing
                 )
                 if status_path:
                     sample.status_json = status_path.name
@@ -153,11 +153,11 @@ def main() -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="采样 Tensor Wallpaper 进程的 dgop/proc 内存、CPU 和可选 tensor-wallpaperctl status。"
+        description="采样 Tensor Wallpaper 进程的 dgop/proc 内存、CPU 和可选 tensor-msg wallpaper status。"
     )
     parser.add_argument("--pid", type=int, default=0)
     parser.add_argument("--socket", default=os.environ.get("TENSOR_WALLPAPER_SOCKET", ""))
-    parser.add_argument("--tensor-wallpaperctl", default="")
+    parser.add_argument("--tensor-msg", default="")
     parser.add_argument("--label", default="sample")
     parser.add_argument("--duration", type=float, default=10.0)
     parser.add_argument("--interval", type=float, default=1.0)
@@ -204,9 +204,9 @@ def find_tensor_wallpaperd_pid() -> int:
     return 0
 
 
-def resolve_tensor_wallpaperctl(value: str) -> str:
+def resolve_tensor_msg(value: str) -> str:
     candidates = [value] if value else []
-    candidates.extend(["target/debug/tensor-wallpaperctl", "target/release/tensor-wallpaperctl", "tensor-wallpaperctl"])
+    candidates.extend(["target/debug/tensor-msg", "target/release/tensor-msg", "tensor-msg"])
     for candidate in candidates:
         if not candidate:
             continue
@@ -288,14 +288,14 @@ def apply_dgop_sample(sample: Sample, cursor: str, sample_cpu: bool) -> str:
 
 
 def sample_status(
-    tensor-wallpaperctl: str, socket: str, out_dir: Path, index: int, allow_missing: bool
+    tensor_msg: str, socket: str, out_dir: Path, index: int, allow_missing: bool
 ) -> Path | None:
     status_path = out_dir / f"status-{index:03d}.json"
     env = os.environ.copy()
     if socket:
         env["TENSOR_WALLPAPER_SOCKET"] = socket
     result = subprocess.run(
-        [tensor-wallpaperctl, "status"],
+        [tensor_msg, "wallpaper", "status"],
         check=False,
         text=True,
         stdout=subprocess.PIPE,

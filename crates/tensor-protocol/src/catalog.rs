@@ -246,6 +246,11 @@ pub const PROTOCOL_CATALOG: &[ProtocolCapabilityRef] = &[
         prefer_over_community: false,
     },
     ProtocolCapabilityRef {
+        name: "wlr-output-power-management",
+        tier: ProtocolTier::Community,
+        prefer_over_community: false,
+    },
+    ProtocolCapabilityRef {
         name: "wlr-data-control",
         tier: ProtocolTier::Community,
         prefer_over_community: false,

@@ -13,7 +13,10 @@ use crate::engine::scene::{
     SceneRenderingDeviceImageAccess,
 };
 
-include!(concat!(env!("OUT_DIR"), "/tensor_wallpaper_scene_video_shaders.rs"));
+include!(concat!(
+    env!("OUT_DIR"),
+    "/tensor_wallpaper_scene_video_shaders.rs"
+));
 
 pub(in crate::renderer::rendering_device::scene_present::scene::runtime) struct SceneVideoPipeline {
     pub pipeline: MachineCodeGraphicsPipeline,

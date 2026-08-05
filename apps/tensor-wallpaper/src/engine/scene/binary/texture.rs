@@ -54,7 +54,10 @@ pub(super) fn encode_textures(
 pub(super) fn decode_textures(
     data: &[u8],
 ) -> Result<
-    (Vec<SceneTextureRecord>, Vec<SceneTextureSequenceFrameRecord>),
+    (
+        Vec<SceneTextureRecord>,
+        Vec<SceneTextureSequenceFrameRecord>,
+    ),
     SceneBinaryError,
 > {
     let mut decoder = Decoder::new(data);

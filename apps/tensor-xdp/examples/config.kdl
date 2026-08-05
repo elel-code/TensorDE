@@ -1,0 +1,2 @@
+// Portal-facing host preferences. Missing properties use neutral defaults.
+appearance color-scheme="no-preference" contrast="normal" reduced-motion=#false

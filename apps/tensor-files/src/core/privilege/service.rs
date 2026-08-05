@@ -24,16 +24,16 @@ impl PrivilegedService {
         }
     }
 
-    async fn authorize(&self, connection: &Connection, header: Header<'_>) -> fdo::Result<u32> {
+    async fn authorize(&self, connection: &mut Connection, call: &Message) -> MethodResult<u32> {
         match &self.mode {
-            ServiceMode::System => self.authorize_with_polkit(connection, header).await,
+            ServiceMode::System => self.authorize_with_polkit(connection, call).await,
             ServiceMode::SessionPkexec { allowed_uid } => {
-                let caller_uid = caller_uid(connection, &header).await?;
+                let caller_uid = caller_uid(connection, call).await?;
                 if caller_uid == *allowed_uid {
                     self.mark_activity();
                     Ok(caller_uid)
                 } else {
-                    Err(fdo::Error::AccessDenied(format!(
+                    Err(MethodError::access_denied(format!(
                         "caller uid {caller_uid} does not match authorized uid {allowed_uid}"
                     )))
                 }
@@ -43,39 +43,38 @@ impl PrivilegedService {
 
     async fn authorize_with_polkit(
         &self,
-        connection: &Connection,
-        header: Header<'_>,
-    ) -> fdo::Result<u32> {
-        let caller_uid = caller_uid(connection, &header).await?;
-        let subject = Subject::new_for_message_header(&header).map_err(|err| {
-            fdo::Error::AccessDenied(format!("cannot create polkit subject: {err}"))
+        connection: &mut Connection,
+        call: &Message,
+    ) -> MethodResult<u32> {
+        let caller_uid = caller_uid(connection, call).await?;
+        let sender = call
+            .sender()
+            .ok_or_else(|| MethodError::access_denied("missing D-Bus sender"))?;
+        let mut subject_details = HashMap::new();
+        let sender_value = OwnedValue::try_from(Value::new(sender.to_owned())).map_err(|err| {
+            MethodError::access_denied(format!("cannot create polkit subject: {err}"))
         })?;
-        let authority = AuthorityProxy::new(connection).await.map_err(|err| {
-            fdo::Error::Failed(polkit_authority_unavailable_message(&err.to_string()))
-        })?;
-        let details = std::collections::HashMap::new();
-        let result = authority
-            .check_authorization(
-                &subject,
-                ACTION_ID,
-                &details,
-                CheckAuthorizationFlags::AllowUserInteraction.into(),
-                "",
+        subject_details.insert("name".to_string(), sender_value);
+        let subject = ("system-bus-name", subject_details);
+        let details = HashMap::<String, String>::new();
+        let result: (bool, bool, HashMap<String, String>) = connection
+            .call(
+                "org.freedesktop.PolicyKit1",
+                "/org/freedesktop/PolicyKit1/Authority",
+                "org.freedesktop.PolicyKit1.Authority",
+                "CheckAuthorization",
+                &(subject, ACTION_ID, details, 1_u32, ""),
             )
             .await
             .map_err(|err| {
-                fdo::Error::AccessDenied(polkit_check_failed_message(&err.to_string()))
+                MethodError::access_denied(polkit_check_failed_message(&err.to_string()))
             })?;
-        if result.is_authorized {
+        if result.0 {
             self.mark_activity();
             Ok(caller_uid)
         } else {
-            Err(fdo::Error::AccessDenied(polkit_denied_message()))
+            Err(MethodError::access_denied(polkit_denied_message()))
         }
-    }
-
-    fn map_result<T>(result: Result<T, String>) -> fdo::Result<T> {
-        result.map_err(fdo::Error::Failed)
     }
 
     fn mark_activity(&self) {
@@ -337,17 +336,20 @@ impl PrivilegedService {
     }
 }
 
-async fn caller_uid(connection: &Connection, header: &Header<'_>) -> fdo::Result<u32> {
-    let sender = header
+async fn caller_uid(connection: &mut Connection, call: &Message) -> MethodResult<u32> {
+    let sender = call
         .sender()
-        .ok_or_else(|| fdo::Error::AccessDenied("missing D-Bus sender".to_string()))?;
-    let proxy = DBusProxy::new(connection)
+        .ok_or_else(|| MethodError::access_denied("missing D-Bus sender"))?;
+    connection
+        .call(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "GetConnectionUnixUser",
+            &(sender,),
+        )
         .await
-        .map_err(|err| fdo::Error::Failed(format!("cannot query D-Bus credentials: {err}")))?;
-    proxy
-        .get_connection_unix_user(BusName::from(sender.clone()))
-        .await
-        .map_err(|err| fdo::Error::Failed(format!("cannot query caller uid: {err}")))
+        .map_err(|err| MethodError::failed(format!("cannot query caller uid: {err}")))
 }
 
 include!("service_methods.rs");

@@ -1,8 +1,7 @@
-use super::bus::{BusController, BusKind};
+use super::bus::BusKind;
 use super::file_ops;
 use super::network::is_network_path;
-use async_io::Timer;
-use futures_lite::StreamExt;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -11,18 +10,18 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use zbus::fdo::{self, DBusProxy};
-use zbus::message::Header;
-use zbus::names::BusName;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue};
-use zbus::{Connection, proxy};
-use zbus_polkit::policykit1::{AuthorityProxy, CheckAuthorizationFlags, Subject};
+use tensor_dbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+use tensor_dbus::{
+    BusAddress, Connection, Message, MethodCall, MethodError, MethodResult, Proxy,
+    RequestNameFlags, RequestNameReply, reply_method, reply_method_error, reply_method_result,
+};
 
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 const SERVICE_NAME: &str = "org.tensorde.TensorFiles1.Privileged";
 const OBJECT_PATH: &str = "/org/tensorde/TensorFiles1/Privileged";
+const SERVICE_INTERFACE: &str = "org.tensorde.TensorFiles1.Privileged";
 const ACTION_ID: &str = "org.tensorde.TensorFiles.privileged-helper";
 const POLICY_FILE: &str = "org.tensorde.TensorFiles.policy";
 const HELPER_IDLE_SECONDS: u64 = 180;
@@ -182,50 +181,6 @@ fn ensure_privileged_local_path(path: &Path) -> Result<(), String> {
     }
 }
 
-#[proxy(
-    interface = "org.tensorde.TensorFiles1.Privileged",
-    default_service = "org.tensorde.TensorFiles1.Privileged",
-    default_path = "/org/tensorde/TensorFiles1/Privileged"
-)]
-trait Privileged {
-    #[zbus(name = "CreateFolder")]
-    async fn create_folder(&self, parent: &str, name: &str) -> zbus::Result<String>;
-
-    #[zbus(name = "CreateFile")]
-    async fn create_file(&self, parent: &str, name: &str) -> zbus::Result<String>;
-
-    #[zbus(name = "Rename")]
-    async fn rename(&self, path: &str, new_name: &str) -> zbus::Result<String>;
-
-    #[zbus(name = "Trash")]
-    async fn trash(&self, paths: Vec<String>) -> zbus::Result<String>;
-
-    #[zbus(name = "Transfer")]
-    async fn transfer(
-        &self,
-        operation: &str,
-        source: &str,
-        target_dir: &str,
-    ) -> zbus::Result<String>;
-
-    #[zbus(name = "PrepareExternalEdit")]
-    async fn prepare_external_edit(&self, path: &str) -> zbus::Result<(String, String)>;
-
-    #[zbus(name = "CommitExternalEdit")]
-    async fn commit_external_edit(&self, token: &str, scratch_path: &str) -> zbus::Result<String>;
-
-    #[zbus(name = "DiscardExternalEdit")]
-    async fn discard_external_edit(&self, token: &str) -> zbus::Result<()>;
-
-    #[zbus(name = "AssociateExternalEditUnit")]
-    async fn associate_external_edit_unit(
-        &self,
-        token: &str,
-        unit: &str,
-        session_bus_address: &str,
-    ) -> zbus::Result<()>;
-}
-
 pub async fn run_via_dbus(command: PrivilegedCommand) -> PrivilegedOperationResult {
     let label = command.label().to_string();
     let affected_dirs = command.affected_dirs();
@@ -277,43 +232,51 @@ async fn start_session_helper_and_call(
 }
 
 async fn call_dbus_command_on_system_bus(command: &PrivilegedCommand) -> Result<String, String> {
-    let connection = privileged_bus_connection(BusKind::System).await?;
-    call_dbus_command(command, &connection).await
+    let mut connection = privileged_bus_connection(BusKind::System).await?;
+    call_dbus_command(command, &mut connection).await
 }
 
 async fn call_dbus_command_on_session_bus(command: &PrivilegedCommand) -> Result<String, String> {
-    let connection = privileged_bus_connection(BusKind::Session).await?;
-    call_dbus_command(command, &connection).await
+    let mut connection = privileged_bus_connection(BusKind::Session).await?;
+    call_dbus_command(command, &mut connection).await
 }
 
 async fn call_dbus_command(
     command: &PrivilegedCommand,
-    connection: &Connection,
+    connection: &mut Connection,
 ) -> Result<String, String> {
     command.validate_local_paths()?;
-    let proxy = PrivilegedProxy::new(connection)
-        .await
-        .map_err(|err| format!("cannot create privileged helper proxy: {err}"))?;
+    let mut proxy = Proxy::new(
+        connection,
+        Some(SERVICE_NAME),
+        OBJECT_PATH,
+        Some(SERVICE_INTERFACE),
+    )
+    .map_err(|err| format!("cannot create privileged helper proxy: {err}"))?;
 
     match command {
         PrivilegedCommand::CreateFolder { parent, name } => proxy
-            .create_folder(&parent.display().to_string(), name)
+            .call(
+                "CreateFolder",
+                &(parent.display().to_string(), name.as_str()),
+            )
             .await
             .map_err(|err| err.to_string()),
         PrivilegedCommand::CreateFile { parent, name } => proxy
-            .create_file(&parent.display().to_string(), name)
+            .call("CreateFile", &(parent.display().to_string(), name.as_str()))
             .await
             .map_err(|err| err.to_string()),
         PrivilegedCommand::Rename { path, new_name } => proxy
-            .rename(&path.display().to_string(), new_name)
+            .call("Rename", &(path.display().to_string(), new_name.as_str()))
             .await
             .map_err(|err| err.to_string()),
         PrivilegedCommand::Trash { paths } => proxy
-            .trash(
-                paths
+            .call(
+                "Trash",
+                &(paths
                     .iter()
                     .map(|path| path.display().to_string())
-                    .collect(),
+                    .collect::<Vec<_>>(),),
             )
             .await
             .map_err(|err| err.to_string()),
@@ -322,10 +285,13 @@ async fn call_dbus_command(
             source,
             target_dir,
         } => proxy
-            .transfer(
-                operation,
-                &source.display().to_string(),
-                &target_dir.display().to_string(),
+            .call(
+                "Transfer",
+                &(
+                    operation.as_str(),
+                    source.display().to_string(),
+                    target_dir.display().to_string(),
+                ),
             )
             .await
             .map_err(|err| err.to_string()),
@@ -334,28 +300,32 @@ async fn call_dbus_command(
 
 async fn wait_for_service() -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(75);
-    let service_name: BusName<'_> = SERVICE_NAME
-        .try_into()
-        .map_err(|err| format!("invalid privileged helper bus name: {err}"))?;
+    let mut connection = privileged_bus_connection(BusKind::Session).await?;
+    let mut dbus = Proxy::new(
+        &mut connection,
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        Some("org.freedesktop.DBus"),
+    )
+    .map_err(|error| format!("cannot create D-Bus daemon proxy: {error}"))?;
     loop {
         if Instant::now() >= deadline {
             return Err("timed out waiting for privileged D-Bus helper".to_string());
         }
-        if let Ok(connection) = privileged_bus_connection(BusKind::Session).await
-            && let Ok(dbus) = DBusProxy::new(&connection).await
-            && dbus.get_name_owner(service_name.clone()).await.is_ok()
-        {
+        let owner: tensor_dbus::Result<String> = dbus.call("GetNameOwner", &(SERVICE_NAME,)).await;
+        if owner.is_ok() {
             return Ok(());
         }
-        Timer::after(Duration::from_millis(250)).await;
+        compio::time::sleep(Duration::from_millis(250)).await;
     }
 }
 
 async fn privileged_bus_connection(kind: BusKind) -> Result<Connection, String> {
-    BusController::shared()
-        .connection(kind)
-        .await
-        .map_err(|err| err.to_string())
+    match kind {
+        BusKind::Session => Connection::session_bus().await,
+        BusKind::System => Connection::system_bus().await,
+    }
+    .map_err(|error| format!("cannot connect to {kind} D-Bus: {error}"))
 }
 
 fn start_dbus_helper() -> Result<Child, String> {
@@ -413,27 +383,40 @@ pub async fn run_dbus_service(bus: HelperBus) -> Result<(), String> {
     ));
     let service = PrivilegedService::new(service_mode, session_bus_address.clone());
     let service_monitor = service.clone();
-    let builder = match bus_connection_address(&session_bus_address, &service_monitor.mode) {
-        BusConnection::System => zbus::connection::Builder::system()
-            .map_err(|err| format!("cannot connect to system D-Bus: {err}"))?,
-        BusConnection::SessionAddress(address) => zbus::connection::Builder::address(address)
-            .map_err(|err| format!("cannot connect to provided session D-Bus address: {err}"))?,
-        BusConnection::Session => zbus::connection::Builder::session()
-            .map_err(|err| format!("cannot connect to session D-Bus: {err}"))?,
-    };
-    let _connection = builder
-        .name(SERVICE_NAME)
-        .map_err(|err| format!("cannot request privileged helper name: {err}"))?
-        .serve_at(OBJECT_PATH, service)
-        .map_err(|err| format!("cannot register privileged helper object: {err}"))?
-        .build()
+    let bus_address = match bus_connection_address(&session_bus_address, &service_monitor.mode) {
+        BusConnection::System => BusAddress::system(),
+        BusConnection::SessionAddress(address) => BusAddress::parse(address),
+        BusConnection::Session => BusAddress::session(),
+    }
+    .map_err(|err| format!("cannot resolve privileged helper D-Bus address: {err}"))?;
+    let mut connection = Connection::connect_bus(bus_address.clone())
         .await
-        .map_err(|err| format!("cannot build privileged helper D-Bus service: {err}"))?;
+        .map_err(|err| format!("cannot connect privileged helper to D-Bus: {err}"))?;
+    let ownership = connection
+        .request_name(SERVICE_NAME, RequestNameFlags::DO_NOT_QUEUE)
+        .await
+        .map_err(|err| format!("cannot request privileged helper name: {err}"))?;
+    if !matches!(
+        ownership,
+        RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner
+    ) {
+        return Err(format!(
+            "cannot request privileged helper name: bus returned {ownership:?}"
+        ));
+    }
+    compio::runtime::spawn(run_idle_waker(bus_address)).detach();
 
     loop {
-        Timer::after(Duration::from_secs(5)).await;
-        service_monitor.expire_stale_external_edits();
-        if service_monitor.can_exit() {
+        let call = connection
+            .receive()
+            .await
+            .map_err(|err| format!("receive privileged helper D-Bus message: {err}"))?;
+        service
+            .dispatch(&mut connection, call)
+            .await
+            .map_err(|err| format!("dispatch privileged helper D-Bus method: {err}"))?;
+        service.expire_stale_external_edits();
+        if service.can_exit() {
             let (idle_for, active_edits) = service_monitor.exit_state();
             privileged_debug_log(&helper_lifecycle_summary(
                 "exiting",
@@ -446,6 +429,31 @@ pub async fn run_dbus_service(bus: HelperBus) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+async fn run_idle_waker(address: BusAddress) {
+    let mut connection = match Connection::connect_bus(address).await {
+        Ok(connection) => connection,
+        Err(err) => {
+            privileged_debug_log(&format!("cannot start helper idle waker: {err}"));
+            return;
+        }
+    };
+    loop {
+        compio::time::sleep(Duration::from_secs(5)).await;
+        let result: tensor_dbus::Result<()> = connection
+            .call(
+                Some(SERVICE_NAME),
+                OBJECT_PATH,
+                Some(SERVICE_INTERFACE),
+                "CheckIdle",
+                &(),
+            )
+            .await;
+        if result.is_err() {
+            return;
+        }
+    }
 }
 
 enum BusConnection<'a> {

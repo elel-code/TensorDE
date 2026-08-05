@@ -10,7 +10,7 @@ pub(crate) async fn execute_ark_extract_and_trash(
         [] => return Err("Ark extract produced no launch command".to_string()),
         _ => return Err("Ark extract produced multiple launch commands".to_string()),
     };
-    let status = async_process::Command::new(&command.program)
+    let status = compio_process::Command::new(&command.program)
         .args(&command.args)
         .status()
         .await

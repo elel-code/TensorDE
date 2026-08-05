@@ -178,12 +178,14 @@ fn discover_builtin_asset_roots(project_root: &Path) -> Vec<PathBuf> {
     if let Ok(current_dir) = env::current_dir() {
         push_existing_unique(
             &mut roots,
-            current_dir.join("artifacts/tensor-wallpaper/wallpaper-engine-workshop/steamcmd-root/assets"),
+            current_dir
+                .join("artifacts/tensor-wallpaper/wallpaper-engine-workshop/steamcmd-root/assets"),
         );
         push_existing_unique(
             &mut roots,
-            current_dir
-                .join("artifacts/tensor-wallpaper/wallpaper-engine-workshop/steamcmd-root/files/share"),
+            current_dir.join(
+                "artifacts/tensor-wallpaper/wallpaper-engine-workshop/steamcmd-root/files/share",
+            ),
         );
     }
     roots

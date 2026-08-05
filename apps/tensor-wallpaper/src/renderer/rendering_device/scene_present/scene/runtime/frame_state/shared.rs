@@ -135,10 +135,7 @@ impl SharedSceneGpuResources {
                 SceneMaterialFrameInputs {
                     average_spectrum32: average_spectrum32.as_ref(),
                     stereo_spectrum64,
-                    parallax_position: events
-                        .pointer
-                        .normalized_position_top_left()
-                        .unwrap_or([0.5; 2]),
+                    parallax_position: semantic_frame.parallax_position,
                     audio_material_values: &semantic_frame.audio_band_material_values,
                     material_scalar_values: &semantic_frame.material_scalar_values,
                 },
@@ -163,10 +160,7 @@ impl SharedSceneGpuResources {
                     audio_spectrum: events
                         .audio_spectrum()
                         .unwrap_or(&crate::engine::scene::StereoSpectrum64::ZERO),
-                    parallax_position: events
-                        .pointer
-                        .normalized_position_top_left()
-                        .unwrap_or([0.5; 2]),
+                    parallax_position: semantic_frame.parallax_position,
                     sampled_binding_phase: reference_phase,
                 },
                 &mut self.scene_owned_uniform_scratch,
