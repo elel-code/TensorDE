@@ -1,8 +1,9 @@
 //! Retained projection domains for scene and authored-texture targets.
 
 use super::{
-    ResolvedSemanticFrame, SceneObjectKind, SceneProjectRecord, SceneRenderPassDrawPrimitive,
-    SceneRenderPassRecord, SceneRenderingDeviceProjectionDomain, SceneStorage,
+    ResolvedSemanticFrame, SceneObjectKind, SceneProjectRecord, SceneRenderBindingKind,
+    SceneRenderPassDrawPrimitive, SceneRenderPassKind, SceneRenderPassRecord,
+    SceneRenderTargetKind, SceneRenderingDeviceProjectionDomain, SceneStorage,
     target_extent::authored_texture_space_target_extent,
 };
 
@@ -151,6 +152,23 @@ pub(super) fn pass_projection_domain(
     graph_index: u32,
     pass: &SceneRenderPassRecord,
 ) -> SceneRenderingDeviceProjectionDomain {
+    // A local producer that samples SceneColor is WE's pointer-driven text/canvas sandwich: its
+    // viewport remains owner-authored, but its vertices use the live scene MVP. Keep ordinary
+    // ImageLocal producers in authored-texture space; switching all ObjectLocalSource passes
+    // would regress masks, eyes, and strips that never read the scene framebuffer.
+    let local_scene_color_producer = pass.role == SceneRenderPassKind::ObjectLocalSource
+        && storage.render_pass_bindings(pass).iter().any(|binding| {
+            matches!(
+                binding.kind,
+                SceneRenderBindingKind::GraphTarget
+                    | SceneRenderBindingKind::PreviousGraphTarget
+                    | SceneRenderBindingKind::NamedFboBind
+                    | SceneRenderBindingKind::EffectTarget
+            ) && binding.target == SceneRenderTargetKind::SceneColor
+        });
+    if local_scene_color_producer {
+        return SceneRenderingDeviceProjectionDomain::Scene;
+    }
     if pass.draw_primitive == SceneRenderPassDrawPrimitive::FramebufferCompositeMesh {
         return SceneRenderingDeviceProjectionDomain::Scene;
     }

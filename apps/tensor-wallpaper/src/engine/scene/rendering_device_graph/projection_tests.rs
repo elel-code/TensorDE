@@ -97,6 +97,42 @@ fn scene_color_object_composite_mesh_keeps_scene_projection() {
 }
 
 #[test]
+fn scene_color_snapshot_producer_keeps_scene_projection_in_owner_target() {
+    let mut document = projection_storage_with_local_primitive(
+        2_457,
+        616,
+        SceneRenderPassDrawPrimitive::ObjectUvSupportQuad,
+    )
+    .document()
+    .clone();
+    document.render_passes[0].binding_start = 0;
+    document.render_passes[0].binding_count = 1;
+    document.render_bindings.push(SceneRenderBindingRecord {
+        kind: SceneRenderBindingKind::GraphTarget,
+        slot: 0,
+        target: SceneRenderTargetKind::SceneColor,
+        name: SceneStringId::NONE,
+    });
+    let storage = SceneStorage::from_document(document).expect("scene-color producer storage");
+    let graph = RenderingServer::new(&storage).rendering_device_graph_plan();
+    let [producer, local_effect, _terminal] = graph.mesh_draws.as_slice() else {
+        panic!("expected producer, local effect, and terminal draws");
+    };
+
+    assert_eq!(
+        producer.projection_domain,
+        SceneRenderingDeviceProjectionDomain::Scene
+    );
+    assert_eq!(
+        local_effect.projection_domain,
+        SceneRenderingDeviceProjectionDomain::AuthoredTexture {
+            width: 2_457,
+            height: 616,
+        }
+    );
+}
+
+#[test]
 fn effect_material_writing_owner_authored_target_uses_target_local_projection() {
     let storage = projection_storage(1_579, 956, false);
     let graph = RenderingServer::new(&storage).rendering_device_graph_plan();
