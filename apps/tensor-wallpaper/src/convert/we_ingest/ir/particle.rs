@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::scene::abi::{
     SceneParticleAnimationMode, SceneParticleEmitterShape, SceneParticleInitializerKind,
-    SceneParticleInitializerOrder, SceneParticleModuleMask, SceneParticleRendererKind, SceneVec3,
+    SceneParticleInitializerOrder, SceneParticleModuleMask, SceneParticleRendererKind,
+    ScenePipelineBlend, SceneVec3,
 };
 
 mod floral_oscillation;
@@ -249,10 +250,12 @@ pub enum WeIrParticleRenderer {
     Sprite {
         id: u32,
         flags: u32,
+        blending: ScenePipelineBlend,
     },
     SpriteTrail {
         id: u32,
         flags: u32,
+        blending: ScenePipelineBlend,
         length: f32,
         min_length: f32,
         max_length: f32,

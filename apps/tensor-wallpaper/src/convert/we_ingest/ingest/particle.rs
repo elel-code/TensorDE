@@ -91,7 +91,7 @@ impl WeIrBuilder {
             emitters: parse_emitters(&definition),
             initializers,
             operators: parse_operators(&definition, projection_mode),
-            renderers: parse_renderers(&definition),
+            renderers: parse_renderers(&definition)?,
             children: children.clone(),
         };
         if system.falling_leaves_profile().is_none()
@@ -157,7 +157,11 @@ impl WeIrBuilder {
                     target_format: None,
                     bindings: vec![TextureBindingRole::SourceTexture],
                     effect_visibility: RenderPassEffectVisibility::NONE,
-                    state: particle_pass_state(material_pass, color_blend_mode),
+                    state: particle_pass_state(
+                        particle.renderers.first().and_then(particle_renderer_blend),
+                        material_pass,
+                        color_blend_mode,
+                    ),
                 }
             })
             .collect();
@@ -192,17 +196,20 @@ pub(super) fn particle_animation_mode(
     }
 }
 
-fn particle_pass_state(pass: Option<&WeIrMaterialPass>, color_blend_mode: i32) -> PassState {
+fn particle_pass_state(
+    renderer_blend: Option<ScenePipelineBlend>,
+    pass: Option<&WeIrMaterialPass>,
+    color_blend_mode: i32,
+) -> PassState {
     PassState {
-        pipeline_blend: pass.map_or(PipelineBlendMode::Translucent, |pass| {
-            match pass.pipeline_blend {
-                ScenePipelineBlend::Normal => PipelineBlendMode::Normal,
-                ScenePipelineBlend::Translucent => PipelineBlendMode::Translucent,
-                ScenePipelineBlend::Additive => PipelineBlendMode::Additive,
-                ScenePipelineBlend::Disabled => PipelineBlendMode::Disabled,
-                ScenePipelineBlend::AlphaToCoverage => PipelineBlendMode::AlphaToCoverage,
-            }
-        }),
+        pipeline_blend: renderer_blend.map_or_else(
+            || {
+                pass.map_or(PipelineBlendMode::Translucent, |pass| {
+                    pipeline_blend_mode(pass.pipeline_blend)
+                })
+            },
+            pipeline_blend_mode,
+        ),
         scene_blend: match scene_blend_from_color_blend_mode(color_blend_mode) {
             SceneBlendMode::Alpha => SceneBlendMode::Alpha,
             blend => blend,
@@ -223,6 +230,24 @@ fn particle_pass_state(pass: Option<&WeIrMaterialPass>, color_blend_mode: i32) -
         // every verified sprite and SpriteTrail draw uses D3D11 write mask 0x7.
         color_write_mask: ColorWriteMask::Rgb,
         ..PassState::default()
+    }
+}
+
+fn pipeline_blend_mode(blend: ScenePipelineBlend) -> PipelineBlendMode {
+    match blend {
+        ScenePipelineBlend::Normal => PipelineBlendMode::Normal,
+        ScenePipelineBlend::Translucent => PipelineBlendMode::Translucent,
+        ScenePipelineBlend::Additive => PipelineBlendMode::Additive,
+        ScenePipelineBlend::Disabled => PipelineBlendMode::Disabled,
+        ScenePipelineBlend::AlphaToCoverage => PipelineBlendMode::AlphaToCoverage,
+    }
+}
+
+fn particle_renderer_blend(renderer: &WeIrParticleRenderer) -> Option<ScenePipelineBlend> {
+    match renderer {
+        WeIrParticleRenderer::Sprite { blending, .. }
+        | WeIrParticleRenderer::SpriteTrail { blending, .. } => Some(*blending),
+        WeIrParticleRenderer::Unsupported { .. } => None,
     }
 }
 
@@ -483,19 +508,24 @@ pub(super) fn parse_operators(
         .collect()
 }
 
-pub(super) fn parse_renderers(definition: &Value) -> Vec<WeIrParticleRenderer> {
+pub(super) fn parse_renderers(
+    definition: &Value,
+) -> Result<Vec<WeIrParticleRenderer>, WeIngestError> {
     particle_modules(definition, "renderer")
         .map(|value| {
             let id = value_u32(value.get("id")).unwrap_or(0);
             let name = module_name(value);
-            match name.as_str() {
+            let blending = parse_particle_renderer_blend(value.get("blending"))?;
+            Ok(match name.as_str() {
                 "sprite" => WeIrParticleRenderer::Sprite {
                     id,
                     flags: value_u32(value.get("flags")).unwrap_or(0),
+                    blending,
                 },
                 "spritetrail" => WeIrParticleRenderer::SpriteTrail {
                     id,
                     flags: value_u32(value.get("flags")).unwrap_or(0),
+                    blending,
                     length: value_f32(value.get("length")).unwrap_or(0.0),
                     min_length: value_f32(value.get("minlength")).unwrap_or(0.0),
                     // The WE SpriteTrail renderer registers ten as its
@@ -503,9 +533,28 @@ pub(super) fn parse_renderers(definition: &Value) -> Vec<WeIrParticleRenderer> {
                     max_length: 10.0,
                 },
                 _ => WeIrParticleRenderer::Unsupported { id, name },
-            }
+            })
         })
         .collect()
+}
+
+fn parse_particle_renderer_blend(
+    value: Option<&Value>,
+) -> Result<ScenePipelineBlend, WeIngestError> {
+    let Some(value) = value else {
+        return Ok(ScenePipelineBlend::Translucent);
+    };
+    let blend = bound_string(Some(value)).ok_or_else(|| {
+        WeIngestError::InvalidProject("particle renderer blending must be a string".to_owned())
+    })?;
+    match blend.to_ascii_lowercase().as_str() {
+        "normal" => Ok(ScenePipelineBlend::Normal),
+        "translucent" => Ok(ScenePipelineBlend::Translucent),
+        "additive" => Ok(ScenePipelineBlend::Additive),
+        _ => Err(WeIngestError::InvalidProject(format!(
+            "particle renderer has unsupported blending {blend:?}"
+        ))),
+    }
 }
 
 fn parse_children(

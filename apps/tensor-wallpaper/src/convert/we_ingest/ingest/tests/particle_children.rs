@@ -259,12 +259,13 @@ fn sprite_trail_uses_builtin_default_maximum_and_full_3d_expansion() {
             "length": 0.007
         }]
     });
-    let renderers = super::super::particle::parse_renderers(&definition);
+    let renderers = super::super::particle::parse_renderers(&definition).expect("renderers");
     assert_eq!(
         renderers,
         [WeIrParticleRenderer::SpriteTrail {
             id: 4,
             flags: 0,
+            blending: crate::engine::scene::ScenePipelineBlend::Translucent,
             length: 0.007,
             min_length: 0.0,
             max_length: 10.0,
