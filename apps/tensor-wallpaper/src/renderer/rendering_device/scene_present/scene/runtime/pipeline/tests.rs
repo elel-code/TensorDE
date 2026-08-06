@@ -365,6 +365,28 @@ fn final_target_pipeline_keys_include_scene_composite_blend() {
 }
 
 #[test]
+fn particle_material_additive_survives_default_object_composite() {
+    let mut pass = render_pass(0, SceneStringId(0), ScenePipelineBlend::Additive);
+    pass.role = SceneRenderPassKind::Particle;
+    pass.scene_blend = SceneCompositeBlend::Normal;
+    let storage = SceneStorage::from_document(SceneBinaryDocument {
+        strings: vec!["we/genericparticle".to_owned()],
+        render_passes: vec![pass],
+        ..SceneBinaryDocument::default()
+    })
+    .expect("storage");
+
+    assert_eq!(
+        scene_gpu_blend(
+            &storage,
+            &storage.document().render_passes[0],
+            SceneRenderTargetKind::SceneColor
+        ),
+        SceneGpuBlend::Additive
+    );
+}
+
+#[test]
 fn foliage_screen_variant_uses_standard_premultiplied_screen_blend() {
     let storage = SceneStorage::from_document(SceneBinaryDocument {
         strings: vec![

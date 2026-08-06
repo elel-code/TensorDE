@@ -211,7 +211,9 @@ fn particle_pass_state(
             pipeline_blend_mode,
         ),
         scene_blend: match scene_blend_from_color_blend_mode(color_blend_mode) {
-            SceneBlendMode::Alpha => SceneBlendMode::Alpha,
+            // Particle material/renderer blending is the fixed-function draw state. The
+            // default object colorBlendMode means no additional composite override.
+            SceneBlendMode::Alpha => SceneBlendMode::Normal,
             blend => blend,
         },
         shader_blend: None,

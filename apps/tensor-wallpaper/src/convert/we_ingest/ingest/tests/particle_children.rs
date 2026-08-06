@@ -334,6 +334,10 @@ fn particle_renderer_missing_blend_inherits_material_and_explicit_blend_override
         ir.render_graphs[0].passes[0].state.pipeline_blend,
         crate::engine::render_graph::PipelineBlendMode::Additive
     );
+    assert_eq!(
+        ir.render_graphs[0].passes[0].state.scene_blend,
+        crate::core::SceneBlendMode::Normal
+    );
 
     fs::write(
         root.join("particles/root.json"),
