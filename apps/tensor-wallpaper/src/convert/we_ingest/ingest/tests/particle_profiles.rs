@@ -364,7 +364,7 @@ fn ingests_composable_sprite_modules_without_fixture_profile_matching() {
     let ir = ingest_wallpaper_engine_project(&root).expect("module sprite IR");
     assert_eq!(
         ir.render_graphs[0].passes[0].state.pipeline_blend,
-        crate::engine::render_graph::PipelineBlendMode::Translucent
+        crate::engine::render_graph::PipelineBlendMode::Additive
     );
     let profile = ir.particles[0]
         .module_sprite_profile()

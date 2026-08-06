@@ -250,12 +250,12 @@ pub enum WeIrParticleRenderer {
     Sprite {
         id: u32,
         flags: u32,
-        blending: ScenePipelineBlend,
+        blending: Option<ScenePipelineBlend>,
     },
     SpriteTrail {
         id: u32,
         flags: u32,
-        blending: ScenePipelineBlend,
+        blending: Option<ScenePipelineBlend>,
         length: f32,
         min_length: f32,
         max_length: f32,

@@ -94,9 +94,8 @@ TensorWallpaperFragmentOutput main(TensorWallpaperFragmentInput input)
         nextTexel = texture(g_Texture0, v_TexCoordNext);
     }
     if (v_TextureDecodeMode > 0.5) {
-        // WE samples its RG8 particle sheets as xyxx: RGR color with R alpha.
-        texel = vec4(texel.rgr, texel.r);
-        nextTexel = vec4(nextTexel.rgr, nextTexel.r);
+        texel = vec4(texel.rrr, texel.g);
+        nextTexel = vec4(nextTexel.rrr, nextTexel.g);
     }
     texel = mix(texel, nextTexel, v_TextureSequenceBlend);
     if (texel.a <= 0.0) {

@@ -30,8 +30,8 @@ mod tests {
         assert!(vertex.contains("floor(frame / rowStride) * frameHeight"));
         assert!(fragment.contains("texture(g_Texture0, v_TexCoordNext)"));
         assert!(fragment.contains("mix(texel, nextTexel, v_TextureSequenceBlend)"));
-        assert!(fragment.contains("vec4(texel.rgr, texel.r)"));
-        assert!(fragment.contains("vec4(nextTexel.rgr, nextTexel.r)"));
-        assert!(!fragment.contains("vec4(texel.rrr, texel.g)"));
+        assert!(fragment.contains("vec4(texel.rrr, texel.g)"));
+        assert!(fragment.contains("vec4(nextTexel.rrr, nextTexel.g)"));
+        assert!(!fragment.contains("vec4(texel.rgr, texel.r)"));
     }
 }

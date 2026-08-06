@@ -246,7 +246,7 @@ fn pipeline_blend_mode(blend: ScenePipelineBlend) -> PipelineBlendMode {
 fn particle_renderer_blend(renderer: &WeIrParticleRenderer) -> Option<ScenePipelineBlend> {
     match renderer {
         WeIrParticleRenderer::Sprite { blending, .. }
-        | WeIrParticleRenderer::SpriteTrail { blending, .. } => Some(*blending),
+        | WeIrParticleRenderer::SpriteTrail { blending, .. } => *blending,
         WeIrParticleRenderer::Unsupported { .. } => None,
     }
 }
@@ -540,17 +540,17 @@ pub(super) fn parse_renderers(
 
 fn parse_particle_renderer_blend(
     value: Option<&Value>,
-) -> Result<ScenePipelineBlend, WeIngestError> {
+) -> Result<Option<ScenePipelineBlend>, WeIngestError> {
     let Some(value) = value else {
-        return Ok(ScenePipelineBlend::Translucent);
+        return Ok(None);
     };
     let blend = bound_string(Some(value)).ok_or_else(|| {
         WeIngestError::InvalidProject("particle renderer blending must be a string".to_owned())
     })?;
     match blend.to_ascii_lowercase().as_str() {
-        "normal" => Ok(ScenePipelineBlend::Normal),
-        "translucent" => Ok(ScenePipelineBlend::Translucent),
-        "additive" => Ok(ScenePipelineBlend::Additive),
+        "normal" => Ok(Some(ScenePipelineBlend::Normal)),
+        "translucent" => Ok(Some(ScenePipelineBlend::Translucent)),
+        "additive" => Ok(Some(ScenePipelineBlend::Additive)),
         _ => Err(WeIngestError::InvalidProject(format!(
             "particle renderer has unsupported blending {blend:?}"
         ))),

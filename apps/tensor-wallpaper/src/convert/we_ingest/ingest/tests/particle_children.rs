@@ -265,7 +265,7 @@ fn sprite_trail_uses_builtin_default_maximum_and_full_3d_expansion() {
         [WeIrParticleRenderer::SpriteTrail {
             id: 4,
             flags: 0,
-            blending: crate::engine::scene::ScenePipelineBlend::Translucent,
+            blending: None,
             length: 0.007,
             min_length: 0.0,
             max_length: 10.0,
@@ -288,6 +288,65 @@ fn sprite_trail_uses_builtin_default_maximum_and_full_3d_expansion() {
     assert!(trail.contains("vec3 up = tangent * trailLength;"));
     assert!(!trail.contains("sin(rotation)"));
     assert!(!trail.contains("cos(rotation)"));
+}
+
+#[test]
+fn particle_renderer_blend_is_optional_and_strict() {
+    let definition = serde_json::json!({
+        "renderer": [
+            {"id": 1, "name": "sprite"},
+            {"id": 2, "name": "sprite", "blending": "translucent"}
+        ]
+    });
+    let renderers = super::super::particle::parse_renderers(&definition).expect("renderers");
+    assert!(matches!(
+        renderers.as_slice(),
+        [
+            WeIrParticleRenderer::Sprite { blending: None, .. },
+            WeIrParticleRenderer::Sprite {
+                blending: Some(crate::engine::scene::ScenePipelineBlend::Translucent),
+                ..
+            }
+        ]
+    ));
+
+    for blending in [serde_json::json!(7), serde_json::json!("screen")] {
+        let definition = serde_json::json!({
+            "renderer": [{"id": 1, "name": "sprite", "blending": blending}]
+        });
+        assert!(super::super::particle::parse_renderers(&definition).is_err());
+    }
+}
+
+#[test]
+fn particle_renderer_missing_blend_inherits_material_and_explicit_blend_overrides_it() {
+    let root = particle_fixture_root("renderer-blend");
+    write_base_project(&root, 1.0);
+    fs::write(
+        root.join("materials/particle.json"),
+        r#"{"passes":[{"shader":"genericparticle","blending":"additive","textures":[null]}]}"#,
+    )
+    .expect("additive particle material");
+    write_leaf_particle(&root, "particles/root.json");
+
+    let ir = ingest_wallpaper_engine_project(&root).expect("inherited particle blend IR");
+    assert_eq!(
+        ir.render_graphs[0].passes[0].state.pipeline_blend,
+        crate::engine::render_graph::PipelineBlendMode::Additive
+    );
+
+    fs::write(
+        root.join("particles/root.json"),
+        r#"{"material":"materials/particle.json","maxcount":3,"emitter":[{"id":1,"name":"boxrandom","rate":2}],"initializer":[{"id":2,"name":"lifetimerandom","min":1,"max":2},{"id":3,"name":"sizerandom","min":1,"max":2}],"operator":[],"renderer":[{"id":4,"name":"sprite","blending":"translucent"}]}"#,
+    )
+    .expect("explicit renderer blend");
+    let ir = ingest_wallpaper_engine_project(&root).expect("overridden particle blend IR");
+    assert_eq!(
+        ir.render_graphs[0].passes[0].state.pipeline_blend,
+        crate::engine::render_graph::PipelineBlendMode::Translucent
+    );
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
