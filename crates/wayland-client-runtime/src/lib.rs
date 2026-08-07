@@ -105,6 +105,7 @@ mod pointer_axis;
 mod pointer_constraints;
 mod pointer_gestures;
 mod runtime_common;
+mod session_lock;
 mod shm_format;
 mod surface;
 mod text_input;
@@ -158,6 +159,7 @@ pub use pointer_gestures::{
 #[cfg(feature = "compio")]
 pub use runtime_common::WakeHandle;
 pub use runtime_common::{RuntimeCapabilities, RuntimeError, RuntimeOptions};
+pub use session_lock::{SessionLockEvent, SessionLockState};
 /// Production runtime (Compio + native shell). Available with `feature = "compio"`.
 #[cfg(feature = "compio")]
 pub type Runtime = NativeRuntime;
@@ -167,9 +169,9 @@ pub use surface::{
     ToplevelAttributes,
 };
 pub use text_input::{
-    TextInputChangeCause, TextInputContentHint, TextInputContentPurpose, TextInputContentType,
-    TextInputDeleteSurrounding, TextInputDone, TextInputError, TextInputEvent, TextInputPreedit,
-    TextInputState, TextInputSurroundingText,
+    MAX_SURROUNDING_TEXT_BYTES, TextInputChangeCause, TextInputContentHint,
+    TextInputContentPurpose, TextInputContentType, TextInputDeleteSurrounding, TextInputDone,
+    TextInputError, TextInputEvent, TextInputPreedit, TextInputState, TextInputSurroundingText,
 };
 pub use toplevel_icon::{ToplevelIcon, ToplevelIconBuffer, ToplevelIconError};
 pub use toplevel_interaction::ResizeEdge;

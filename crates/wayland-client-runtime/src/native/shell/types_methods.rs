@@ -43,6 +43,7 @@ impl NativeShellState {
             .map(|r| &r.wl)
             .or_else(|| self.popups.get(&id).map(|r| &r.wl))
             .or_else(|| self.layers.get(&id).map(|r| &r.wl))
+            .or_else(|| self.session_lock_surfaces.get(&id).map(|r| &r.wl))
     }
 
     /// Logical size tracked for the surface (configure / client set).
@@ -59,6 +60,9 @@ impl NativeShellState {
         if let Some(l) = self.layers.get(&id) {
             return Some((l.logical_w, l.logical_h));
         }
+        if let Some(lock) = self.session_lock_surfaces.get(&id) {
+            return Some((lock.logical_w, lock.logical_h));
+        }
         None
     }
 
@@ -68,6 +72,11 @@ impl NativeShellState {
             .get(&id)
             .map(|t| t.scale_factor)
             .or_else(|| self.layers.get(&id).map(|l| l.scale_factor))
+            .or_else(|| {
+                self.session_lock_surfaces
+                    .get(&id)
+                    .map(|surface| surface.scale_factor)
+            })
             // Popups inherit parent scale; report 1.0 when mapped so callers
             // can treat any live surface uniformly.
             .or_else(|| self.popups.get(&id).map(|_| 1.0))
@@ -77,4 +86,3 @@ impl NativeShellState {
         self.frame_pending.contains(&id)
     }
 }
-

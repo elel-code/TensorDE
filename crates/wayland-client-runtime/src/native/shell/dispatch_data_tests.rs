@@ -4,6 +4,7 @@
 //! dispatch without bloating the production module.
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use wayland_client::Proxy;
 
 use crate::native::shell::{NativePopupPositioner, NativeShell};
 
@@ -64,9 +65,27 @@ fn native_shell_creates_popup_when_compositor_present() {
     // RWH contracts: Vulkan / wgpu need both display and window handles.
     assert!(popup_handle.window_handle().is_ok());
     assert!(popup_handle.display_handle().is_ok());
+    let popup_surface = popup_handle.wl_surface().clone();
+    let parent_surface = parent_handle.wl_surface().clone();
+    let popup_role = shell.state.popups.get(&popup).unwrap().popup.clone();
+    let parent_role = shell.state.toplevels.get(&parent).unwrap().toplevel.clone();
     let _ = shell.dispatch_pending();
     let _ = shell.destroy_popup(popup);
     let _ = shell.destroy_toplevel(parent);
+    assert!(popup_surface.is_alive());
+    assert!(parent_surface.is_alive());
+    assert!(popup_role.is_alive());
+    assert!(parent_role.is_alive());
+    drop(parent_handle);
+    assert!(
+        parent_surface.is_alive(),
+        "child renderer lease must retain its parent role tree"
+    );
+    drop(popup_handle);
+    assert!(!popup_surface.is_alive());
+    assert!(!parent_surface.is_alive());
+    assert!(!popup_role.is_alive());
+    assert!(!parent_role.is_alive());
 }
 
 #[test]

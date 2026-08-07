@@ -64,6 +64,9 @@ pub enum AuthPhase {
     Authenticated {
         attempt: AuthAttemptId,
     },
+    SessionStarted {
+        attempt: AuthAttemptId,
+    },
     Failed {
         message: String,
     },
@@ -139,6 +142,10 @@ impl GreeterModel {
 
     pub fn selected_session(&self) -> &SessionDefinition {
         &self.sessions[self.selected_session]
+    }
+
+    pub const fn selected_session_index(&self) -> usize {
+        self.selected_session
     }
 
     pub fn select_user(&mut self, index: usize) -> Result<(), GreeterModelError> {
@@ -250,6 +257,17 @@ impl GreeterModel {
         }
     }
 
+    pub fn session_started(&mut self, attempt: AuthAttemptId) -> Result<(), GreeterModelError> {
+        match self.phase {
+            AuthPhase::Authenticated { attempt: current } if current == attempt => {
+                self.phase = AuthPhase::SessionStarted { attempt };
+                Ok(())
+            }
+            AuthPhase::Authenticated { .. } => Err(GreeterModelError::StaleAttempt(attempt)),
+            _ => Err(GreeterModelError::InvalidTransition("session-started")),
+        }
+    }
+
     pub fn cancel(&mut self) {
         self.phase = AuthPhase::Idle;
     }
@@ -266,7 +284,7 @@ impl GreeterModel {
             AuthPhase::Waiting { attempt }
             | AuthPhase::Prompt { attempt, .. }
             | AuthPhase::Authenticated { attempt } => attempt,
-            AuthPhase::Idle | AuthPhase::Failed { .. } => {
+            AuthPhase::Idle | AuthPhase::Failed { .. } | AuthPhase::SessionStarted { .. } => {
                 return Err(GreeterModelError::InvalidTransition(
                     "authentication-result",
                 ));
@@ -373,7 +391,33 @@ mod tests {
         model.authentication_succeeded(start.attempt).unwrap();
         let session = model.start_session(start.attempt).unwrap();
         assert_eq!(session.command, ["tensor-session"]);
+        model.session_started(start.attempt).unwrap();
+        assert!(model.start_session(start.attempt).is_err());
         assert!(model.select_session(0).is_err());
+    }
+
+    #[test]
+    fn session_selection_is_available_before_authentication() {
+        let mut model = GreeterModel::new(
+            vec![UserAccount::new("tensor", "Tensor User").unwrap()],
+            vec![
+                session(),
+                SessionDefinition {
+                    id: "safe".into(),
+                    label: "Safe Session".into(),
+                    command: vec!["safe-session".into()],
+                    environment: Vec::new(),
+                },
+            ],
+            1024,
+        )
+        .unwrap();
+        assert_eq!(model.selected_session_index(), 0);
+        model.select_session(1).unwrap();
+        assert_eq!(model.selected_session_index(), 1);
+        assert_eq!(model.selected_session().id, "safe");
+        let attempt = model.begin_authentication().unwrap();
+        assert!(model.start_session(attempt.attempt).is_err());
     }
 
     #[test]

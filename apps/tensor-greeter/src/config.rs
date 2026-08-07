@@ -132,11 +132,15 @@ impl FileConfig {
         } else {
             resolve_sessions(self.sessions)?
         };
+        let greetd_socket = self
+            .greetd_socket
+            .map(PathBuf::from)
+            .unwrap_or(defaults.greetd_socket);
+        if greetd_socket.as_os_str().is_empty() {
+            return Err(GreeterConfigError::EmptyGreetdSocket);
+        }
         Ok(GreeterConfig {
-            greetd_socket: self
-                .greetd_socket
-                .map(PathBuf::from)
-                .unwrap_or(defaults.greetd_socket),
+            greetd_socket,
             sessions,
             max_users,
             max_auth_message_bytes,
@@ -243,6 +247,8 @@ pub enum GreeterConfigError {
     TooManySessions { count: usize },
     #[error("session id must not be empty")]
     EmptySessionId,
+    #[error("greetd-socket must not be empty")]
+    EmptyGreetdSocket,
     #[error("session `{0}` is configured more than once")]
     DuplicateSession(String),
     #[error("session `{0}` has an empty label")]
@@ -300,6 +306,14 @@ mod tests {
         assert!(matches!(
             parse(invalid_env).unwrap_err(),
             GreeterConfigError::InvalidEnvironment { .. }
+        ));
+    }
+
+    #[test]
+    fn empty_greetd_socket_is_rejected_before_transport_setup() {
+        assert!(matches!(
+            parse("greetd-socket \"\""),
+            Err(GreeterConfigError::EmptyGreetdSocket)
         ));
     }
 

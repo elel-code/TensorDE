@@ -7,6 +7,8 @@ description = "Dedicated xdg-desktop-portal backend for TensorDE"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+compio = { version = "0.19", default-features = false, features = ["runtime", "time"] }
+futures-util = "0.3"
 tensor-dbus = { path = "../../crates/tensor-dbus" }
 tensor-kdl = { path = "../../crates/tensor-kdl" }
 tensor-runtime = { path = "../../crates/tensor-runtime" }

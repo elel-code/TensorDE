@@ -12,6 +12,13 @@ Introspectable, and Peer methods. Unsupported portals are absent from
 `tensor.portal`; an interface is advertised only after its request, cancellation,
 permission, and result lifecycles are complete.
 
+The Settings snapshot is live. The normal service path keeps the caller-owned
+Compio/io_uring runtime in one loop, checks the configured KDL once per second,
+retains the last valid values when parsing fails, and emits one
+`SettingChanged(namespace, key, value)` signal per changed appearance key.
+D-Bus method handlers read the same retained snapshot, so a reload cannot expose
+partially updated settings.
+
 Configuration is typed KDL. Validate it without touching D-Bus:
 
 ```sh

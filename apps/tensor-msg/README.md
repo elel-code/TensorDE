@@ -7,14 +7,17 @@ engine, Vulkan, or a Wayland client runtime.
 ```text
 tensor-msg land get-state
 tensor-msg land set-layout scrolling
+tensor-msg shell media play-pause
 tensor-msg wallpaper status
 tensor-msg wallpaper set background.gwp
 ```
 
-Install only this application and `tensor-ipc` alongside the product being
-controlled. In particular, a Wallpaper-only installation does not require the
-`tensor` compositor binary.
+Install only this application and the shared IPC crates alongside the product
+being controlled. In particular, a Wallpaper-only installation does not
+require the `tensor` compositor binary.
 
 Tensor Launcher and Tensor Greeter are short-lived clients without IPC
-services. A `shell` target will be added only when Tensor Shell has a bounded,
-versioned service endpoint.
+services. `tensor-msg shell media` calls the versioned `org.tensor.Shell1`
+session-bus service and accepts `previous`, `play-pause`, or `next`. The running
+Shell retains active-player selection, capability validation, and its
+single-command action queue.

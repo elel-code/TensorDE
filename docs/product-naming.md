@@ -19,17 +19,18 @@ the `Tensor` prefix plus their role.
 | Desktop portal backend | Tensor XDP | `tensor-xdp` | `apps/tensor-xdp` |
 
 The compositor command is `tensor`; the independently packaged `tensor-msg`
-client uses `tensor-msg land` for compositor IPC. Its companion
-commands are `tensor-session` and `tensor-dmabuf-smoke`. The wallpaper product made a coordinated hard cutover from
+client uses `tensor-msg land` for compositor IPC and `tensor-msg shell media`
+for the versioned Shell media-control endpoint. Its companion commands are
+`tensor-session` and `tensor-dmabuf-smoke`. The wallpaper product made a coordinated hard cutover from
 Gilder to Tensor Wallpaper. Its only active commands are `tensor-wallpaper`,
 `tensor-wallpaper-convert` and `tensor-wallpaperd`; its control commands are
 provided by `tensor-msg wallpaper`, and its only active
 application path is `apps/tensor-wallpaper`.
 
 `tensor-msg` is the standalone family control frontend. Tensorland operations use the `land`
-subcommands, following `niri msg`; Wallpaper uses `wallpaper`, and any future
-Shell operations use an explicit product subcommand without moving policy into
-a shared daemon.
+subcommands, following `niri msg`; Wallpaper uses `wallpaper`; Shell media
+operations use `shell media` without moving active-player policy into a shared
+daemon.
 Launcher, greeter, settings, and idle do not publish family IPC endpoints.
 
 Tensor XDP owns `org.freedesktop.impl.portal.desktop.tensor` and the

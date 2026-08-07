@@ -12,24 +12,28 @@ The user-facing frontend is a separate lightweight executable:
 
 ```text
 tensor-msg land ...
+tensor-msg shell media ...
 tensor-msg wallpaper ...
 ```
 
 `tensor` is only the compositor process under `apps/tensor-wm`. `tensor-msg`
-lives under `apps/tensor-msg`, depends on the value-only `tensor-ipc` crate,
-and does not link the compositor, Wallpaper scene engine, Vulkan renderer, or
-Wayland runtime. It can therefore be packaged with Wallpaper without pulling
-in Tensor WM. Each product subcommand discovers that product's versioned
-endpoint, performs bounded request/reply or event-stream I/O, and renders
-structured errors. Routing does not proxy messages through the compositor and
-does not grant one product ownership of another product's state.
+lives under `apps/tensor-msg`, depends on shared value protocols and the
+Compio-native `tensor-dbus` client, and does not link the compositor, Wallpaper
+scene engine, Vulkan renderer, or Wayland runtime. It can therefore be packaged
+with Wallpaper without pulling in Tensor WM. Each product subcommand discovers
+that product's versioned endpoint, performs bounded request/reply or
+event-stream I/O, and renders structured errors. Routing does not proxy
+messages through the compositor and does not grant one product ownership of
+another product's state.
 
 `tensorctl` and `tensor-wallpaperctl` are removed after their operations are
 covered by `tensor-msg land` and `tensor-msg wallpaper`; compatibility aliases
-are not accumulated in this pre-release workspace. A future `tensor-msg shell`
-target is added only when Tensor Shell exposes a real bounded service. Tensor
-Launcher, Tensor Greeter, Tensor Settings, and Tensor Idle expose no family IPC
-server and therefore have no `tensor-msg` product target.
+are not accumulated in this pre-release workspace. `tensor-msg shell media`
+uses the versioned `org.tensor.Shell1` session-bus endpoint. The running Shell
+owns active-player selection and the single-command queue; the client does not
+open a second MPRIS policy path. Tensor Launcher, Tensor Greeter, Tensor
+Settings, and Tensor Idle expose no family IPC server and therefore have no
+`tensor-msg` product target.
 
 ## Shared and product-local boundaries
 

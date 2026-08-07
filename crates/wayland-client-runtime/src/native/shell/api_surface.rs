@@ -1,6 +1,9 @@
 //! Toplevel / surface lifecycle methods for [`NativeShell`].
 
+use std::sync::Arc;
+
 use super::api::NativeShell;
+use super::handle::{NativeSurfaceHandle, NativeSurfaceLease};
 use super::types::{NativeSurfaceId, ToplevelRecord};
 use crate::geometry::{LogicalPosition, LogicalSize};
 use crate::native::connection::NativeError;
@@ -8,6 +11,60 @@ use crate::native::protocols::core::shm;
 use wayland_client::Proxy;
 
 impl NativeShell {
+    /// Role of a live surface, if known.
+    pub fn surface_kind(&self, id: NativeSurfaceId) -> Option<crate::surface::SurfaceKind> {
+        if let Some(record) = self.state.toplevels.get(&id) {
+            return Some(if record.parent.is_some() || record.dialog.is_some() {
+                crate::surface::SurfaceKind::Dialog
+            } else {
+                crate::surface::SurfaceKind::Toplevel
+            });
+        }
+        if self.state.popups.contains_key(&id) {
+            return Some(crate::surface::SurfaceKind::Popup);
+        }
+        if self.state.layers.contains_key(&id) {
+            return Some(crate::surface::SurfaceKind::Layer);
+        }
+        self.state
+            .session_lock_surfaces
+            .contains_key(&id)
+            .then_some(crate::surface::SurfaceKind::SessionLock)
+    }
+
+    /// Renderer lease for a toplevel, popup, layer, or session-lock surface.
+    pub fn surface_handle(&self, id: NativeSurfaceId) -> Result<NativeSurfaceHandle, NativeError> {
+        let lease = self
+            .surface_lease(id)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown surface {id:?}")))?;
+        Ok(NativeSurfaceHandle::from_lease(lease))
+    }
+
+    pub(super) fn surface_lease(&self, id: NativeSurfaceId) -> Option<Arc<NativeSurfaceLease>> {
+        self.state
+            .toplevels
+            .get(&id)
+            .map(|record| Arc::clone(&record.surface_lease))
+            .or_else(|| {
+                self.state
+                    .popups
+                    .get(&id)
+                    .map(|record| Arc::clone(&record.surface_lease))
+            })
+            .or_else(|| {
+                self.state
+                    .layers
+                    .get(&id)
+                    .map(|record| Arc::clone(&record.surface_lease))
+            })
+            .or_else(|| {
+                self.state
+                    .session_lock_surfaces
+                    .get(&id)
+                    .map(|record| Arc::clone(&record.surface_lease))
+            })
+    }
+
     pub fn create_toplevel(
         &mut self,
         title: impl Into<String>,
@@ -176,9 +233,25 @@ impl NativeShell {
                 .fractional_objects
                 .insert(frac.id().protocol_id(), id);
         }
+        let parent_lease = parent.and_then(|parent| self.surface_lease(parent));
+        let surface_lease = Arc::new(NativeSurfaceLease::toplevel(
+            self.connection.connection().clone(),
+            wl.clone(),
+            id,
+            if parent.is_some() || dialog.is_some() {
+                crate::surface::SurfaceKind::Dialog
+            } else {
+                crate::surface::SurfaceKind::Toplevel
+            },
+            xdg.clone(),
+            toplevel.clone(),
+            dialog.clone(),
+            parent_lease,
+        ));
         self.state.toplevels.insert(
             id,
             ToplevelRecord {
+                surface_lease,
                 wl,
                 xdg,
                 toplevel,
@@ -213,6 +286,16 @@ impl NativeShell {
     }
 
     pub fn commit_surface(&mut self, id: NativeSurfaceId) -> Result<(), NativeError> {
+        if self
+            .state
+            .session_lock_surfaces
+            .get(&id)
+            .is_some_and(|surface| !surface.configured)
+        {
+            return Err(NativeError::Protocol(
+                "session-lock surface cannot commit before its first configure".into(),
+            ));
+        }
         let wl = self
             .state
             .wl_surface(id)
@@ -446,9 +529,6 @@ impl NativeShell {
         self.state
             .wl_surface_objects
             .remove(&record.wl.id().protocol_id());
-        if let Some(dialog) = record.dialog {
-            dialog.destroy();
-        }
         if let Some(effect) = record.blur_effect {
             effect.destroy();
         }
@@ -471,15 +551,12 @@ impl NativeShell {
         if let Some(viewport) = record.viewport {
             viewport.destroy();
         }
-        record.toplevel.destroy();
-        record.xdg.destroy();
         if let Some(buffer) = record.buffer {
             buffer.destroy();
         }
         if let Some(pool) = record._pool {
             pool.destroy();
         }
-        record.wl.destroy();
         self.connection.mark_dirty();
         Ok(())
     }

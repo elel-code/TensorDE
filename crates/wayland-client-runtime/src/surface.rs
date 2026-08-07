@@ -54,6 +54,7 @@ pub enum SurfaceKind {
     Dialog,
     Popup,
     Layer,
+    SessionLock,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]

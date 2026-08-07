@@ -22,7 +22,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let service = SettingsService::new(SettingsSnapshot::new(config.appearance));
-    tensor_runtime::io_uring_runtime(4)?.block_on(service.run())?;
+    tensor_runtime::io_uring_runtime(4)?.block_on(service.run_with_reload(path))?;
     Ok(())
 }
 

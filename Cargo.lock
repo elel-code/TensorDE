@@ -3713,6 +3713,7 @@ version = "0.1.0"
 name = "tensor-files"
 version = "0.0.0"
 dependencies = [
+ "arrayvec",
  "async-channel",
  "async-lock",
  "bevy_ecs",
@@ -3732,6 +3733,7 @@ dependencies = [
  "serde",
  "svgtypes",
  "tensor-dbus",
+ "tensor-kdl",
  "vulkan-renderer",
  "wayland-client-runtime",
  "xkeysym",
@@ -3741,11 +3743,18 @@ dependencies = [
 name = "tensor-greeter"
 version = "0.1.0"
 dependencies = [
+ "compio",
  "serde",
  "serde_json",
  "tempfile",
+ "tensor-dbus",
  "tensor-kdl",
+ "tensor-present",
+ "tensor-runtime",
  "thiserror",
+ "vulkan-renderer",
+ "wayland-client-runtime",
+ "xkeysym",
 ]
 
 [[package]]
@@ -3760,7 +3769,12 @@ dependencies = [
 name = "tensor-idle"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
+ "compio",
+ "futures-util",
+ "tensor-dbus",
  "tensor-kdl",
+ "tensor-runtime",
  "thiserror",
  "wayland-client-runtime",
 ]
@@ -3769,8 +3783,10 @@ dependencies = [
 name = "tensor-ipc"
 version = "0.1.0"
 dependencies = [
+ "compio",
  "serde",
  "serde_json",
+ "tensor-runtime",
  "thiserror",
 ]
 
@@ -3797,9 +3813,16 @@ dependencies = [
 name = "tensor-launcher"
 version = "0.1.0"
 dependencies = [
+ "compio",
  "tempfile",
+ "tensor-ipc",
  "tensor-kdl",
+ "tensor-present",
+ "tensor-runtime",
  "thiserror",
+ "vulkan-renderer",
+ "wayland-client-runtime",
+ "xkeysym",
 ]
 
 [[package]]
@@ -3808,7 +3831,9 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "serde_json",
+ "tensor-dbus",
  "tensor-ipc",
+ "tensor-runtime",
  "thiserror",
 ]
 
@@ -3818,6 +3843,8 @@ version = "0.1.0"
 dependencies = [
  "tensor-host",
  "thiserror",
+ "vulkan-renderer",
+ "wayland-client-runtime",
 ]
 
 [[package]]
@@ -3844,8 +3871,15 @@ dependencies = [
 name = "tensor-settings"
 version = "0.1.0"
 dependencies = [
+ "compio",
+ "tensor-ipc",
  "tensor-kdl",
+ "tensor-present",
+ "tensor-runtime",
  "thiserror",
+ "vulkan-renderer",
+ "wayland-client-runtime",
+ "xkeysym",
 ]
 
 [[package]]
@@ -3853,14 +3887,17 @@ name = "tensor-shell"
 version = "0.1.0"
 dependencies = [
  "async-channel",
+ "compio",
  "futures-util",
  "serde",
  "tensor-dbus",
+ "tensor-ipc",
  "tensor-kdl",
  "tensor-runtime",
  "thiserror",
  "vulkan-renderer",
  "wayland-client-runtime",
+ "xkeysym",
 ]
 
 [[package]]
@@ -3897,6 +3934,7 @@ name = "tensor-xdp"
 version = "0.1.0"
 dependencies = [
  "compio",
+ "futures-util",
  "tensor-dbus",
  "tensor-kdl",
  "tensor-runtime",
@@ -3909,6 +3947,7 @@ version = "0.1.0"
 dependencies = [
  "appendlist",
  "arc-swap",
+ "async-channel",
  "bevy_ecs",
  "bytemuck",
  "clap",

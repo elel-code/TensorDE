@@ -10,7 +10,9 @@ description = "Standalone control client for Tensor products"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
+tensor-dbus = { path = "../../crates/tensor-dbus" }
 tensor-ipc = { path = "../../crates/tensor-ipc" }
+tensor-runtime = { path = "../../crates/tensor-runtime" }
 thiserror = "2"
 
 [lints]

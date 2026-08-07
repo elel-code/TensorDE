@@ -5,6 +5,9 @@ pub enum ProductKind {
     Land,
     Shell,
     Launcher,
+    Greeter,
+    Xdp,
+    Files,
     Wallpaper,
     Idle,
 }
@@ -79,6 +82,30 @@ impl ProductRegistry {
                     reload: ReloadRoute::None,
                 },
                 ProductEndpoint {
+                    product: ProductKind::Greeter,
+                    config_path: tensor_config("greeter.kdl"),
+                    config_format: ConfigFormat::Kdl,
+                    socket_path: None,
+                    reload: ReloadRoute::None,
+                },
+                ProductEndpoint {
+                    product: ProductKind::Xdp,
+                    config_path: tensor_config("xdp.kdl"),
+                    config_format: ConfigFormat::Kdl,
+                    socket_path: None,
+                    reload: ReloadRoute::None,
+                },
+                ProductEndpoint {
+                    product: ProductKind::Files,
+                    config_path: env::var_os("TENSOR_FILES_CONFIG")
+                        .filter(|path| !path.is_empty())
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| tensor_config("files.kdl")),
+                    config_format: ConfigFormat::Kdl,
+                    socket_path: None,
+                    reload: ReloadRoute::None,
+                },
+                ProductEndpoint {
                     product: ProductKind::Wallpaper,
                     config_path: config_home.join("tensor-wallpaper/config.toml"),
                     config_format: ConfigFormat::MigrationDebtToml,
@@ -108,10 +135,54 @@ impl ProductRegistry {
     }
 }
 
+impl ProductKind {
+    pub const ALL: [Self; 8] = [
+        Self::Land,
+        Self::Shell,
+        Self::Launcher,
+        Self::Greeter,
+        Self::Xdp,
+        Self::Files,
+        Self::Wallpaper,
+        Self::Idle,
+    ];
+
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Land => "Tensorland",
+            Self::Shell => "Tensor Shell",
+            Self::Launcher => "Tensor Launcher",
+            Self::Greeter => "Tensor Greeter",
+            Self::Xdp => "Tensor XDP",
+            Self::Files => "Tensor Files",
+            Self::Wallpaper => "Tensor Wallpaper",
+            Self::Idle => "Tensor Idle",
+        }
+    }
+
+    pub const fn search_terms(self) -> &'static str {
+        match self {
+            Self::Land => "tensorland compositor display output input workspace window",
+            Self::Shell => "tensor shell panel notification osd control center",
+            Self::Launcher => "tensor launcher application search systemd",
+            Self::Greeter => "tensor greeter login greetd accounts session",
+            Self::Xdp => "tensor xdg desktop portal appearance settings",
+            Self::Files => "tensor files file manager places devices trash network",
+            Self::Wallpaper => "tensor wallpaper background scene",
+            Self::Idle => "tensor idle lock suspend monitor power battery",
+        }
+    }
+}
+
 fn xdg_config_home() -> Option<PathBuf> {
     env::var_os("XDG_CONFIG_HOME")
+        .filter(|path| !path.is_empty())
         .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .or_else(|| {
+            env::var_os("HOME")
+                .filter(|path| !path.is_empty())
+                .map(|home| PathBuf::from(home).join(".config"))
+        })
 }
 
 #[cfg(test)]
@@ -121,7 +192,7 @@ mod tests {
     #[test]
     fn registry_keeps_product_policy_out_of_one_shared_daemon() {
         let registry = ProductRegistry::from_environment();
-        assert_eq!(registry.endpoints().len(), 5);
+        assert_eq!(registry.endpoints().len(), ProductKind::ALL.len());
         assert_eq!(
             registry.endpoint(ProductKind::Land).reload,
             ReloadRoute::TensorMsgLand
@@ -133,6 +204,21 @@ mod tests {
         assert_eq!(
             registry.endpoint(ProductKind::Idle).config_format,
             ConfigFormat::Kdl
+        );
+        assert_eq!(
+            registry.endpoint(ProductKind::Files).config_format,
+            ConfigFormat::Kdl
+        );
+        assert_eq!(
+            registry
+                .endpoint(ProductKind::Files)
+                .config_path
+                .file_name(),
+            Some(std::ffi::OsStr::new("files.kdl"))
+        );
+        assert_eq!(
+            registry.endpoint(ProductKind::Xdp).config_path.file_name(),
+            Some(std::ffi::OsStr::new("xdp.kdl"))
         );
     }
 }

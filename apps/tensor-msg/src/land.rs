@@ -47,6 +47,9 @@ enum CliCommand {
     },
     /// Queue a direct argv launch (no shell) on the compositor.
     Spawn {
+        /// Set an absolute working directory for the launched process.
+        #[arg(long)]
+        working_directory: Option<PathBuf>,
         /// Program and arguments, for example: `tensor-msg land spawn -- foot --server`
         #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
         argv: Vec<String>,
@@ -120,7 +123,13 @@ impl From<CliCommand> for Command {
                 events: vec![EventTopic::ConfigReload],
             },
             CliCommand::SetLayout { layout } => Self::SetLayout { layout },
-            CliCommand::Spawn { argv } => Self::Spawn { argv },
+            CliCommand::Spawn {
+                working_directory,
+                argv,
+            } => Self::Spawn {
+                argv,
+                cwd: working_directory.map(|path| path.to_string_lossy().into_owned()),
+            },
             CliCommand::SetWorkspace { index } => Self::SetWorkspace { index },
             CliCommand::MoveFocusedToWorkspace { index, follow } => {
                 Self::MoveFocusedToWorkspace { index, follow }
@@ -330,9 +339,11 @@ mod tests {
         ));
         assert!(matches!(
             Command::from(CliCommand::Spawn {
+                working_directory: Some(PathBuf::from("/tmp")),
                 argv: vec!["foot".to_owned(), "--server".to_owned()]
             }),
-            Command::Spawn { argv } if argv == ["foot", "--server"]
+            Command::Spawn { argv, cwd }
+                if argv == ["foot", "--server"] && cwd.as_deref() == Some("/tmp")
         ));
         assert!(matches!(
             Command::from(CliCommand::MinimizeFocused),

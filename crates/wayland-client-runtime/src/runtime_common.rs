@@ -26,6 +26,7 @@ pub struct RuntimeCapabilities {
     pub xdg_activation_v1: bool,
     pub xdg_toplevel_icon_v1: bool,
     pub layer_shell_v1: bool,
+    pub session_lock_v1: bool,
     pub layer_shell_dynamic_layer: bool,
     pub layer_shell_on_demand_keyboard: bool,
     pub layer_shell_exclusive_edge: bool,

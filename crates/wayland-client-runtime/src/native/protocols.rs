@@ -178,6 +178,11 @@ pub const PROTOCOL_MATRIX: &[ProtocolSpec] = &[
         min_version: 1,
     },
     ProtocolSpec {
+        interface: "ext_session_lock_manager_v1",
+        class: ProtocolClass::Staging,
+        min_version: 1,
+    },
+    ProtocolSpec {
         interface: "zwp_text_input_manager_v3",
         class: ProtocolClass::Unstable,
         min_version: 1,
@@ -251,6 +256,9 @@ mod tests {
         );
         assert!(PROTOCOL_MATRIX.iter().any(|s| {
             s.interface == "wp_fractional_scale_manager_v1" && s.class == ProtocolClass::Staging
+        }));
+        assert!(PROTOCOL_MATRIX.iter().any(|s| {
+            s.interface == "ext_session_lock_manager_v1" && s.class == ProtocolClass::Staging
         }));
         assert!(
             PROTOCOL_MATRIX.iter().any(

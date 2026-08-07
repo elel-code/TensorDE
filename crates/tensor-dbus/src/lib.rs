@@ -27,6 +27,7 @@ mod pending;
 mod proxy;
 mod server;
 mod signal;
+pub mod tensor;
 mod unix_fd;
 mod wire;
 

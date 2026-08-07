@@ -2,10 +2,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
+use std::sync::Arc;
 
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer,
     wl_data_source, wl_keyboard, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface, wl_touch,
+};
+use wayland_protocols::ext::session_lock::v1::client::{
+    ext_session_lock_surface_v1, ext_session_lock_v1,
 };
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
@@ -13,6 +17,7 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 use wayland_protocols::xdg::shell::client::{xdg_popup, xdg_surface, xdg_toplevel, xdg_wm_base};
 
+use super::handle::NativeSurfaceLease;
 use crate::geometry::{LogicalPosition, LogicalRect, LogicalSize, SuggestedSize};
 use crate::surface::{ConstraintAdjustments, Gravity, PopupAnchor};
 
@@ -63,6 +68,7 @@ pub struct NativeCapabilities {
     pub xkb: bool,
     pub text_input: bool,
     pub layer_shell: bool,
+    pub session_lock: bool,
     pub activation: bool,
     pub pointer_gestures: bool,
     pub pointer_gesture_hold: bool,
@@ -175,6 +181,7 @@ pub(crate) struct OutputPowerRecord {
 
 pub(crate) struct ToplevelRecord {
     pub(crate) wl: wl_surface::WlSurface,
+    pub(crate) surface_lease: Arc<NativeSurfaceLease>,
     #[allow(dead_code)]
     pub(crate) xdg: xdg_surface::XdgSurface,
     pub(crate) toplevel: xdg_toplevel::XdgToplevel,
@@ -280,6 +287,7 @@ pub(crate) enum PendingTouchEvent {
 
 pub(crate) struct PopupRecord {
     pub(crate) wl: wl_surface::WlSurface,
+    pub(crate) surface_lease: Arc<NativeSurfaceLease>,
     #[allow(dead_code)]
     pub(crate) xdg: xdg_surface::XdgSurface,
     pub(crate) popup: xdg_popup::XdgPopup,
@@ -297,6 +305,7 @@ pub(crate) struct PopupRecord {
 
 pub(crate) struct LayerRecord {
     pub(crate) wl: wl_surface::WlSurface,
+    pub(crate) surface_lease: Arc<NativeSurfaceLease>,
     pub(crate) layer:
         wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
     pub(crate) buffer: Option<wl_buffer::WlBuffer>,
@@ -311,6 +320,25 @@ pub(crate) struct LayerRecord {
     pub(crate) logical_h: u32,
     /// Last applied double-buffered layer state (client-side mirror).
     pub(crate) state: crate::layer_shell::LayerSurfaceState,
+}
+
+pub(crate) struct SessionLockRecord {
+    pub(crate) lock: ext_session_lock_v1::ExtSessionLockV1,
+    pub(crate) state: crate::SessionLockState,
+    pub(crate) was_locked: bool,
+}
+
+pub(crate) struct SessionLockSurfaceRecord {
+    pub(crate) wl: wl_surface::WlSurface,
+    pub(crate) surface_lease: Arc<NativeSurfaceLease>,
+    pub(crate) role: ext_session_lock_surface_v1::ExtSessionLockSurfaceV1,
+    pub(crate) output: u32,
+    pub(crate) viewport: Option<wp_viewport::WpViewport>,
+    pub(crate) fractional: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
+    pub(crate) scale_factor: f64,
+    pub(crate) configured: bool,
+    pub(crate) logical_w: u32,
+    pub(crate) logical_h: u32,
 }
 
 /// Temporary role-less surface used as a drag icon.

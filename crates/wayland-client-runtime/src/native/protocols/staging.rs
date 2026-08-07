@@ -10,3 +10,4 @@
 //! - `xdg_dialog` — `create_dialog_gpu` + `set_dialog_modal` when global present
 //! - `xdg_toplevel_icon` — named + pixel SHM icons via `set_toplevel_icon`
 //! - `ext_background_effect` — blur via `set_blur` when capability advertised
+//! - `ext_session_lock` — secure per-output lock surfaces and explicit unlock

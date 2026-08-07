@@ -18,15 +18,6 @@ pub struct LauncherConfig {
     pub max_results: usize,
     pub max_catalog_entries: usize,
     pub max_diagnostics: usize,
-    pub systemd: SystemdMode,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum SystemdMode {
-    #[default]
-    Auto,
-    Enabled,
-    Disabled,
 }
 
 impl LauncherConfig {
@@ -73,7 +64,6 @@ impl Default for LauncherConfig {
             max_results: 10,
             max_catalog_entries: 32_768,
             max_diagnostics: 32,
-            systemd: SystemdMode::Auto,
         }
     }
 }
@@ -86,8 +76,6 @@ struct FileConfig {
     max_catalog_entries: Option<u64>,
     #[kdl(child(name = "max-diagnostics"), unwrap(argument))]
     max_diagnostics: Option<u64>,
-    #[kdl(child(name = "systemd-mode"), unwrap(argument))]
-    systemd: Option<String>,
     #[kdl(children(name = "application-directory"))]
     application_directories: Vec<ApplicationDirectory>,
 }
@@ -131,18 +119,11 @@ impl FileConfig {
         if application_directories.is_empty() {
             return Err(LauncherConfigError::NoApplicationDirectories);
         }
-        let systemd = match self.systemd.as_deref() {
-            None | Some("auto") => SystemdMode::Auto,
-            Some("enabled") => SystemdMode::Enabled,
-            Some("disabled") => SystemdMode::Disabled,
-            Some(value) => return Err(LauncherConfigError::UnknownSystemdMode(value.to_owned())),
-        };
         Ok(LauncherConfig {
             application_directories,
             max_results,
             max_catalog_entries,
             max_diagnostics,
-            systemd,
         })
     }
 }
@@ -209,8 +190,6 @@ pub enum LauncherConfigError {
     },
     #[error("at least one application-directory is required")]
     NoApplicationDirectories,
-    #[error("unknown systemd-mode `{0}`; expected auto, enabled, or disabled")]
-    UnknownSystemdMode(String),
 }
 
 #[cfg(test)]
@@ -228,7 +207,6 @@ mod tests {
                 max-results 24
                 max-catalog-entries 4096
                 max-diagnostics 12
-                systemd-mode "enabled"
                 application-directory "/home/test/.local/share/applications"
                 application-directory "/usr/share/applications"
             "#,
@@ -237,7 +215,6 @@ mod tests {
         assert_eq!(config.max_results, 24);
         assert_eq!(config.max_catalog_entries, 4096);
         assert_eq!(config.max_diagnostics, 12);
-        assert_eq!(config.systemd, SystemdMode::Enabled);
         assert_eq!(config.application_directories.len(), 2);
     }
 
@@ -245,14 +222,6 @@ mod tests {
     fn invalid_bound_keeps_a_named_source_diagnostic() {
         let error = parse("max-results 65").unwrap_err();
         assert!(error.to_string().contains("max-results"));
-    }
-
-    #[test]
-    fn unknown_systemd_mode_is_rejected() {
-        assert!(matches!(
-            parse("systemd-mode \"sometimes\"").unwrap_err(),
-            LauncherConfigError::UnknownSystemdMode(_)
-        ));
     }
 
     #[test]

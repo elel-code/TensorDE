@@ -43,6 +43,8 @@ mod runtime_output_power;
 #[cfg(feature = "compio")]
 mod runtime_seats;
 #[cfg(feature = "compio")]
+mod runtime_session_lock;
+#[cfg(feature = "compio")]
 mod runtime_transfer;
 
 pub use connection::{NativeConnection, NativeError};

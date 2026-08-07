@@ -5,7 +5,7 @@ use super::values::{ConfigDiagnosticMetadata, LayoutKind};
 #[cfg(test)]
 mod tests;
 
-pub const IPC_PROTOCOL_VERSION: u16 = 7;
+pub const IPC_PROTOCOL_VERSION: u16 = 8;
 pub const MAX_OVERVIEW_VIEWS: usize = 2_048;
 pub const MAX_SUBSCRIPTION_TOPICS: usize = 8;
 
@@ -70,9 +70,11 @@ pub enum Command {
     /// Queue an application launch on the compositor's async worker.
     ///
     /// `argv` is one program followed by zero or more arguments. Tensor never
-    /// invokes a shell; empty argv is rejected with a structured error.
+    /// invokes a shell; empty argv and relative working directories are
+    /// rejected with structured errors.
     Spawn {
         argv: Vec<String>,
+        cwd: Option<String>,
     },
     /// Activate virtual desktop by zero-based index (`0..workspace_count`).
     SetWorkspace {
@@ -236,7 +238,7 @@ pub struct WorkspaceSnapshot {
     pub focused_view: Option<u64>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct OverviewSnapshot {
     pub active_workspace: u32,
     /// Primary output work area used by the compositor-owned plan.
@@ -246,7 +248,7 @@ pub struct OverviewSnapshot {
     pub workspaces: Vec<OverviewWorkspaceSnapshot>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct OverviewWorkspaceSnapshot {
     pub index: u32,
     pub name: String,
@@ -259,7 +261,7 @@ pub struct OverviewWorkspaceSnapshot {
     pub views: Vec<OverviewViewSnapshot>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct OverviewViewSnapshot {
     pub id: u64,
     pub root: u64,

@@ -32,6 +32,14 @@ wayland-protocols = { version = "0.32", features = ["client", "staging", "unstab
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 xkbcommon = { version = "0.8", features = ["wayland"] }
 
+[[example]]
+name = "native_csd_smoke"
+required-features = ["compio"]
+
+[[example]]
+name = "native_toplevel_smoke"
+required-features = ["compio"]
+
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 

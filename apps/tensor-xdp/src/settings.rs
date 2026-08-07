@@ -44,6 +44,32 @@ impl SettingsSnapshot {
         }
     }
 
+    pub(crate) fn changed_values(&self, next: &Self) -> Vec<(String, String, OwnedValue)> {
+        let mut changes = Vec::with_capacity(3);
+        if self.appearance.color_scheme != next.appearance.color_scheme {
+            changes.push((
+                APPEARANCE_NAMESPACE.to_owned(),
+                "color-scheme".to_owned(),
+                next.appearance.color_scheme.portal_value().into(),
+            ));
+        }
+        if self.appearance.contrast != next.appearance.contrast {
+            changes.push((
+                APPEARANCE_NAMESPACE.to_owned(),
+                "contrast".to_owned(),
+                next.appearance.contrast.portal_value().into(),
+            ));
+        }
+        if self.appearance.reduced_motion != next.appearance.reduced_motion {
+            changes.push((
+                APPEARANCE_NAMESPACE.to_owned(),
+                "reduced-motion".to_owned(),
+                u32::from(next.appearance.reduced_motion).into(),
+            ));
+        }
+        changes
+    }
+
     fn appearance_values(&self) -> HashMap<String, OwnedValue> {
         HashMap::from([
             (
@@ -90,6 +116,8 @@ pub enum SettingsError {
     NotFound,
     #[error("settings namespace filter list exceeds its bounded request limits")]
     InvalidFilters,
+    #[error("settings snapshot is unavailable")]
+    Unavailable,
 }
 
 #[cfg(test)]
@@ -157,5 +185,19 @@ mod tests {
             snapshot().read_all(&filters),
             Err(SettingsError::InvalidFilters)
         );
+    }
+
+    #[test]
+    fn changed_values_only_contains_standardized_differences() {
+        let before = snapshot();
+        let after = SettingsSnapshot::new(AppearanceSettings {
+            color_scheme: ColorScheme::Light,
+            contrast: Contrast::High,
+            reduced_motion: false,
+        });
+        let changes = before.changed_values(&after);
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].1, "color-scheme");
+        assert_eq!(changes[1].1, "reduced-motion");
     }
 }

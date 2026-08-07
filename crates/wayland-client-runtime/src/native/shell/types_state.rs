@@ -120,6 +120,14 @@ pub struct NativeShellState {
     >,
     /// Bound `zwlr_layer_shell_v1` version.
     pub(crate) layer_shell_version: u32,
+    pub(crate) session_lock_manager: Option<
+        wayland_protocols::ext::session_lock::v1::client::ext_session_lock_manager_v1::ExtSessionLockManagerV1,
+    >,
+    pub(crate) session_lock: Option<super::types::SessionLockRecord>,
+    pub(crate) session_lock_surfaces: HashMap<NativeSurfaceId, super::types::SessionLockSurfaceRecord>,
+    pub(crate) session_lock_surface_objects: HashMap<u32, NativeSurfaceId>,
+    pub(crate) session_lock_outputs: HashMap<u32, NativeSurfaceId>,
+    pub(crate) pending_session_lock_outputs: Vec<u32>,
     pub(crate) xdg_wm_dialog: Option<
         wayland_protocols::xdg::dialog::v1::client::xdg_wm_dialog_v1::XdgWmDialogV1,
     >,
@@ -374,6 +382,12 @@ impl Default for NativeShellState {
             text_input_pending_delete: (0, 0),
             layer_shell: None,
             layer_shell_version: 0,
+            session_lock_manager: None,
+            session_lock: None,
+            session_lock_surfaces: HashMap::new(),
+            session_lock_surface_objects: HashMap::new(),
+            session_lock_outputs: HashMap::new(),
+            pending_session_lock_outputs: Vec::new(),
             xdg_wm_dialog: None,
             toplevel_icon_manager: None,
             preferred_icon_sizes: Vec::new(),

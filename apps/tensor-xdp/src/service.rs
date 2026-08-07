@@ -1,10 +1,17 @@
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use futures_util::{FutureExt, pin_mut, select_biased};
 use tensor_dbus::{
     Connection, MethodError, ObjectServer, PropertyChangeMode, RequestNameFlags, RequestNameReply,
 };
 use thiserror::Error;
 
 use crate::{
-    SettingsError, SettingsSnapshot,
+    SettingsError, SettingsSnapshot, TensorXdpConfig,
     settings::{SETTINGS_INTERFACE, SETTINGS_VERSION, SettingsMap},
 };
 
@@ -15,35 +22,41 @@ const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 #[cfg(test)]
 const INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
 
-#[derive(Clone, Copy, Debug)]
+const RELOAD_INTERVAL: Duration = Duration::from_secs(1);
+
+type SharedSettings = Arc<Mutex<SettingsSnapshot>>;
+
+#[derive(Clone, Debug)]
 pub struct SettingsService {
-    settings: SettingsSnapshot,
+    settings: SharedSettings,
 }
 
 impl SettingsService {
-    pub const fn new(settings: SettingsSnapshot) -> Self {
-        Self { settings }
+    pub fn new(settings: SettingsSnapshot) -> Self {
+        Self {
+            settings: Arc::new(Mutex::new(settings)),
+        }
     }
 
-    fn object_server(self) -> Result<ObjectServer, tensor_dbus::Error> {
+    fn object_server(&self) -> Result<ObjectServer, tensor_dbus::Error> {
         let mut objects = ObjectServer::new();
-        let settings = self.settings;
+        let settings = Arc::clone(&self.settings);
         objects.register::<Vec<String>, SettingsMap, _, _>(
             OBJECT_PATH,
             SETTINGS_INTERFACE,
             "ReadAll",
             move |namespaces| {
-                let result = settings.read_all(&namespaces).map_err(map_read_all_error);
+                let result = read_all(&settings, &namespaces).map_err(map_read_all_error);
                 async move { result }
             },
         )?;
-        let settings = self.settings;
+        let settings = Arc::clone(&self.settings);
         objects.register::<(String, String), tensor_dbus::zvariant::OwnedValue, _, _>(
             OBJECT_PATH,
             SETTINGS_INTERFACE,
             "Read",
             move |(namespace, key)| {
-                let result = settings.read(&namespace, &key).map_err(map_read_error);
+                let result = read(&settings, &namespace, &key).map_err(map_read_error);
                 async move { result }
             },
         )?;
@@ -63,6 +76,17 @@ impl SettingsService {
     }
 
     pub async fn run(self) -> Result<(), ServiceError> {
+        self.run_inner(None).await
+    }
+
+    pub async fn run_with_reload(
+        self,
+        config_path: impl Into<PathBuf>,
+    ) -> Result<(), ServiceError> {
+        self.run_inner(Some(config_path.into())).await
+    }
+
+    async fn run_inner(self, config_path: Option<PathBuf>) -> Result<(), ServiceError> {
         let mut connection = Connection::session_bus().await?;
         let name = connection
             .request_name(BUS_NAME, RequestNameFlags::DO_NOT_QUEUE)
@@ -75,16 +99,100 @@ impl SettingsService {
         }
 
         let mut objects = self.object_server()?;
+        let Some(config_path) = config_path else {
+            loop {
+                drop(objects.serve_next(&mut connection).await?);
+            }
+        };
         loop {
-            drop(objects.serve_next(&mut connection).await?);
+            let reload = {
+                let serve = objects.serve_next(&mut connection).fuse();
+                let timer = compio::runtime::time::sleep(RELOAD_INTERVAL).fuse();
+                pin_mut!(serve, timer);
+                select_biased! {
+                    result = serve => {
+                        drop(result?);
+                        false
+                    }
+                    _ = timer => true,
+                }
+            };
+            if reload {
+                self.reload_if_changed(&config_path, &mut connection)
+                    .await?;
+            }
         }
     }
+
+    async fn reload_if_changed(
+        &self,
+        path: &Path,
+        connection: &mut Connection,
+    ) -> Result<(), ServiceError> {
+        let config = match TensorXdpConfig::load_or_default(path) {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!(
+                    "tensor-xdp: retaining last valid settings after reload failure: {error}"
+                );
+                return Ok(());
+            }
+        };
+        let next = SettingsSnapshot::new(config.appearance);
+        let changes = self.replace_snapshot(next)?;
+        for (namespace, key, value) in changes {
+            connection
+                .emit_signal(
+                    OBJECT_PATH,
+                    SETTINGS_INTERFACE,
+                    "SettingChanged",
+                    &(namespace, key, value),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    fn replace_snapshot(
+        &self,
+        next: SettingsSnapshot,
+    ) -> Result<Vec<(String, String, tensor_dbus::zvariant::OwnedValue)>, ServiceError> {
+        let mut settings = self
+            .settings
+            .lock()
+            .map_err(|_| ServiceError::StatePoisoned)?;
+        let changes = settings.changed_values(&next);
+        *settings = next;
+        Ok(changes)
+    }
+}
+
+fn read_all(
+    settings: &SharedSettings,
+    namespaces: &[String],
+) -> Result<SettingsMap, SettingsError> {
+    settings
+        .lock()
+        .map_err(|_| SettingsError::Unavailable)?
+        .read_all(namespaces)
+}
+
+fn read(
+    settings: &SharedSettings,
+    namespace: &str,
+    key: &str,
+) -> Result<tensor_dbus::zvariant::OwnedValue, SettingsError> {
+    settings
+        .lock()
+        .map_err(|_| SettingsError::Unavailable)?
+        .read(namespace, key)
 }
 
 fn map_read_all_error(error: SettingsError) -> MethodError {
     match error {
         SettingsError::InvalidFilters => MethodError::invalid_args(error),
         SettingsError::NotFound => unreachable!("ReadAll never reports NotFound"),
+        SettingsError::Unavailable => MethodError::failed(error.to_string()),
     }
 }
 
@@ -94,6 +202,7 @@ fn map_read_error(error: SettingsError) -> MethodError {
             MethodError::new("org.freedesktop.portal.Error.NotFound", error.to_string())
         }
         SettingsError::InvalidFilters => unreachable!("Read has no filters"),
+        SettingsError::Unavailable => MethodError::failed(error.to_string()),
     }
 }
 
@@ -103,6 +212,8 @@ pub enum ServiceError {
     Dbus(#[from] tensor_dbus::Error),
     #[error("Tensor XDP bus name is already owned: {0:?}")]
     NameUnavailable(RequestNameReply),
+    #[error("Tensor XDP settings snapshot lock is poisoned")]
+    StatePoisoned,
 }
 
 #[cfg(test)]
@@ -122,20 +233,16 @@ mod tests {
 
     fn socket_path() -> PathBuf {
         static NEXT_BUS: AtomicU64 = AtomicU64::new(1);
-        std::env::current_dir()
-            .unwrap()
-            .join("target")
-            .join(format!(
-                "tensor-xdp-test-{}-{}.sock",
-                std::process::id(),
-                NEXT_BUS.fetch_add(1, Ordering::Relaxed)
-            ))
+        std::env::temp_dir().join(format!(
+            "tensor-xdp-test-{}-{}.sock",
+            std::process::id(),
+            NEXT_BUS.fetch_add(1, Ordering::Relaxed)
+        ))
     }
 
     #[test]
     fn settings_service_uses_the_typed_object_server_over_p2p() {
         let path = socket_path();
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
         let _ = fs::remove_file(&path);
         let guid = Guid::generate().unwrap();
         let runtime = io_uring_runtime(4).expect("io_uring runtime is required");
@@ -253,5 +360,21 @@ mod tests {
             server.await.unwrap();
         });
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn live_snapshot_replacement_is_atomic_and_noop_when_values_are_unchanged() {
+        let service = SettingsService::new(SettingsSnapshot::new(AppearanceSettings::default()));
+        let next = SettingsSnapshot::new(AppearanceSettings {
+            color_scheme: crate::ColorScheme::Dark,
+            contrast: crate::Contrast::Normal,
+            reduced_motion: true,
+        });
+        let changes = service.replace_snapshot(next).unwrap();
+        assert_eq!(changes.len(), 2);
+        assert!(service.replace_snapshot(next).unwrap().is_empty());
+
+        let objects = service.object_server().unwrap();
+        assert!(objects.contains_object(OBJECT_PATH));
     }
 }

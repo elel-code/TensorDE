@@ -78,6 +78,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   caller-owned multi-rule signal loops. Rules cover exact and namespace paths,
   unique destinations, string arguments, object-path arguments, and argument
   zero bus-name namespaces with the D-Bus length and index limits enforced.
+  `sender_available` exposes whether a well-known sender currently has an
+  owner, so products can implement owner-driven recovery without polling.
   `SignalStream` remains the convenient exclusive-borrow path for one rule.
 - `zvariant` is re-exported for D-Bus ABI types and body encoding, including
   Unix file descriptors.
@@ -87,6 +89,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   changes or invalidated properties as explicit refresh boundaries. Products
   retain and lower the resulting snapshot; the adapter owns no UI or power
   policy.
+- `freedesktop::login1` resolves a process-owned logind session, installs one
+  exact `Lock`/`Unlock` signal rule before reading `LockedHint`, and exposes
+  explicit `SetLockedHint`, lock-all, and suspend calls without owning a task
+  or reconnect policy.
+- `freedesktop::mpris` discovers a bounded set of session players, installs
+  owner, property, and `Seeked` matches before its initial reads, validates
+  metadata, position, duration, and capabilities into retained snapshots, and
+  selects a stable active player. `Previous`, `PlayPause`, and `Next` reject
+  unsupported capabilities before issuing a call. The caller owns the Compio
+  receive loop, action queue, refresh boundary, and product policy.
+- `freedesktop::network_manager` retains NetworkManager's typed aggregate
+  state, connectivity, primary-connection kind, and Wi-Fi radio state. It
+  installs the root property match before `GetAll`, applies property changes
+  atomically, exposes invalidation and owner changes as explicit refresh
+  boundaries, and provides standard overall-networking and Wi-Fi write calls.
+  Its `wifi` child module adds one owner-aware namespace monitor and a bounded,
+  completion-pipelined inventory of Wi-Fi devices and access points. Raw SSID
+  bytes are retained alongside bounded display text; device state, active AP,
+  signal, frequency, bitrate, mode, WPA/RSN flags, secured and enterprise
+  classification are typed. `GetAllAccessPoints` is the only discovery API,
+  and `request_scan` submits an empty `a{sv}` options map. Topology and scan
+  completion are explicit refresh boundaries while AP strength and active-AP
+  changes apply atomically. It owns no credentials, saved-connection policy,
+  reconnect policy, or UI policy.
+- `tensor::shell` defines the versioned Tensor Shell media-control destination,
+  object, interface, stable method mapping, and Compio client call. Tensor Shell
+  owns the service object and action policy; `tensor-dbus` does not start or
+  discover the product.
 
 Signal headers contain unique sender names. Installing a rule for a well-known
 sender resolves its current unique owner and installs a bounded

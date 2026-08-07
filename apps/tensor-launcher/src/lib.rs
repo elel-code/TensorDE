@@ -6,11 +6,19 @@
 
 mod catalog;
 mod config;
+mod launch;
 mod query;
+mod session;
+mod surface;
 
-pub use catalog::{CatalogDiagnostic, DesktopEntry, LauncherCatalog, LauncherCatalogError};
+pub use catalog::{
+    CatalogDiagnostic, DesktopEntry, LauncherCatalog, LauncherCatalogError, LauncherCatalogWatcher,
+};
 pub use config::{
     LauncherConfig, LauncherConfigError, MAX_CATALOG_DIAGNOSTICS, MAX_CATALOG_ENTRIES,
-    MAX_QUERY_RESULTS, SystemdMode,
+    MAX_QUERY_RESULTS,
 };
+pub use launch::{LaunchError, LaunchPlan, LauncherClient};
 pub use query::SearchResult;
+pub use session::{LauncherSession, LauncherSessionError, MAX_LAUNCHER_QUERY_BYTES};
+pub use surface::{LauncherSurface, LauncherSurfaceError};

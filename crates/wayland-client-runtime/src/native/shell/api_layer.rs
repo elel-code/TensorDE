@@ -1,9 +1,12 @@
 //! Layer-shell and surface region helpers on [`NativeShell`].
 
+use std::sync::Arc;
+
 use wayland_client::Proxy;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1;
 
 use super::api::NativeShell;
+use super::handle::NativeSurfaceLease;
 use super::types::{LayerRecord, NativeSurfaceId};
 use crate::geometry::LogicalSize;
 use crate::layer_shell::{LayerAnchor, LayerKeyboardInteractivity, LayerSurfaceLayer};
@@ -165,9 +168,16 @@ impl NativeShell {
                 .fractional_objects
                 .insert(frac.id().protocol_id(), id);
         }
+        let surface_lease = Arc::new(NativeSurfaceLease::layer(
+            self.connection.connection().clone(),
+            wl.clone(),
+            id,
+            layer_surface.clone(),
+        ));
         self.state.layers.insert(
             id,
             LayerRecord {
+                surface_lease,
                 wl,
                 layer: layer_surface,
                 buffer,
@@ -249,14 +259,12 @@ impl NativeShell {
         if let Some(vp) = record.viewport {
             vp.destroy();
         }
-        record.layer.destroy();
         if let Some(buffer) = record.buffer {
             buffer.destroy();
         }
         if let Some(pool) = record._pool {
             pool.destroy();
         }
-        record.wl.destroy();
         self.connection.mark_dirty();
         Ok(())
     }

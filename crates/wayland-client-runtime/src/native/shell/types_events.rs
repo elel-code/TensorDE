@@ -17,6 +17,25 @@ impl NativeSurfaceId {
 /// Events emitted by the native shell (grows toward the public crate Event model).
 #[derive(Clone, Debug)]
 pub enum NativeShellEvent {
+    SessionLockSurfaceAdded {
+        surface: NativeSurfaceId,
+        output: u32,
+    },
+    SessionLockConfigure {
+        surface: NativeSurfaceId,
+        output: u32,
+        width: u32,
+        height: u32,
+        serial: u32,
+    },
+    SessionLocked,
+    SessionLockSurfaceRemoved {
+        surface: NativeSurfaceId,
+        output: u32,
+    },
+    SessionLockFinished {
+        was_locked: bool,
+    },
     ToplevelConfigure {
         surface: NativeSurfaceId,
         suggested_size: SuggestedSize,

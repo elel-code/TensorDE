@@ -1,7 +1,9 @@
+mod client;
 mod codec;
 mod message;
 mod values;
 
+pub use client::{ClientError, CompioClient, default_socket_path};
 pub use codec::{CodecError, FrameDecoder, MAX_FRAME_SIZE, encode, encode_into};
 pub use message::{
     Command, ConfigReloadEvent, ConfigReloadEventResult, ConfigStatusSnapshot, EventMessage,

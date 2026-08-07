@@ -1,9 +1,12 @@
 //! xdg-popup helpers on [`NativeShell`].
 
+use std::sync::Arc;
+
 use wayland_client::Proxy;
 use wayland_protocols::xdg::shell::client::xdg_positioner;
 
 use super::api::NativeShell;
+use super::handle::NativeSurfaceLease;
 use super::types::{NativePopupPositioner, NativeSurfaceId, PopupRecord};
 use crate::native::connection::NativeError;
 use crate::native::protocols::core::shm;
@@ -70,9 +73,21 @@ impl NativeShell {
         self.state
             .wl_surface_objects
             .insert(wl.id().protocol_id(), id);
+        let parent_lease = self
+            .surface_lease(parent)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown popup parent {parent:?}")))?;
+        let surface_lease = Arc::new(NativeSurfaceLease::popup(
+            self.connection.connection().clone(),
+            wl.clone(),
+            id,
+            xdg.clone(),
+            popup.clone(),
+            parent_lease,
+        ));
         self.state.popups.insert(
             id,
             PopupRecord {
+                surface_lease,
                 wl,
                 xdg,
                 popup,
@@ -158,9 +173,21 @@ impl NativeShell {
         self.state
             .wl_surface_objects
             .insert(wl.id().protocol_id(), id);
+        let parent_lease = self
+            .surface_lease(parent)
+            .ok_or_else(|| NativeError::Protocol(format!("unknown popup parent {parent:?}")))?;
+        let surface_lease = Arc::new(NativeSurfaceLease::popup(
+            self.connection.connection().clone(),
+            wl.clone(),
+            id,
+            xdg.clone(),
+            popup.clone(),
+            parent_lease,
+        ));
         self.state.popups.insert(
             id,
             PopupRecord {
+                surface_lease,
                 wl,
                 xdg,
                 popup,
@@ -238,15 +265,12 @@ impl NativeShell {
         self.state
             .wl_surface_objects
             .remove(&record.wl.id().protocol_id());
-        record.popup.destroy();
-        record.xdg.destroy();
         if let Some(buffer) = record.buffer {
             buffer.destroy();
         }
         if let Some(pool) = record._pool {
             pool.destroy();
         }
-        record.wl.destroy();
         self.connection.mark_dirty();
         Ok(())
     }

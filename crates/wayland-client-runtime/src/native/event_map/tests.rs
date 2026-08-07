@@ -252,6 +252,75 @@ fn maps_output_power_mode_and_failure() {
 }
 
 #[test]
+fn maps_session_lock_lifecycle_without_losing_surface_identity() {
+    use crate::{LogicalSize, OutputId, SessionLockEvent};
+
+    let mut map = SurfaceIdMap::new();
+    let native = NativeSurfaceId(44);
+    let added = map_native_event(
+        NativeShellEvent::SessionLockSurfaceAdded {
+            surface: native,
+            output: 9,
+        },
+        &mut map,
+    );
+    assert!(matches!(
+        added,
+        Some(Event::SessionLock(SessionLockEvent::SurfaceAdded {
+            surface,
+            output,
+        })) if surface == map.get(native).unwrap() && output == OutputId::from_raw(9)
+    ));
+    let configured = map_native_event(
+        NativeShellEvent::SessionLockConfigure {
+            surface: native,
+            output: 9,
+            width: 1920,
+            height: 1080,
+            serial: 12,
+        },
+        &mut map,
+    );
+    assert!(matches!(
+        configured,
+        Some(Event::SessionLock(SessionLockEvent::Configure {
+            surface,
+            output,
+            size,
+            serial: 12,
+        })) if surface == map.get(native).unwrap()
+            && output == OutputId::from_raw(9)
+            && size == LogicalSize::new(1920, 1080)
+    ));
+    assert!(matches!(
+        map_native_event(NativeShellEvent::SessionLocked, &mut map),
+        Some(Event::SessionLock(SessionLockEvent::Locked))
+    ));
+    assert!(matches!(
+        map_native_event(
+            NativeShellEvent::SessionLockFinished { was_locked: true },
+            &mut map,
+        ),
+        Some(Event::SessionLock(SessionLockEvent::Finished {
+            was_locked: true
+        }))
+    ));
+    assert!(matches!(
+        map_native_event(
+            NativeShellEvent::SessionLockSurfaceRemoved {
+                surface: native,
+                output: 9,
+            },
+            &mut map,
+        ),
+        Some(Event::SessionLock(SessionLockEvent::SurfaceRemoved {
+            surface,
+            output,
+        })) if surface == map.get(native).unwrap() && output == OutputId::from_raw(9)
+    ));
+}
+
+#[test]
 fn maps_touch_shape_and_orientation() {
     let mut map = SurfaceIdMap::new();
     let mut map_state = NativeEventMapState::default();

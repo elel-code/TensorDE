@@ -20,6 +20,11 @@ fn category(event: &NativeShellEvent) -> &'static str {
         | PopupDone { .. }
         | LayerConfigure { .. }
         | LayerClosed { .. }
+        | SessionLockSurfaceAdded { .. }
+        | SessionLockConfigure { .. }
+        | SessionLockSurfaceRemoved { .. }
+        | SessionLocked
+        | SessionLockFinished { .. }
         | SurfaceOutputEnter { .. }
         | SurfaceOutputLeave { .. } => "surface",
         SeatKeyboardEnter { .. }

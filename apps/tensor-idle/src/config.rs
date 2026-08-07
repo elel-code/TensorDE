@@ -3,6 +3,7 @@
 use std::{
     env, fs,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 use tensor_kdl::Decode;
@@ -15,6 +16,20 @@ pub struct IdleConfig {
     pub respect_inhibitors: bool,
     pub ac: PowerPolicy,
     pub battery: PowerPolicy,
+}
+
+/// Retained idle policy with a caller-driven, bounded KDL change check.
+#[derive(Debug)]
+pub struct IdleConfigWatcher {
+    path: PathBuf,
+    config: IdleConfig,
+    stamp: ConfigStamp,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ConfigStamp {
+    modified: Option<SystemTime>,
+    length: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,6 +74,67 @@ impl IdleConfig {
                 ),
             })?;
         parsed.resolve()
+    }
+}
+
+impl IdleConfigWatcher {
+    pub fn start(path: impl Into<PathBuf>) -> Result<Self, IdleConfigError> {
+        let path = path.into();
+        let config = IdleConfig::load_or_default(&path)?;
+        let stamp = ConfigStamp::read(&path)?;
+        Ok(Self {
+            path,
+            config,
+            stamp,
+        })
+    }
+
+    pub fn config(&self) -> &IdleConfig {
+        &self.config
+    }
+
+    /// Return a newly parsed policy only when the file metadata changed.
+    ///
+    /// The stamp is retained even for a parse failure, so one invalid write
+    /// produces one diagnostic rather than a hot-loop of identical errors.
+    pub fn reload_if_changed(&mut self) -> Result<Option<IdleConfig>, IdleConfigError> {
+        let stamp = ConfigStamp::read(&self.path)?;
+        if stamp == self.stamp {
+            return Ok(None);
+        }
+        self.stamp = stamp;
+        let next = IdleConfig::load_or_default(&self.path)?;
+        if next == self.config {
+            return Ok(None);
+        }
+        self.config = next.clone();
+        Ok(Some(next))
+    }
+
+    /// Restore the last active policy when Wayland cannot accept a replacement.
+    pub fn restore(&mut self, config: IdleConfig) -> Result<(), IdleConfigError> {
+        self.config = config;
+        self.stamp = ConfigStamp::read(&self.path)?;
+        Ok(())
+    }
+}
+
+impl ConfigStamp {
+    fn read(path: &Path) -> Result<Self, IdleConfigError> {
+        match fs::metadata(path) {
+            Ok(metadata) => Ok(Self {
+                modified: metadata.modified().ok(),
+                length: metadata.len(),
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self {
+                modified: None,
+                length: 0,
+            }),
+            Err(source) => Err(IdleConfigError::Read {
+                path: path.to_owned(),
+                source,
+            }),
+        }
     }
 }
 
@@ -261,5 +337,29 @@ mod tests {
     #[test]
     fn malformed_kdl_keeps_the_named_source() {
         assert!(parse("ac {").unwrap_err().to_string().contains("idle.kdl"));
+    }
+
+    #[test]
+    fn config_watcher_retains_last_valid_policy_after_a_bad_write() {
+        let root = std::env::temp_dir().join(format!(
+            "tensor-idle-watcher-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("idle.kdl");
+        fs::write(&path, "ac { lock-after-seconds 120 }\n").unwrap();
+        let mut watcher = IdleConfigWatcher::start(&path).unwrap();
+        assert!(watcher.reload_if_changed().unwrap().is_none());
+        fs::write(&path, "ac { lock-after-seconds 0 }\n").unwrap();
+        let next = watcher.reload_if_changed().unwrap().unwrap();
+        assert_eq!(next.ac.lock_after_ms, None);
+        fs::write(&path, "ac { lock-after-seconds 4294968 }\n").unwrap();
+        assert!(watcher.reload_if_changed().is_err());
+        assert_eq!(watcher.config().ac.lock_after_ms, None);
+        fs::remove_dir_all(root).unwrap();
     }
 }

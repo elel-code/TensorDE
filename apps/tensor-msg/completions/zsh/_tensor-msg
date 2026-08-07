@@ -1,8 +1,9 @@
 #compdef tensor-msg
 
-local -a products land_commands wallpaper_commands
+local -a products land_commands shell_commands wallpaper_commands
 products=(
   'land:control the Tensor compositor'
+  'shell:control Tensor Shell'
   'wallpaper:control Tensor Wallpaper'
 )
 land_commands=(
@@ -28,6 +29,9 @@ land_commands=(
   'set-output-scale:set output scale percent'
   'quit:stop the compositor'
 )
+shell_commands=(
+  'media:control the active media player'
+)
 wallpaper_commands=(
   'ping:check daemon availability'
   'status:show daemon state'
@@ -52,6 +56,7 @@ case $state in
   command)
     case $words[2] in
       land) _describe 'command' land_commands ;;
+      shell) _describe 'command' shell_commands ;;
       wallpaper) _describe 'command' wallpaper_commands ;;
     esac
     ;;
@@ -74,6 +79,9 @@ case $state in
         ;;
       land:set-layout)
         _arguments '1:layout:(scrolling floating master-stack)'
+        ;;
+      shell:media)
+        _arguments '1:action:(previous play-pause next)'
         ;;
     esac
     ;;

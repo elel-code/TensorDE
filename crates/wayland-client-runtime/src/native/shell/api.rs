@@ -14,7 +14,6 @@ use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection
 use wayland_protocols::wp::viewporter::client::wp_viewporter;
 use wayland_protocols::xdg::shell::client::xdg_wm_base;
 
-use super::handle::NativeSurfaceHandle;
 use super::types::{NativeCapabilities, NativeShellEvent, NativeShellState, NativeSurfaceId};
 use crate::native::connection::{NativeConnection, NativeError};
 use wayland_client::EventQueue;
@@ -155,6 +154,14 @@ impl NativeShell {
         >(&qh, 1..=2, ())
         {
             state.idle_notifier = Some(notifier);
+        }
+        if let Ok(manager) = globals.bind::<
+            wayland_protocols::ext::session_lock::v1::client::ext_session_lock_manager_v1::ExtSessionLockManagerV1,
+            _,
+            _,
+        >(&qh, 1..=1, ())
+        {
+            state.session_lock_manager = Some(manager);
         }
         if let Ok(manager) = globals.bind::<
             wayland_protocols_wlr::output_power_management::v1::client::zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1,
@@ -380,6 +387,7 @@ impl NativeShell {
             xkb: self.state.xkb.is_some(),
             text_input: self.state.text_input.is_some(),
             layer_shell: self.state.layer_shell.is_some(),
+            session_lock: self.state.session_lock_manager.is_some(),
             activation: self.state.activation.is_some(),
             pointer_gestures: self.state.pointer_gestures.is_some(),
             pointer_gesture_hold: self
@@ -516,6 +524,12 @@ impl NativeShell {
             self.rebind_primary_seat_devices();
         }
         self.destroy_pending_output_powers();
+        if !self.state.pending_session_lock_outputs.is_empty() {
+            let outputs = std::mem::take(&mut self.state.pending_session_lock_outputs);
+            for output in outputs {
+                let _ = self.create_session_lock_surface(output);
+            }
+        }
         // Hotplugged seats may still lack transfer devices.
         if self
             .state
@@ -695,60 +709,6 @@ impl NativeShell {
         let bw = ((w as f64) * scale).ceil().max(1.0) as u32;
         let bh = ((h as f64) * scale).ceil().max(1.0) as u32;
         Some((bw, bh))
-    }
-
-    /// Role of a live surface, if known.
-    pub fn surface_kind(&self, id: NativeSurfaceId) -> Option<crate::surface::SurfaceKind> {
-        use crate::surface::SurfaceKind;
-        if let Some(record) = self.state.toplevels.get(&id) {
-            return Some(if record.parent.is_some() || record.dialog.is_some() {
-                SurfaceKind::Dialog
-            } else {
-                SurfaceKind::Toplevel
-            });
-        }
-        if self.state.popups.contains_key(&id) {
-            return Some(SurfaceKind::Popup);
-        }
-        if self.state.layers.contains_key(&id) {
-            return Some(SurfaceKind::Layer);
-        }
-        None
-    }
-
-    /// Renderer lease for wgpu / Vulkan (`VK_KHR_wayland_surface`).
-    ///
-    /// Works for toplevels (including dialogs), popups, and layer surfaces.
-    /// The returned handle keeps `Connection` + `wl_surface` alive; keep it
-    /// for the lifetime of the GPU surface.
-    pub fn surface_handle(&self, id: NativeSurfaceId) -> Result<NativeSurfaceHandle, NativeError> {
-        use crate::surface::SurfaceKind;
-        let conn = self.connection.connection().clone();
-        if let Some(record) = self.state.toplevels.get(&id) {
-            let kind = if record.parent.is_some() || record.dialog.is_some() {
-                SurfaceKind::Dialog
-            } else {
-                SurfaceKind::Toplevel
-            };
-            return Ok(NativeSurfaceHandle::new(conn, record.wl.clone(), id, kind));
-        }
-        if let Some(record) = self.state.popups.get(&id) {
-            return Ok(NativeSurfaceHandle::new(
-                conn,
-                record.wl.clone(),
-                id,
-                SurfaceKind::Popup,
-            ));
-        }
-        if let Some(record) = self.state.layers.get(&id) {
-            return Ok(NativeSurfaceHandle::new(
-                conn,
-                record.wl.clone(),
-                id,
-                SurfaceKind::Layer,
-            ));
-        }
-        Err(NativeError::Protocol(format!("unknown surface {id:?}")))
     }
 
     pub fn set_title(

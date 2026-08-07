@@ -115,6 +115,38 @@ pub(crate) fn map(
                 surface: surfaces.intern(surface),
             }))
         }
+        NativeShellEvent::SessionLockSurfaceAdded { surface, output } => {
+            Some(Event::SessionLock(crate::SessionLockEvent::SurfaceAdded {
+                surface: surfaces.intern(surface),
+                output: OutputId::from_raw(output),
+            }))
+        }
+        NativeShellEvent::SessionLockConfigure {
+            surface,
+            output,
+            width,
+            height,
+            serial,
+        } => Some(Event::SessionLock(crate::SessionLockEvent::Configure {
+            surface: surfaces.intern(surface),
+            output: OutputId::from_raw(output),
+            size: LogicalSize::new(width, height),
+            serial,
+        })),
+        NativeShellEvent::SessionLockSurfaceRemoved { surface, output } => Some(
+            Event::SessionLock(crate::SessionLockEvent::SurfaceRemoved {
+                surface: surfaces.intern(surface),
+                output: OutputId::from_raw(output),
+            }),
+        ),
+        NativeShellEvent::SessionLocked => {
+            Some(Event::SessionLock(crate::SessionLockEvent::Locked))
+        }
+        NativeShellEvent::SessionLockFinished { was_locked } => {
+            Some(Event::SessionLock(crate::SessionLockEvent::Finished {
+                was_locked,
+            }))
+        }
         NativeShellEvent::SurfaceOutputEnter { surface, output } => {
             Some(Event::Surface(SurfaceEvent::OutputEnter {
                 surface: surfaces.intern(surface),

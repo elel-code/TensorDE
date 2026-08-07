@@ -232,6 +232,24 @@ four `layer_shell_*` capability fields before using versioned behavior.
 `cargo run -p wayland-client-runtime --example layer_surface_smoke` probes
 initial configure and closed events without attaching a renderer buffer.
 
+## Session lock surfaces
+
+`RuntimeCapabilities::session_lock_v1` reports secure
+`ext-session-lock-v1` support. `Runtime::begin_session_lock` creates the single
+connection-owned lock request and one role-less Vulkan-compatible surface for
+every live output. Output hotplug adds and removes lock surfaces through
+`SessionLockEvent`; configure serials are acknowledged during dispatch, and a
+surface cannot commit before its first configure.
+
+The application remains responsible for the security-sensitive lifecycle.
+Present every configured surface, wait for `SessionLockEvent::Locked` before
+publishing that the session is locked, and treat `SessionLockEvent::Finished`
+as compositor termination of the request. To unlock, first release every
+renderer swapchain, then call `Runtime::finish_session_lock`, destroy the
+reported surfaces, and flush. The runtime sends the protocol destructor that
+is legal for the state reached by the request; it never lowers a lock surface
+to layer-shell or keeps a hidden fallback surface.
+
 ## Pointer constraints and relative motion
 
 `Runtime::set_pointer_constraint` retains `None`, `Confined`, or `Locked` for

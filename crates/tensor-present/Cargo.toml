@@ -3,9 +3,11 @@ name = "tensor-present"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
-description = "Value-only present intents and scanout readiness (no KMS FDs)"
+description = "Retained present scheduling and strict Wayland Vulkan surfaces"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 tensor-host = { path = "../tensor-host" }
+vulkan-renderer = { path = "../vulkan-renderer" }
+wayland-client-runtime = { path = "../wayland-client-runtime", default-features = false }
 thiserror = "2"

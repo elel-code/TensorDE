@@ -56,6 +56,31 @@ impl OutputPowerSet {
         self.controls.len()
     }
 
+    pub(super) fn reconfigure(
+        &mut self,
+        protocol: &mut impl OutputPowerProtocol,
+        plan: &IdlePlan,
+    ) -> Result<(), IdleRuntimeError> {
+        let enabled = plan.enabled
+            && plan
+                .stages
+                .iter()
+                .any(|stage| stage.action == IdleAction::MonitorOff);
+        match (self.enabled, enabled) {
+            (false, true) => *self = Self::register(protocol, plan)?,
+            (true, false) => {
+                if self.idle {
+                    self.restore_outputs(protocol)
+                        .map_err(|source| IdleRuntimeError::RestoreOutputPower { source })?;
+                }
+                self.unregister(protocol);
+                self.enabled = false;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     pub(super) fn apply_batch<'a>(
         &mut self,
         protocol: &mut impl OutputPowerProtocol,
@@ -130,6 +155,7 @@ impl OutputPowerSet {
             let _ = protocol.destroy_output_power(output);
         }
         self.idle = false;
+        self.enabled = false;
     }
 
     fn add_output(
@@ -345,6 +371,35 @@ mod tests {
                 (output(2), OutputPowerMode::On),
             ]
         );
+    }
+
+    #[test]
+    fn disabling_monitor_policy_restores_outputs_before_releasing_controls() {
+        let mut protocol = FakeProtocol {
+            available: true,
+            outputs: vec![output(1), output(2)],
+            ..FakeProtocol::default()
+        };
+        let mut set = OutputPowerSet::register(&mut protocol, &plan()).unwrap();
+        set.set_idle(&mut protocol, true).unwrap();
+        let disabled = IdlePlan {
+            enabled: false,
+            ..plan()
+        };
+
+        set.reconfigure(&mut protocol, &disabled).unwrap();
+
+        assert_eq!(
+            protocol.set,
+            [
+                (output(1), OutputPowerMode::Off),
+                (output(2), OutputPowerMode::Off),
+                (output(1), OutputPowerMode::On),
+                (output(2), OutputPowerMode::On),
+            ]
+        );
+        assert_eq!(protocol.destroyed, [output(1), output(2)]);
+        assert_eq!(set.len(), 0);
     }
 
     #[test]

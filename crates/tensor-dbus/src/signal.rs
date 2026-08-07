@@ -122,6 +122,18 @@ impl MatchRule {
         &self.bus_expression
     }
 
+    /// Whether this rule currently has a sender that can emit matching signals.
+    ///
+    /// Rules without a sender and rules with a unique sender are immediately
+    /// available. A well-known sender becomes available after
+    /// [`Connection::add_match`] resolves its owner and tracks subsequent
+    /// [`Self::observe`] owner changes.
+    pub fn sender_available(&self) -> bool {
+        self.sender
+            .as_deref()
+            .is_none_or(|sender| sender.starts_with(':') || self.local_sender.is_some())
+    }
+
     /// Tests the message fields that can be evaluated without bus state.
     ///
     /// Unique senders are compared directly. A well-known sender is compared
@@ -448,10 +460,21 @@ mod tests {
     fn unique_sender_is_part_of_local_matching() {
         let rule = MatchRule::signal(Some(":1.7"), None, None, None).unwrap();
         assert_eq!(rule.local_sender.as_deref(), Some(":1.7"));
+        assert!(rule.sender_available());
 
-        let unresolved = MatchRule::signal(Some("org.tensor.Service"), None, None, None).unwrap();
+        let mut unresolved =
+            MatchRule::signal(Some("org.tensor.Service"), None, None, None).unwrap();
         assert_eq!(unresolved.local_sender, None);
+        assert!(!unresolved.sender_available());
         assert!(unresolved.owner_change_expression().is_some());
+        unresolved.set_owner(Some(":1.8".to_owned()));
+        assert!(unresolved.sender_available());
+
+        assert!(
+            MatchRule::signal(None, None, None, None)
+                .unwrap()
+                .sender_available()
+        );
     }
 
     #[test]

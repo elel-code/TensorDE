@@ -61,6 +61,12 @@ impl SensitiveFrame {
     }
 }
 
+impl compio::buf::IoBuf for SensitiveFrame {
+    fn as_init(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
 impl Drop for SensitiveFrame {
     fn drop(&mut self) {
         self.bytes.fill(0);

@@ -113,6 +113,7 @@ loop {
 | Compio display pump (optional) | yes (`feature = "compio"`) |
 | xdg toplevel + dialog + CSD | yes |
 | popup + layer shell | yes |
+| ext-session-lock-v1 + per-output Vulkan surfaces | yes |
 | fractional scale + viewporter | yes |
 | pointer / keyboard / touch / gestures | yes |
 | xkb composed text | yes |

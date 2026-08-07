@@ -3,8 +3,9 @@ _tensor_msg()
     local cur prev words cword
     _init_completion || return
 
-    local products="land wallpaper"
+    local products="land shell wallpaper"
     local land_commands="ping get-state get-outputs get-workspaces get-overview get-config-status reload-config watch-config set-layout spawn set-workspace move-focused-to-workspace activate-view move-view-to-workspace close-view minimize-focused restore-minimized set-output-position set-output-enabled set-output-scale quit"
+    local shell_commands="media"
     local wallpaper_commands="ping status outputs watch properties set pause resume stop"
 
     if [[ ${cword} -eq 1 ]]; then
@@ -14,6 +15,7 @@ _tensor_msg()
     if [[ ${cword} -eq 2 ]]; then
         case "${words[1]}" in
             land) COMPREPLY=($(compgen -W "${land_commands}" -- "${cur}")) ;;
+            shell) COMPREPLY=($(compgen -W "${shell_commands}" -- "${cur}")) ;;
             wallpaper) COMPREPLY=($(compgen -W "${wallpaper_commands}" -- "${cur}")) ;;
         esac
         return
@@ -39,6 +41,9 @@ _tensor_msg()
             ;;
         land:set-layout)
             COMPREPLY=($(compgen -W "scrolling floating master-stack" -- "${cur}"))
+            ;;
+        shell:media)
+            COMPREPLY=($(compgen -W "previous play-pause next" -- "${cur}"))
             ;;
     esac
 }

@@ -1,4 +1,5 @@
 mod land;
+mod shell;
 
 use std::{env, process::ExitCode};
 
@@ -10,6 +11,7 @@ fn main() -> ExitCode {
     };
     match product.as_str() {
         "land" => land::run(arguments.collect()),
+        "shell" => shell::run(arguments.collect()),
         "wallpaper" => match tensor_ipc::wallpaper::client::run(arguments.collect()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -31,6 +33,6 @@ fn main() -> ExitCode {
 
 fn print_help() {
     println!(
-        "usage:\n  tensor-msg land <command>\n  tensor-msg wallpaper <command>\n\nTensor Launcher, Greeter, Settings, and Idle do not expose IPC services."
+        "usage:\n  tensor-msg land <command>\n  tensor-msg shell media <action>\n  tensor-msg wallpaper <command>\n\nTensor Launcher, Greeter, Settings, and Idle do not expose IPC services."
     );
 }

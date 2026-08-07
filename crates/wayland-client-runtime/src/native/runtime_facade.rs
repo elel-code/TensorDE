@@ -88,6 +88,7 @@ impl NativeRuntime {
                 cursor_shape: caps.cursor_shape,
                 text_input_v3: caps.text_input,
                 layer_shell_v1: caps.layer_shell,
+                session_lock_v1: caps.session_lock,
                 // set_layer since v2; on_demand keyboard since v4; exclusive_edge since v5.
                 layer_shell_dynamic_layer: caps.layer_shell && layer_ver >= 2,
                 layer_shell_on_demand_keyboard: caps.layer_shell && layer_ver >= 4,
@@ -137,6 +138,12 @@ impl NativeRuntime {
         let mut native_events = std::mem::take(&mut self.drain_scratch);
         target.reserve(native_events.len());
         for event in native_events.drain(..) {
+            if let crate::NativeShellEvent::SessionLockSurfaceAdded { surface, .. }
+            | crate::NativeShellEvent::SessionLockConfigure { surface, .. } = &event
+            {
+                let public = self.surfaces.intern(*surface);
+                self.native_ids.insert(public, *surface);
+            }
             if let crate::NativeShellEvent::ActivationToken { surface, token } = event {
                 if let Some(request) = self.activation_pending.remove(&surface) {
                     let public = self.surfaces.intern(surface);
@@ -640,6 +647,9 @@ impl NativeRuntime {
             return Ok(vec![surface]);
         }
         if self.shell.destroy_popup(native).is_ok() {
+            return Ok(vec![surface]);
+        }
+        if self.shell.destroy_session_lock_surface(native).is_ok() {
             return Ok(vec![surface]);
         }
         self.shell

@@ -8,8 +8,15 @@ publish = false
 description = "Retained, bounded application launcher for TensorDE"
 
 [dependencies]
+compio = { version = "0.19", default-features = false, features = ["runtime", "time"] }
+tensor-ipc = { path = "../../crates/tensor-ipc" }
 tensor-kdl = { path = "../../crates/tensor-kdl" }
+tensor-present = { path = "../../crates/tensor-present" }
+tensor-runtime = { path = "../../crates/tensor-runtime" }
 thiserror = "2"
+vulkan-renderer = { path = "../../crates/vulkan-renderer" }
+wayland-client-runtime = { path = "../../crates/wayland-client-runtime", default-features = false, features = ["compio"] }
+xkeysym = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

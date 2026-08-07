@@ -96,10 +96,19 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for NativeShellState 
                             done: false,
                         },
                     );
+                    if state.session_lock.is_some() {
+                        state.pending_session_lock_outputs.push(name);
+                    }
                 }
             }
             wl_registry::Event::GlobalRemove { name } => {
                 if state.outputs.remove(&name).is_some() {
+                    if let Some(surface) = state.session_lock_outputs.get(&name).copied() {
+                        state.push(NativeShellEvent::SessionLockSurfaceRemoved {
+                            surface,
+                            output: name,
+                        });
+                    }
                     if state.output_powers.contains_key(&name) {
                         if let Some((_, retain_failed)) = state
                             .pending_output_power_destroy
@@ -495,6 +504,9 @@ impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for NativeShellSt
                     record.scale_factor = factor;
                 }
                 if let Some(record) = state.layers.get_mut(&id) {
+                    record.scale_factor = factor;
+                }
+                if let Some(record) = state.session_lock_surfaces.get_mut(&id) {
                     record.scale_factor = factor;
                 }
                 if let Some(frame) = state.csd_frames.get_mut(&id) {

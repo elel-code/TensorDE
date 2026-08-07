@@ -6,7 +6,7 @@ use bitflags::bitflags;
 
 use crate::{LogicalRect, SurfaceId};
 
-const MAX_SURROUNDING_TEXT_BYTES: usize = 4_000;
+pub const MAX_SURROUNDING_TEXT_BYTES: usize = 4_000;
 
 bitflags! {
     /// Hints that refine how an input method should handle an editable field.

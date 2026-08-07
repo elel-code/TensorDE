@@ -1,6 +1,7 @@
 use super::*;
 use crate::geometry::LogicalSize;
 use crate::surface::{DecorationPreference, ToplevelAttributes};
+use wayland_client::Proxy;
 
 #[test]
 fn native_runtime_connects_and_creates_toplevel_when_display_present() {
@@ -30,7 +31,8 @@ fn native_runtime_connects_and_creates_toplevel_when_display_present() {
             decorations: DecorationPreference::Server,
         })
         .expect("create toplevel");
-    assert!(runtime.surface_handle(surface).is_some());
+    let renderer_handle = runtime.surface_handle(surface).expect("renderer handle");
+    let leased_surface = renderer_handle.native().wl_surface().clone();
     runtime
         .set_title(surface, "native-runtime-retitled".into())
         .expect("set title");
@@ -63,6 +65,15 @@ fn native_runtime_connects_and_creates_toplevel_when_display_present() {
     let mut events = Vec::new();
     runtime.drain_events_into(&mut events);
     runtime.destroy_surface(surface).expect("destroy");
+    assert!(
+        leased_surface.is_alive(),
+        "runtime close must retain wl_surface while a renderer handle exists"
+    );
+    drop(renderer_handle);
+    assert!(
+        !leased_surface.is_alive(),
+        "last renderer handle drop must destroy the retired wl_surface"
+    );
 }
 
 #[test]
