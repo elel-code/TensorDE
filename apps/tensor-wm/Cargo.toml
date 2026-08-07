@@ -11,7 +11,7 @@ autobins = false
 [features]
 default = ["tty", "xwayland"]
 dmabuf-smoke = ["tty", "dep:wayland-client", "wayland-protocols/client"]
-systemd = ["dep:sd-notify", "dep:tensor-dbus"]
+systemd = ["dep:sd-notify"]
 tty = [
     "dep:drm",
     "dep:drm-ffi",
@@ -26,6 +26,7 @@ xwayland = ["dep:x11rb", "rustix/pipe"]
 [dependencies]
 appendlist = "1"
 arc-swap = "1"
+async-channel = "2"
 bevy_ecs = { version = "0.19", default-features = false, features = ["std"] }
 bytemuck = "1"
 clap = { version = "4", features = ["derive"] }
@@ -48,7 +49,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 signal-hook-registry = "1"
 tensor-drm = { path = "../../crates/tensor-drm", optional = true }
-tensor-dbus = { path = "../../crates/tensor-dbus", optional = true }
+tensor-dbus = { path = "../../crates/tensor-dbus" }
 tensor-event = { path = "../../crates/tensor-event" }
 tensor-host = { path = "../../crates/tensor-host" }
 tensor-ipc = { path = "../../crates/tensor-ipc" }

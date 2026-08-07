@@ -1,5 +1,7 @@
 use super::*;
+use crate::media::MediaAction;
 use tensor_util::OutputScale;
+use xkbcommon::xkb::keysyms;
 
 fn parse(document: &str) -> Result<Config, ConfigError> {
     Config::from_kdl(Path::new("test.kdl"), document)
@@ -62,6 +64,54 @@ fn parses_bounded_overview_geometry_policy() {
         parse(r#"overview outer-gap=100001"#),
         Err(ConfigError::Parse(ref diagnostic))
             if diagnostic.error_context().code == tensor_kdl::ErrorCode::ExceededLimit
+    ));
+}
+
+#[test]
+fn media_keys_are_typed_bounded_and_configurable() {
+    let config = parse(
+        r#"media-keys enabled=#true previous="XF86AudioRewind" play-pause="XF86AudioPause" next="XF86AudioForward""#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        config.media_keys.action_for(keysyms::KEY_XF86AudioRewind),
+        Some(MediaAction::Previous)
+    );
+    assert_eq!(
+        config.media_keys.action_for(keysyms::KEY_XF86AudioPause),
+        Some(MediaAction::PlayPause)
+    );
+    assert_eq!(
+        config.media_keys.action_for(keysyms::KEY_XF86AudioForward),
+        Some(MediaAction::Next)
+    );
+    assert_eq!(Config::default().restart_required_change(&config), None);
+
+    let disabled = parse(r#"media-keys enabled=#false"#).unwrap();
+    assert_eq!(
+        disabled.media_keys.action_for(keysyms::KEY_XF86AudioPlay),
+        None
+    );
+    assert!(matches!(
+        parse(r#"media-keys previous="TensorNotAKeysym""#),
+        Err(ConfigError::MediaKeys(
+            MediaKeyConfigError::UnknownKeysym { .. }
+        ))
+    ));
+    let oversized = format!(
+        "media-keys previous=\"{}\"",
+        "x".repeat(super::media::MAX_MEDIA_KEYSYM_NAME_BYTES + 1)
+    );
+    assert!(matches!(
+        parse(&oversized),
+        Err(ConfigError::MediaKeys(
+            MediaKeyConfigError::InvalidKeysymName { .. }
+        ))
+    ));
+    assert!(matches!(
+        parse(r#"media-keys previous="XF86AudioPlay" play-pause="XF86AudioPlay""#),
+        Err(ConfigError::MediaKeys(MediaKeyConfigError::DuplicateKeysym))
     ));
 }
 

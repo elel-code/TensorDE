@@ -21,6 +21,7 @@ use crate::{
 
 mod appearance;
 mod diagnostic;
+mod media;
 mod output;
 mod reload;
 mod scalar;
@@ -32,6 +33,8 @@ pub use diagnostic::{
     ConfigDiagnostic, ConfigDiagnosticCategory, ConfigDiagnosticMetadata,
     MAX_DIAGNOSTIC_PATH_BYTES, MAX_DIAGNOSTIC_SUMMARY_BYTES, MAX_VALIDATION_COMMAND_BYTES,
 };
+pub(crate) use media::MediaKeyConfig;
+pub use media::MediaKeyConfigError;
 pub use output::{OutputMode, OutputRule};
 pub use reload::{ConfigReloadFailure, ConfigReloadResult, ConfigTransaction};
 use scalar::{
@@ -51,6 +54,7 @@ pub struct Config {
     pub(crate) initial_layout: LayoutKind,
     pub(crate) layout_options: LayoutOptions,
     pub(crate) overview_options: OverviewOptions,
+    pub(crate) media_keys: MediaKeyConfig,
     pub(crate) workspaces: WorkspaceConfig,
     pub(crate) ipc_socket: PathBuf,
     pub(crate) gpu_preference: GpuPreference,
@@ -204,6 +208,7 @@ impl Default for Config {
             initial_layout: LayoutKind::default(),
             layout_options: LayoutOptions::default(),
             overview_options: OverviewOptions::default(),
+            media_keys: MediaKeyConfig::default(),
             workspaces: WorkspaceConfig::default(),
             ipc_socket: env::var_os("XDG_RUNTIME_DIR")
                 .map(|path| PathBuf::from(path).join("tensor.sock"))
@@ -230,6 +235,8 @@ struct FileConfig {
     workspaces: Option<WorkspaceFileConfig>,
     #[kdl(child)]
     overview: Option<OverviewFileConfig>,
+    #[kdl(child(name = "media-keys"))]
+    media_keys: Option<MediaKeysFileConfig>,
     #[kdl(child(name = "ipc-socket"), unwrap(argument))]
     ipc_socket: Option<String>,
     #[kdl(child, unwrap(argument))]
@@ -270,6 +277,24 @@ impl OverviewFileConfig {
             self.workspace_gap
                 .map_or(defaults.workspace_gap, |value| value.0),
         )
+    }
+}
+
+#[derive(Debug, Default, Decode)]
+struct MediaKeysFileConfig {
+    #[kdl(property)]
+    enabled: Option<bool>,
+    #[kdl(property)]
+    previous: Option<String>,
+    #[kdl(property(name = "play-pause"))]
+    play_pause: Option<String>,
+    #[kdl(property)]
+    next: Option<String>,
+}
+
+impl MediaKeysFileConfig {
+    fn resolve(self) -> Result<MediaKeyConfig, MediaKeyConfigError> {
+        media::resolve(self.enabled, self.previous, self.play_pause, self.next)
     }
 }
 
@@ -367,6 +392,11 @@ impl FileConfig {
             .overview
             .map(OverviewFileConfig::resolve)
             .unwrap_or_default();
+        let media_keys = self
+            .media_keys
+            .map(MediaKeysFileConfig::resolve)
+            .transpose()?
+            .unwrap_or_default();
         let gpu_preference = self
             .gpu
             .as_deref()
@@ -407,6 +437,7 @@ impl FileConfig {
             initial_layout,
             layout_options,
             overview_options,
+            media_keys,
             workspaces,
             ipc_socket,
             gpu_preference,
@@ -732,6 +763,8 @@ pub enum ConfigError {
     Appearance(#[from] AppearanceConfigError),
     #[error(transparent)]
     Workspaces(#[from] WorkspaceConfigError),
+    #[error(transparent)]
+    MediaKeys(#[from] MediaKeyConfigError),
     #[error("configuration field `{field}` requires a compositor restart")]
     ReloadRequiresRestart { field: &'static str },
 }

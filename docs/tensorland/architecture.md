@@ -67,6 +67,16 @@ eventfd read must complete before the compositor drains those outcomes.
 Queue saturation rejects new submissions or drops late completion logs rather than blocking the
 compositor thread. The worker owns neither Wayland objects nor DRM/KMS descriptors.
 
+Media-key delivery follows the same completion boundary without moving media
+policy into the compositor. Tensorland matches the hot-reloadable, bounded XKB
+keysyms on its input turn and performs one non-blocking enqueue. A dedicated
+Compio/io_uring worker retains the session-bus connection and calls the
+versioned `org.tensor.Shell1.Media` object. Tensor Shell alone selects the
+active MPRIS player, validates its capabilities, serializes actions, and owns
+playback OSD state. A missing Shell, slow D-Bus reply, or saturated 16-action
+queue is therefore explicit and logged without delaying Wayland input or frame
+submission.
+
 IPC also carries runtime **workspace** and **output layout** commands
 (`set-workspace`, `set-output-position` / `enabled` / `scale`) that mutate value-only
 policy and replan through the tty backend without a second configuration language. IPC accept,
@@ -80,7 +90,7 @@ the decoded batch before EOF. Every complete frame decoded from one bounded read
 before the connection awaits the batch's one-shot completions; replies are still written in input
 order, so submission gains concurrency without making policy order completion-dependent. The frame
 decoder scans a completed-read batch linearly and compacts its retained fragmented tail once, rather
-than shifting the unread suffix after every decoded frame. Version 7 server frames share a tagged
+than shifting the unread suffix after every decoded frame. Version 8 server frames share a tagged
 response/event envelope. An accepted `config_reload` subscription becomes a receive-only Compio
 stream with independent disconnect detection and event writes; the compositor registry and every
 subscriber queue are fixed-capacity, and a slow subscriber is disconnected instead of applying

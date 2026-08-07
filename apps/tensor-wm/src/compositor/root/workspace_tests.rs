@@ -361,3 +361,92 @@ fn overview_inventory_is_a_bounded_stable_prefix() {
     let response = crate::ipc::Response::new(1, ResultBody::Overview(overview));
     assert!(crate::ipc::encode(&response).is_ok());
 }
+
+#[test]
+fn ipc_spawn_rejects_empty_argv() {
+    let mut state = runtime_state();
+    let (worker, _) = live_worker();
+    let submitter = worker.submitter();
+
+    let response = handle_ipc_request(
+        Request::new(
+            14,
+            Command::Spawn {
+                argv: Vec::new(),
+                cwd: None,
+            },
+        ),
+        &mut state,
+        &submitter,
+    );
+
+    let ResultBody::Error(error) = response.response.result else {
+        panic!("expected spawn rejection");
+    };
+    assert_eq!(error.code, "invalid_argument");
+    drop(worker);
+}
+
+#[test]
+fn ipc_spawn_rejects_a_relative_working_directory() {
+    let mut state = runtime_state();
+    let (worker, _) = live_worker();
+    let submitter = worker.submitter();
+
+    let response = handle_ipc_request(
+        Request::new(
+            14,
+            Command::Spawn {
+                argv: vec!["true".to_owned()],
+                cwd: Some("relative".to_owned()),
+            },
+        ),
+        &mut state,
+        &submitter,
+    );
+
+    let ResultBody::Error(error) = response.response.result else {
+        panic!("expected spawn rejection");
+    };
+    assert_eq!(error.code, "invalid_argument");
+    assert!(error.message.contains("absolute"));
+    drop(worker);
+}
+
+#[test]
+fn ipc_spawn_queues_on_a_live_worker() {
+    use std::time::Duration;
+
+    let mut state = runtime_state();
+    let (worker, receiver) = live_worker();
+    let submitter = worker.submitter();
+    let program = format!("tensor-missing-ipc-spawn-{}", std::process::id());
+
+    let response = handle_ipc_request(
+        Request::new(
+            15,
+            Command::Spawn {
+                argv: vec![program.clone()],
+                cwd: None,
+            },
+        ),
+        &mut state,
+        &submitter,
+    );
+    assert!(matches!(response.response.result, ResultBody::Accepted));
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let outcome = loop {
+        if let Some(outcome) = receiver.try_recv() {
+            break outcome;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("launch worker should report the missing program");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(outcome.id(), 15);
+    assert_eq!(outcome.program(), std::ffi::OsStr::new(&program));
+    assert!(outcome.result().is_err());
+    drop(worker);
+}

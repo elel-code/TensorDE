@@ -17,6 +17,7 @@ use tensor_runtime::{
 use thiserror::Error;
 use tracing::{error, info, warn};
 
+use crate::media::{MediaActionWorker, MediaWorkerError};
 use config::drain_config_reload_outcomes;
 use environment::apply_user_environment;
 #[cfg(feature = "tty")]
@@ -88,6 +89,7 @@ pub struct Compositor {
     config_reload_worker: Option<ConfigReloadWorker>,
     config_watcher: Option<ConfigWatcher>,
     launch_worker: Option<LaunchWorker>,
+    media_worker: MediaActionWorker,
     startup_commands: Vec<StartupCommand>,
     environment: EnvironmentConfig,
     cursor: CursorConfig,
@@ -102,6 +104,7 @@ impl Compositor {
             initial_layout,
             layout_options,
             overview_options,
+            media_keys,
             workspaces,
             ipc_socket,
             gpu_preference,
@@ -121,6 +124,7 @@ impl Compositor {
         )?;
         protocol.state_mut().configure_workspaces(&workspaces);
         protocol.state_mut().overview_options = overview_options;
+        protocol.state_mut().media_keys = media_keys;
         protocol
             .state_mut()
             .apply_runtime_policy(cursor.clone(), debug);
@@ -141,6 +145,10 @@ impl Compositor {
         let ipc = IpcServer::bind(ipc_socket)?;
         let completion_wake = Arc::new(EventfdWake::new()?);
         let completion_sink = Arc::clone(&completion_wake) as Arc<dyn WakeSink>;
+        let media_worker = MediaActionWorker::new()?;
+        protocol
+            .state_mut()
+            .install_media_action_submitter(media_worker.submitter());
         let wayland_completions =
             WaylandCompletionBridges::install(&mut protocol, Arc::clone(&completion_sink))?;
         let (launch_outcome_sender, launch_outcomes) =
@@ -209,6 +217,7 @@ impl Compositor {
             config_reload_worker: None,
             config_watcher: None,
             launch_worker: None,
+            media_worker,
             startup_commands,
             environment,
             cursor,
@@ -447,6 +456,7 @@ impl Compositor {
             config_reload_worker,
             config_watcher,
             launch_worker,
+            media_worker,
             startup_commands,
             environment,
             cursor: _,
@@ -473,6 +483,7 @@ impl Compositor {
             config_reload_sender,
             config_reload_worker,
             config_watcher,
+            media_worker,
             startup_commands,
             environment,
             systemd,
@@ -551,6 +562,8 @@ pub enum CompositorError {
     DrmNode(#[from] DrmNodeError),
     #[error(transparent)]
     LaunchWorker(#[from] LaunchWorkerError),
+    #[error(transparent)]
+    MediaWorker(#[from] MediaWorkerError),
     #[error("configuration reload worker failed: {0}")]
     ConfigReloadWorker(String),
     #[error("configuration watcher failed: {0}")]
@@ -722,61 +735,5 @@ mod tests {
                 .map(|value| value.to_string_lossy().into_owned()),
             Some(token)
         );
-    }
-
-    #[test]
-    fn ipc_spawn_rejects_empty_argv() {
-        let mut state = runtime_state();
-        let (worker, _) = live_worker();
-        let submitter = worker.submitter();
-
-        let response = handle_ipc_request(
-            Request::new(14, IpcCommand::Spawn { argv: Vec::new() }),
-            &mut state,
-            &submitter,
-        );
-
-        let ResultBody::Error(error) = response.response.result else {
-            panic!("expected spawn rejection");
-        };
-        assert_eq!(error.code, "invalid_argument");
-        drop(worker);
-    }
-
-    #[test]
-    fn ipc_spawn_queues_on_a_live_worker() {
-        use std::time::Duration;
-
-        let mut state = runtime_state();
-        let (worker, receiver) = live_worker();
-        let submitter = worker.submitter();
-        let program = format!("tensor-missing-ipc-spawn-{}", std::process::id());
-
-        let response = handle_ipc_request(
-            Request::new(
-                15,
-                IpcCommand::Spawn {
-                    argv: vec![program.clone()],
-                },
-            ),
-            &mut state,
-            &submitter,
-        );
-        assert!(matches!(response.response.result, ResultBody::Accepted));
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let outcome = loop {
-            if let Some(outcome) = receiver.try_recv() {
-                break outcome;
-            }
-            if std::time::Instant::now() >= deadline {
-                panic!("launch worker should report the missing program");
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        };
-        assert_eq!(outcome.id(), 15);
-        assert_eq!(outcome.program(), std::ffi::OsStr::new(&program));
-        assert!(outcome.result().is_err());
-        drop(worker);
     }
 }

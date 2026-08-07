@@ -188,8 +188,8 @@ pub(super) fn handle_ipc_request_with_config(
             state.world.reset_layout_states();
             ResultBody::Accepted
         }
-        IpcCommand::Spawn { argv } => {
-            match queue_spawn(request_id, argv, launch_submitter, state) {
+        IpcCommand::Spawn { argv, cwd } => {
+            match queue_spawn(request_id, argv, cwd, launch_submitter, state) {
                 Ok(()) => ResultBody::Accepted,
                 Err((code, message)) => {
                     return IpcReply::new(Response::error(request_id, code, message));
@@ -365,6 +365,7 @@ fn apply_output_ipc(
 fn queue_spawn(
     request_id: u64,
     argv: Vec<String>,
+    cwd: Option<String>,
     launch_submitter: &LaunchSubmitter,
     state: &mut RuntimeState,
 ) -> Result<(), (&'static str, String)> {
@@ -380,18 +381,29 @@ fn queue_spawn(
             "spawn program must not be empty".to_owned(),
         ));
     }
+    if let Some(path) = cwd.as_deref()
+        && !std::path::Path::new(path).is_absolute()
+    {
+        return Err((
+            "invalid_argument",
+            "spawn working directory must be absolute".to_owned(),
+        ));
+    }
     let token = state.issue_spawn_activation_token().map_err(|error| {
         (
             "activation_token",
             format!("could not issue launch activation token: {error}"),
         )
     })?;
-    let request = LaunchRequest::new(
+    let mut request = LaunchRequest::new(
         request_id,
         program.as_str(),
         args.iter().map(String::as_str),
     )
     .with_activation_token(token);
+    if let Some(cwd) = cwd {
+        request = request.with_working_directory(cwd);
+    }
     match launch_submitter.submit(request) {
         Ok(()) => {
             info!(request_id, program, "IPC spawn queued");

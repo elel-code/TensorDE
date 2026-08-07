@@ -55,7 +55,8 @@ pub(super) use surface_tree::OutputPresentationFeedback;
 #[cfg(feature = "xwayland")]
 use crate::protocol::xwayland::{X11Wm, XWaylandShellState};
 use crate::{
-    config::{CursorConfig, DebugConfig},
+    config::{CursorConfig, DebugConfig, MediaKeyConfig},
+    media::MediaActionSubmitter,
     protocol::serial::next_serial,
 };
 use std::collections::HashMap;
@@ -146,6 +147,8 @@ pub(crate) struct RuntimeState {
     pub(crate) world: CompositorWorld,
     pub(crate) layout: LayoutEngine,
     pub(crate) overview_options: OverviewOptions,
+    pub(crate) media_keys: MediaKeyConfig,
+    pub(crate) media_action_submitter: Option<MediaActionSubmitter>,
     pub(crate) renderer: Option<VulkanRenderer>,
     pub(super) security_context_submitter: Option<SecurityContextSubmitter>,
     #[cfg(feature = "tty")]
@@ -234,6 +237,8 @@ impl RuntimeState {
             world: CompositorWorld::with_appearance(appearance),
             layout,
             overview_options: OverviewOptions::default(),
+            media_keys: MediaKeyConfig::default(),
+            media_action_submitter: None,
             renderer: None,
             security_context_submitter: None,
             #[cfg(feature = "tty")]
@@ -299,6 +304,14 @@ impl RuntimeState {
         {
             let _ = (cursor, debug);
         }
+    }
+
+    pub(crate) fn install_media_action_submitter(&mut self, submitter: MediaActionSubmitter) {
+        assert!(
+            self.media_action_submitter.is_none(),
+            "media action submitter was installed more than once"
+        );
+        self.media_action_submitter = Some(submitter);
     }
 
     pub(crate) fn install_renderer(&mut self, renderer: VulkanRenderer) {

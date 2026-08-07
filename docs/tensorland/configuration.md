@@ -46,6 +46,8 @@ workspaces default-count=1 {
 
 overview outer-gap=24 workspace-gap=16
 
+media-keys enabled=#true previous="XF86AudioPrev" play-pause="XF86AudioPlay" next="XF86AudioNext"
+
 ipc-socket "/run/user/1000/tensor.sock"
 gpu "discrete"
 // Optional DRM primary or render node. Without this, Tensorland capability ranking selects the pair.
@@ -130,6 +132,18 @@ then chooses the deterministic integer grid that gives workspace cards the large
 preserving the primary work area's aspect ratio. These values control geometry, not Shell chrome;
 Tensor Shell may draw labels and controls inside the published cards but must use the compositor's
 published destination and clip rectangles for window content and pointer targets.
+
+`media-keys` controls the compositor-owned physical key matching for Previous,
+PlayPause, and Next. It defaults to `XF86AudioPrev`, `XF86AudioPlay`, and
+`XF86AudioNext`; `enabled=#false` lets those keys pass to the focused client.
+Each override is an exact, case-sensitive XKB keysym name of at most 128 bytes,
+and the three names must resolve to distinct keysyms. The mapping hot reloads
+atomically with the other live policy. A matched press is consumed and placed
+on a 16-entry non-blocking queue; a dedicated io_uring-backed Compio worker
+reuses its session-bus connection and calls `org.tensor.Shell1.Media`. Tensor
+Shell remains the sole active-player and MPRIS capability-policy owner, so
+Tensorland never discovers or controls players directly and input never waits
+for D-Bus.
 
 Each `output` node matches the connector name in its first argument. Its optional `scale` property is
 constrained to `0.1..=10.0` and quantized to the nearest `1/120`; this is the same representation
@@ -284,7 +298,7 @@ an atomic replacement path. Rejection preserves the old generation and live stat
 `tensor-msg land reload-config` for an explicit request and `tensor-msg land get-config-status` to inspect the
 active generation and last bounded failure.
 
-IPC never puts complete KDL source on the wire. Version 7 `config_reload` subscriptions publish
+IPC never puts complete KDL source on the wire. Version 8 `config_reload` subscriptions publish
 applied generations and bounded failure metadata; `tensor-msg land watch-config` exposes that stream.
 `tensor-shell`, not the compositor renderer, will own the transient visual and accessible
 notification. This mirrors Niri's useful split: the on-screen notice is short while its `validate`

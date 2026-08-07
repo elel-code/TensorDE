@@ -1,7 +1,7 @@
 # IPC and Portal Gates
 
 The compositor control protocol uses a Unix socket, a little-endian `u32` frame length, and JSON.
-Every request carries a protocol version and request ID. Version 7 wraps every server response or
+Every request carries a protocol version and request ID. Version 8 wraps every server response or
 event in an explicit `response` / `event` envelope, so a completed read may safely contain the
 subscription acknowledgement and its first event. Frames are capped at 1 MiB, the socket is mode
 `0600`, bind never removes an existing path, and drop removes only the inode owned by that server
@@ -32,7 +32,7 @@ retained protocol window and renderer resource identity rather than asking the c
 Restore reports `unknown_view` for a stale stable ID and `not_minimized` only for a live view that
 has no retained minimize origin.
 
-Version 7 retains the deterministic `get-overview` plan for every regular workspace and
+Version 8 retains the deterministic `get-overview` plan for every regular workspace and
 each hidden workspace whose KDL policy permits overview display. The response names the primary
 work area, every workspace-card rectangle, and each view's current-or-last-valid source rectangle,
 transformed destination, and clip. Each view also names its root family, placement kind, focus state,
@@ -60,8 +60,9 @@ keyboard focus never remains on a hidden surface.
 geometry, fractional scale, mode size/refresh, and whether the head hosts the default workspace
 viewport). Clients never receive Wayland output resources.
 
-`spawn` accepts a direct argv array (one program and optional arguments). The compositor queues the
-command on the asynchronous launch worker and returns `accepted` as soon as the request is enqueued;
+`spawn` accepts a direct argv array (one program and optional arguments) plus an optional absolute
+working directory. Relative working directories are rejected at the IPC trust boundary. The
+compositor queues the command on the asynchronous launch worker and returns `accepted` as soon as the request is enqueued;
 process creation and optional systemd scope setup complete off the compositor thread. Each launch mints
 an external `xdg-activation` token and exports it as `XDG_ACTIVATION_TOKEN` (and
 `DESKTOP_STARTUP_ID` for legacy clients) on the child environment. Empty argv is rejected with
@@ -88,7 +89,7 @@ the last source-free bounded failure metadata. Filesystem changes reach that sam
 configuration watcher, and completed candidates commit on the compositor thread before the turn's
 IPC requests are answered.
 
-Version 7 adds an explicit `subscribe` request rather than sending unsolicited frames to ordinary
+Version 8 retains the explicit `subscribe` request rather than sending unsolicited frames to ordinary
 request/reply clients. A subscription must be the final complete request in its read batch and names
 one to eight unique topics; after `accepted`, that connection is receive-only. The Compio task splits
 the Unix stream so one submitted read detects peer closure while the independent write half awaits

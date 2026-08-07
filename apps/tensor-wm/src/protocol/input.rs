@@ -22,7 +22,7 @@ use tensor_event::{
     PointerGestureEvent, RelativeMotionEvent,
 };
 
-use crate::backend::LibinputEvent;
+use crate::{backend::LibinputEvent, config::MediaKeyConfig, media::MediaAction};
 
 use super::{
     globals::pointer_constraints::ConstraintMotion,
@@ -271,6 +271,17 @@ impl RuntimeState {
             }
             // A VT switch can prevent a key release from reaching us.
             intercepted = true;
+        } else if let Some(action) =
+            media_action_for_key(self.media_keys, update.keysym, update.pressed)
+        {
+            intercepted = true;
+            if let Some(submitter) = self.media_action_submitter.as_ref() {
+                if let Err(error) = submitter.submit(action) {
+                    warn!(%error, "media key action was not queued");
+                }
+            } else {
+                warn!(action = ?action, "media key action has no D-Bus submitter");
+            }
         } else if !shortcuts_inhibited && update.pressed && update.modifiers.logo {
             if let Some(index) = workspace_index_for_keysym(update.keysym) {
                 if update.modifiers.shift {
@@ -761,4 +772,8 @@ impl RuntimeState {
             .pointer_constraints
             .focus_changed(None, location);
     }
+}
+
+fn media_action_for_key(config: MediaKeyConfig, keysym: u32, pressed: bool) -> Option<MediaAction> {
+    pressed.then(|| config.action_for(keysym)).flatten()
 }

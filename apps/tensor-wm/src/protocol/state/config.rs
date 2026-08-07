@@ -19,6 +19,7 @@ impl RuntimeState {
             self.reflow_default_workspace();
         }
         self.overview_options = config.overview_options;
+        self.media_keys = config.media_keys;
 
         let appearance_changed = self.world.set_appearance(config.appearance);
         self.apply_runtime_policy(config.cursor.clone(), config.debug);

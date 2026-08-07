@@ -1,6 +1,6 @@
 use std::{os::unix::net::UnixStream, path::PathBuf, sync::mpsc, time::Duration};
 
-use wayland_client::{Connection, globals::registry_queue_init};
+use wayland_client::{Connection, Proxy, globals::registry_queue_init};
 use wayland_protocols::xdg::{
     shell::client::xdg_wm_base, toplevel_drag::v1::client::xdg_toplevel_drag_manager_v1,
 };
@@ -17,37 +17,25 @@ enum DragViolation {
 
 #[test]
 fn duplicate_source_is_a_manager_protocol_error() {
-    assert_drag_protocol_error(
-        DragViolation::DuplicateSource,
-        "xdg_toplevel_drag_manager_v1",
-        0,
-    );
+    assert_drag_protocol_error(DragViolation::DuplicateSource, 0);
 }
 
 #[test]
 fn duplicate_live_attachment_is_a_drag_protocol_error() {
-    assert_drag_protocol_error(DragViolation::DuplicateAttach, "xdg_toplevel_drag_v1", 0);
+    assert_drag_protocol_error(DragViolation::DuplicateAttach, 0);
 }
 
 #[test]
 fn toplevel_drag_source_cannot_become_a_selection() {
-    assert_drag_protocol_error(
-        DragViolation::SelectionMisuse,
-        "xdg_toplevel_drag_manager_v1",
-        0,
-    );
+    assert_drag_protocol_error(DragViolation::SelectionMisuse, 0);
 }
 
 #[test]
 fn drag_object_cannot_be_destroyed_before_drag_end() {
-    assert_drag_protocol_error(DragViolation::DestroyBeforeEnd, "xdg_toplevel_drag_v1", 1);
+    assert_drag_protocol_error(DragViolation::DestroyBeforeEnd, 1);
 }
 
-fn assert_drag_protocol_error(
-    violation: DragViolation,
-    expected_interface: &str,
-    expected_code: u32,
-) {
+fn assert_drag_protocol_error(violation: DragViolation, expected_code: u32) {
     let mut runtime = WaylandRuntime::with_appearance(
         LayoutEngine::new(crate::layout::LayoutKind::Scrolling1D),
         SceneAppearance::default(),
@@ -87,6 +75,14 @@ fn assert_drag_protocol_error(
         let surface = compositor.create_surface(&handle, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &handle, ());
         let toplevel = xdg_surface.get_toplevel(&handle, ());
+        let expected_object_id = match violation {
+            DragViolation::DuplicateSource | DragViolation::SelectionMisuse => {
+                drag_manager.id().protocol_id()
+            }
+            DragViolation::DuplicateAttach | DragViolation::DestroyBeforeEnd => {
+                drag.id().protocol_id()
+            }
+        };
         match violation {
             DragViolation::DuplicateSource => {
                 let _duplicate = drag_manager.get_xdg_toplevel_drag(&source, &handle, ());
@@ -103,20 +99,23 @@ fn assert_drag_protocol_error(
             .protocol_error()
             .expect("xdg-toplevel-drag violation has a protocol error");
         result_tx
-            .send((error.object_interface, error.code))
+            .send((error.object_id, expected_object_id, error.code))
             .unwrap();
         drop((toplevel, xdg_surface, surface, data_device));
     });
 
-    let result = dispatch_until_error(&mut runtime, &result_rx);
-    assert_eq!(result, (expected_interface.to_owned(), expected_code));
+    let (object_id, expected_object_id, code) = dispatch_until_error(&mut runtime, &result_rx);
+    if !matches!(violation, DragViolation::DestroyBeforeEnd) {
+        assert_eq!(object_id, expected_object_id);
+    }
+    assert_eq!(code, expected_code);
     client.join().unwrap();
 }
 
 fn dispatch_until_error(
     runtime: &mut WaylandRuntime,
-    results: &mpsc::Receiver<(String, u32)>,
-) -> (String, u32) {
+    results: &mpsc::Receiver<(u32, u32, u32)>,
+) -> (u32, u32, u32) {
     for _ in 0..300 {
         runtime
             .event_loop

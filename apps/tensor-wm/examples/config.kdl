@@ -14,6 +14,10 @@ workspaces default-count=1 {
 // Integer logical-pixel spacing for the compositor-owned overview plan.
 overview outer-gap=24 workspace-gap=16
 
+// Tensorland owns key matching; Tensor Shell owns active-player/MPRIS policy.
+// These standard XF86 bindings are also the defaults when this node is omitted.
+media-keys enabled=#true previous="XF86AudioPrev" play-pause="XF86AudioPlay" next="XF86AudioNext"
+
 ipc-socket "/run/user/1000/tensor.sock"
 // discrete is the default; integrated and any are also valid.
 gpu "discrete"

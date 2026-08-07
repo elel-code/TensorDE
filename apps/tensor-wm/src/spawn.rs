@@ -1,6 +1,9 @@
 mod launcher;
 mod worker;
 
+#[cfg(test)]
+mod launcher_tests;
+
 #[cfg(feature = "systemd")]
 mod scope;
 

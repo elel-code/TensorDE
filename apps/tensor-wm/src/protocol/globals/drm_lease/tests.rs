@@ -3,7 +3,7 @@ use std::{os::unix::net::UnixStream, sync::mpsc, time::Duration};
 use tensor_drm::LeaseConnector;
 use tensor_host::ConnectorId;
 use wayland_client::{
-    Connection, Dispatch, QueueHandle,
+    Connection, Dispatch, Proxy, QueueHandle,
     globals::{GlobalListContents, registry_queue_init},
     protocol::wl_registry,
 };
@@ -167,6 +167,7 @@ fn empty_and_duplicate_requests_are_wire_errors() {
             let mut client_state = LeaseClient::default();
             queue.roundtrip(&mut client_state).unwrap();
             let request = device.create_lease_request(&handle, ());
+            let expected_object_id = request.id().protocol_id();
             if duplicate {
                 let connector = &client_state.connectors[0];
                 request.request_connector(connector);
@@ -177,14 +178,15 @@ fn empty_and_duplicate_requests_are_wire_errors() {
             assert!(queue.roundtrip(&mut client_state).is_err());
             let error = connection.protocol_error().unwrap();
             result_tx
-                .send((error.object_interface, error.code))
+                .send((error.object_id, expected_object_id, error.code))
                 .unwrap();
         });
 
-        assert_eq!(
-            dispatch_until(&mut state, &result_rx),
-            ("wp_drm_lease_request_v1".to_owned(), expected_code)
-        );
+        let (object_id, expected_object_id, code) = dispatch_until(&mut state, &result_rx);
+        if duplicate {
+            assert_eq!(object_id, expected_object_id);
+        }
+        assert_eq!(code, expected_code);
         client.join().unwrap();
     }
 }

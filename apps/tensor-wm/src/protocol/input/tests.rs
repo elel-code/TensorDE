@@ -3,13 +3,18 @@ use tensor_util::{LogicalPoint, LogicalRect, OutputScale};
 use wayland_server::Display;
 use xkbcommon::xkb::keysyms;
 
+use super::media_action_for_key;
 use super::pointer_geometry::{
     constrain_pointer_location, replace_non_finite_pointer_location,
     sanitize_relative_pointer_delta, virtual_terminal_for_keysym,
 };
-use crate::layout::{LayoutEngine, LayoutKind};
 use crate::protocol::globals::output::Output;
 use crate::protocol::state::RuntimeState;
+use crate::{
+    config::MediaKeyConfig,
+    layout::{LayoutEngine, LayoutKind},
+    media::MediaAction,
+};
 
 #[test]
 fn virtual_terminal_recovery_keys_are_complete_and_bounded() {
@@ -23,6 +28,19 @@ fn virtual_terminal_recovery_keys_are_complete_and_bounded() {
     );
     assert_eq!(
         virtual_terminal_for_keysym(keysyms::KEY_XF86Switch_VT_12 + 1),
+        None
+    );
+}
+
+#[test]
+fn media_bindings_dispatch_once_on_press() {
+    let config = MediaKeyConfig::default();
+    assert_eq!(
+        media_action_for_key(config, keysyms::KEY_XF86AudioPlay, true),
+        Some(MediaAction::PlayPause)
+    );
+    assert_eq!(
+        media_action_for_key(config, keysyms::KEY_XF86AudioPlay, false),
         None
     );
 }

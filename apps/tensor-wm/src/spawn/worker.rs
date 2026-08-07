@@ -34,6 +34,7 @@ pub struct LaunchRequest {
     id: u64,
     program: OsString,
     args: Vec<OsString>,
+    working_directory: Option<OsString>,
     /// Optional `XDG_ACTIVATION_TOKEN` string minted by the compositor.
     activation_token: Option<OsString>,
 }
@@ -48,8 +49,14 @@ impl LaunchRequest {
             id,
             program: program.into(),
             args: args.into_iter().map(Into::into).collect(),
+            working_directory: None,
             activation_token: None,
         }
+    }
+
+    pub fn with_working_directory(mut self, path: impl Into<OsString>) -> Self {
+        self.working_directory = Some(path.into());
+        self
     }
 
     pub fn with_activation_token(mut self, token: impl Into<OsString>) -> Self {
@@ -67,6 +74,10 @@ impl LaunchRequest {
 
     pub fn activation_token(&self) -> Option<&OsStr> {
         self.activation_token.as_deref()
+    }
+
+    pub fn working_directory(&self) -> Option<&OsStr> {
+        self.working_directory.as_deref()
     }
 }
 
@@ -168,15 +179,21 @@ fn run(
             id,
             program,
             args,
+            working_directory,
             activation_token,
         } = request;
         let result = match activation_token {
-            Some(token) => launcher.spawn_with_activation(
+            Some(token) => launcher.spawn_with_activation_in(
                 program.as_os_str(),
                 args.iter().map(OsString::as_os_str),
+                working_directory.as_deref(),
                 token,
             ),
-            None => launcher.spawn(program.as_os_str(), args.iter().map(OsString::as_os_str)),
+            None => launcher.spawn_in(
+                program.as_os_str(),
+                args.iter().map(OsString::as_os_str),
+                working_directory.as_deref(),
+            ),
         };
         let outcome = LaunchOutcome {
             id,
@@ -222,15 +239,17 @@ fn run_async(
             id,
             program,
             args,
+            working_directory,
             activation_token,
         } = request;
         let result = runtime.block_on(async {
             match activation_token {
                 Some(token) => {
                     launcher
-                        .spawn_with_activation_async(
+                        .spawn_with_activation_in_async(
                             program.as_os_str(),
                             args.iter().map(OsString::as_os_str),
+                            working_directory.as_deref(),
                             token,
                             &mut connection,
                         )
@@ -238,9 +257,10 @@ fn run_async(
                 }
                 None => {
                     launcher
-                        .spawn_async(
+                        .spawn_in_async(
                             program.as_os_str(),
                             args.iter().map(OsString::as_os_str),
+                            working_directory.as_deref(),
                             &mut connection,
                         )
                         .await
@@ -367,5 +387,41 @@ mod tests {
         assert_eq!(outcome.id(), 73);
         assert_eq!(outcome.program(), OsStr::new(&program));
         assert!(matches!(outcome.result(), Err(SpawnError::Command { .. })));
+    }
+
+    #[test]
+    fn worker_applies_the_requested_working_directory_without_a_shell() {
+        let directory = PathBuf::from(format!(
+            "target/tensor-launch-cwd-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let marker = directory.join("marker");
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let (outcomes, receiver) = WorkerBridge::bounded(1);
+        let worker = LaunchWorker::new(
+            ProcessLauncher::with_systemd_detection(SystemdMode::Disabled, false),
+            outcomes,
+        )
+        .unwrap();
+
+        worker
+            .submit(
+                LaunchRequest::new(74, "touch", ["marker"])
+                    .with_working_directory(directory.as_os_str()),
+            )
+            .unwrap();
+        let outcome = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        assert!(outcome.result().is_ok());
+        for _ in 0..100 {
+            if marker.exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(marker.exists());
+        fs::remove_dir_all(directory).unwrap();
     }
 }
