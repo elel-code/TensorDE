@@ -57,30 +57,21 @@ pub(super) fn text_layer_font_path(object: &Value) -> String {
 }
 
 pub(super) fn retained_text_effect_is_supported(builder: &WeIrBuilder, effect: u32) -> bool {
-    builder
+    let catalog_supported = builder
         .effects
         .get(effect as usize)
         .and_then(|effect| builder.resources.get(effect.resource as usize))
-        .is_some_and(|resource| {
-            resource.path == "effects/colorkey/effect.json"
-                || resource.path == "effects/scroll/effect.json"
-                || resource.path == "effects/blend/effect.json"
-                || resource.path == "effects/shimmer/effect.json"
-        })
+        .is_some_and(|resource| retained_text_effect_resource_is_supported(&resource.path));
+    catalog_supported
 }
 
-pub(super) fn retained_text_effect_requires_dependency_composite(
-    builder: &WeIrBuilder,
-    effect: u32,
-) -> bool {
-    builder
-        .effects
-        .get(effect as usize)
-        .and_then(|effect| builder.resources.get(effect.resource as usize))
-        .is_some_and(|resource| {
-            resource.path.ends_with("/clipping_mask/effect.json")
-                || resource.path.ends_with("/clippingmask/effect.json")
-        })
+fn retained_text_effect_resource_is_supported(path: &str) -> bool {
+    path == "effects/colorkey/effect.json"
+        || path == "effects/scroll/effect.json"
+        || path == "effects/blend/effect.json"
+        || path == "effects/shimmer/effect.json"
+        || path.ends_with("/clipping_mask/effect.json")
+        || path.ends_with("/clippingmask/effect.json")
 }
 
 pub(super) fn ingest_text_layer(
@@ -233,6 +224,7 @@ pub(super) fn ingest_text_layer(
         pass_count: 1,
     });
     builder.material_by_path.insert(material_path, material);
+
     let vertex_start = builder.mesh_vertices.len();
     builder.add_image_plane_mesh(
         object,
@@ -476,7 +468,13 @@ fn layout_glyphs(
     let padding_y = padding.1.min(canvas_extent[1] * 0.5);
     let block_x = match alignment[0] {
         Some("left") => padding_x,
-        Some("right") => canvas_extent[0] - padding_x - maximum_line_width,
+        Some("right") => {
+            // WE keeps an over-wide right-aligned run in the authored text target instead of
+            // shifting its first glyph into negative texture coordinates. The run may overflow
+            // the right edge (the verified capture reaches x=761 for a 746-wide canvas), but the
+            // leading glyph remains visible. Padding still applies while the run fits.
+            (canvas_extent[0] - padding_x - maximum_line_width).max(0.0)
+        }
         _ => (canvas_extent[0] - maximum_line_width) * 0.5,
     };
     let block_height = scaled.height() + lines.len().saturating_sub(1) as f32 * line_advance;
@@ -762,6 +760,24 @@ mod tests {
         assert_eq!(glyphs[0].position, point(175.0, 130.0));
         assert_eq!(glyphs[1].position, point(150.0, 230.0));
         assert_eq!(glyphs[2].position, point(200.0, 230.0));
+    }
+
+    #[test]
+    fn right_aligned_overwide_text_keeps_the_leading_glyph_in_the_canvas() {
+        let scale = ab_glyph_scale_for_font(&TestFont, text_point_size_pixels_per_em(24.0))
+            .expect("text scale");
+        let glyphs = layout_glyphs(
+            &TestFont,
+            "AAA",
+            scale,
+            [0.0, 0.0],
+            [Some("right"), Some("center")],
+            [100.0, 200.0],
+            (32.0, 32.0),
+        );
+
+        assert_eq!(glyphs[0].position.x, 0.0);
+        assert_eq!(glyphs[2].position.x, 100.0);
     }
 
     #[test]
