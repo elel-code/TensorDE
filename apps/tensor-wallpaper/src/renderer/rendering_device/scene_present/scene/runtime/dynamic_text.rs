@@ -35,6 +35,7 @@ pub(super) struct SceneDynamicTextRuntime {
 #[derive(Debug)]
 struct DynamicTextLayout {
     record: SceneDynamicTextRecord,
+    authored_extent: [f32; 2],
     font_metrics: DynamicTextFontMetrics,
     glyphs: Arc<[SceneDynamicTextGlyphRecord]>,
     initial_text: String,
@@ -171,8 +172,15 @@ impl SceneDynamicTextRuntime {
                 .or_insert_with(|| Arc::from(storage.dynamic_text_glyphs(record)))
                 .clone();
             let font_metrics = DynamicTextFontMetrics::from_font(record, &font, &glyphs)?;
+            let authored_extent = storage
+                .meshes()
+                .iter()
+                .find(|mesh| mesh.object == record.object)
+                .map(|mesh| [mesh.width.max(1.0), mesh.height.max(1.0)])
+                .unwrap_or([0.0; 2]);
             layouts.push(DynamicTextLayout {
                 record: *record,
+                authored_extent,
                 font_metrics,
                 glyphs,
                 initial_text,
@@ -224,6 +232,7 @@ impl SceneDynamicTextRuntime {
         for (layout, state) in self.layouts.iter_mut().zip(&mut self.draw_states) {
             let DynamicTextLayout {
                 record,
+                authored_extent,
                 font_metrics,
                 glyphs,
                 initial_text,
@@ -245,6 +254,7 @@ impl SceneDynamicTextRuntime {
                     font_metrics,
                     glyphs,
                     text,
+                    *authored_extent,
                     positioned,
                     lines,
                     instances,
@@ -288,6 +298,7 @@ fn layout_text_with_font(
         font,
         glyphs,
         text,
+        [0.0; 2],
         &mut positioned,
         &mut lines,
         &mut instances,
@@ -300,6 +311,7 @@ fn layout_text_with_font_into(
     font: &impl Font,
     glyphs: &[SceneDynamicTextGlyphRecord],
     text: &str,
+    authored_extent: [f32; 2],
     positioned: &mut Vec<(char, f32, f32)>,
     lines: &mut Vec<(usize, usize, f32)>,
     instances: &mut Vec<GlyphInstance>,
@@ -354,7 +366,7 @@ fn layout_text_with_font_into(
         }
     }
 
-    layout_positioned_glyphs(record, glyphs, positioned, instances)
+    layout_positioned_glyphs(record, glyphs, positioned, authored_extent, instances)
 }
 
 fn layout_text_with_metrics_into(
@@ -362,6 +374,7 @@ fn layout_text_with_metrics_into(
     metrics: &DynamicTextFontMetrics,
     glyphs: &[SceneDynamicTextGlyphRecord],
     text: &str,
+    authored_extent: [f32; 2],
     positioned: &mut Vec<(char, f32, f32)>,
     lines: &mut Vec<(usize, usize, f32)>,
     instances: &mut Vec<GlyphInstance>,
@@ -396,7 +409,7 @@ fn layout_text_with_metrics_into(
         lines.push((start, positioned.len(), cursor_x));
     }
     align_positioned_lines(record, positioned, lines);
-    layout_positioned_glyphs(record, glyphs, positioned, instances)
+    layout_positioned_glyphs(record, glyphs, positioned, authored_extent, instances)
 }
 
 fn align_positioned_lines(
@@ -424,6 +437,7 @@ fn layout_positioned_glyphs(
     record: &SceneDynamicTextRecord,
     glyphs: &[SceneDynamicTextGlyphRecord],
     positioned: &[(char, f32, f32)],
+    authored_extent: [f32; 2],
     instances: &mut Vec<GlyphInstance>,
 ) -> Result<[f32; 2], String> {
     let mut minimum = [f32::INFINITY; 2];
@@ -464,10 +478,19 @@ fn layout_positioned_glyphs(
         maximum[0] - minimum[0] + record.padding[0] * 2.0,
         maximum[1] - minimum[1] + record.padding[1] * 2.0,
     ];
+    // WE's local/composite text target is metrics-driven. If the ink run exceeds the
+    // serialized canvas, the right-aligned target grows to retain that overflow instead of
+    // clipping it back to the authored width. Keep the normal tight-target anchor for runs that
+    // fit inside the authored canvas; this also preserves stable script-driven re-layout.
+    let right_overflow = if record.horizontal_align == SceneTextHorizontalAlign::Right {
+        (extent[0] - authored_extent[0].max(0.0)).max(0.0)
+    } else {
+        0.0
+    };
     let anchor_x = match record.horizontal_align {
         SceneTextHorizontalAlign::Left => 0.0,
         SceneTextHorizontalAlign::Center => -extent[0] * 0.5,
-        SceneTextHorizontalAlign::Right => -extent[0],
+        SceneTextHorizontalAlign::Right => -extent[0] + right_overflow,
     };
     let anchor_y = match record.vertical_align {
         SceneTextVerticalAlign::Top => 0.0,
@@ -666,6 +689,7 @@ mod tests {
                 &TestFont,
                 &glyphs,
                 text,
+                [0.0; 2],
                 &mut positioned,
                 &mut lines,
                 &mut instances,
@@ -711,6 +735,7 @@ mod tests {
                 &metrics,
                 &glyphs,
                 text,
+                [0.0; 2],
                 &mut positioned,
                 &mut lines,
                 &mut metric_instances,
@@ -733,5 +758,41 @@ mod tests {
         assert_eq!(metrics.kern('a', 'b').unwrap(), -1.5);
         assert_eq!(metrics.kern('b', 'a').unwrap(), 2.0);
         assert!(metrics.advance('c').is_err());
+    }
+
+    #[test]
+    fn right_aligned_metrics_overflow_is_not_clipped_to_the_authored_canvas() {
+        let record = SceneDynamicTextRecord {
+            object: SceneObjectHandle(4),
+            font_resource: crate::engine::scene::SceneResourceId(7),
+            atlas_resource: crate::engine::scene::SceneResourceId(9),
+            glyph_start: 0,
+            glyph_count: 3,
+            max_glyph_count: 8,
+            pixels_per_em: 20.0,
+            spacing: [0.0; 2],
+            padding: [1.0; 2],
+            horizontal_align: SceneTextHorizontalAlign::Right,
+            vertical_align: SceneTextVerticalAlign::Center,
+        };
+        let glyphs = [glyph('1', 0.0), glyph('2', 0.2), glyph('3', 0.4)];
+        let mut positioned = Vec::with_capacity(record.max_glyph_count as usize);
+        let mut lines = Vec::with_capacity(record.max_glyph_count as usize + 1);
+        let mut instances = Vec::with_capacity(record.max_glyph_count as usize);
+
+        let extent = layout_text_with_font_into(
+            &record,
+            &TestFont,
+            &glyphs,
+            "12",
+            [12.0, 20.0],
+            &mut positioned,
+            &mut lines,
+            &mut instances,
+        )
+        .expect("right-aligned overflow layout");
+
+        assert_eq!(extent, [17.0, 12.0]);
+        assert_eq!(instances.last().unwrap().position[2], 4.0);
     }
 }
