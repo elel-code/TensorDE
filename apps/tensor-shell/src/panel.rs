@@ -144,15 +144,18 @@ impl PanelScene {
 impl PanelWidgetKind {
     pub const fn activation(self) -> Option<ShellComponent> {
         match self {
-            Self::Launcher => Some(ShellComponent::Launcher),
-            Self::SystemStatus | Self::ControlCenter => Some(ShellComponent::ControlCenter),
+            Self::Launcher => None,
+            Self::Workspaces => Some(ShellComponent::Overview),
+            Self::Media | Self::SystemStatus | Self::ControlCenter => {
+                Some(ShellComponent::ControlCenter)
+            }
             Self::Notifications => Some(ShellComponent::NotificationCenter),
-            Self::Workspaces | Self::ActiveWindow | Self::Media | Self::Clock => None,
+            Self::ActiveWindow | Self::Clock => None,
         }
     }
 
     pub const fn is_interactive(self) -> bool {
-        self.activation().is_some()
+        matches!(self, Self::Launcher) || self.activation().is_some()
     }
 
     const fn width(self) -> u32 {
@@ -491,14 +494,21 @@ mod tests {
 
     #[test]
     fn only_backed_widgets_publish_surface_activations() {
-        assert_eq!(
-            PanelWidgetKind::Launcher.activation(),
-            Some(ShellComponent::Launcher)
-        );
+        assert_eq!(PanelWidgetKind::Launcher.activation(), None);
+        assert!(PanelWidgetKind::Launcher.is_interactive());
         assert_eq!(
             PanelWidgetKind::Notifications.activation(),
             Some(ShellComponent::NotificationCenter)
         );
+        assert_eq!(
+            PanelWidgetKind::Workspaces.activation(),
+            Some(ShellComponent::Overview)
+        );
+        assert_eq!(
+            PanelWidgetKind::Media.activation(),
+            Some(ShellComponent::ControlCenter)
+        );
+        assert!(PanelWidgetKind::Media.is_interactive());
         assert_eq!(PanelWidgetKind::Clock.activation(), None);
     }
 }

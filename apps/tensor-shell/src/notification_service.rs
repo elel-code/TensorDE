@@ -99,6 +99,19 @@ impl NotificationServiceHandle {
                 async_channel::TrySendError::Closed(_) => NotificationServiceError::ServiceStopped,
             })
     }
+
+    pub(crate) fn emit_action(
+        &self,
+        notification: NotificationId,
+        key: String,
+    ) -> Result<(), NotificationServiceError> {
+        self.commands
+            .try_send(ServiceCommand::Action { notification, key })
+            .map_err(|error| match error {
+                async_channel::TrySendError::Full(_) => NotificationServiceError::SignalQueueFull,
+                async_channel::TrySendError::Closed(_) => NotificationServiceError::ServiceStopped,
+            })
+    }
 }
 
 impl Drop for NotificationServiceHandle {
@@ -124,9 +137,13 @@ pub enum NotificationServiceError {
     ServiceStopped,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 enum ServiceCommand {
     Closed(ClosedNotification),
+    Action {
+        notification: NotificationId,
+        key: String,
+    },
 }
 
 fn run_thread(
@@ -206,6 +223,11 @@ async fn run_service(
                     emit_closed(&mut connection, closed)
                         .await
                         .map_err(|error| format!("emit NotificationClosed: {error}"))?;
+                }
+                Ok(ServiceCommand::Action { notification, key }) => {
+                    emit_action(&mut connection, notification, &key)
+                        .await
+                        .map_err(|error| format!("emit ActionInvoked: {error}"))?;
                 }
                 Err(_) => return Ok(()),
             }
@@ -311,6 +333,21 @@ async fn emit_closed(
         .await
 }
 
+async fn emit_action(
+    connection: &mut Connection,
+    notification: NotificationId,
+    key: &str,
+) -> tensor_dbus::Result<()> {
+    connection
+        .emit_signal(
+            OBJECT_PATH,
+            INTERFACE,
+            "ActionInvoked",
+            &(notification.get(), key.to_owned()),
+        )
+        .await
+}
+
 fn startup_error(
     ready: mpsc::SyncSender<Result<(), String>>,
     message: String,
@@ -412,15 +449,11 @@ mod tests {
     impl PrivateBus {
         fn start() -> Option<Self> {
             static NEXT_BUS: AtomicU64 = AtomicU64::new(1);
-            let socket = std::env::current_dir()
-                .unwrap()
-                .join("target")
-                .join(format!(
-                    "tensor-shell-dbus-{}-{}.sock",
-                    std::process::id(),
-                    NEXT_BUS.fetch_add(1, Ordering::Relaxed)
-                ));
-            fs::create_dir_all(socket.parent().unwrap()).unwrap();
+            let socket = std::env::temp_dir().join(format!(
+                "tensor-shell-dbus-{}-{}.sock",
+                std::process::id(),
+                NEXT_BUS.fetch_add(1, Ordering::Relaxed)
+            ));
             let _ = fs::remove_file(&socket);
             let address_text = format!("unix:path={}", socket.display());
             let mut child = match Command::new("dbus-daemon")
@@ -445,7 +478,12 @@ mod tests {
             BufReader::new(child.stdout.take().unwrap())
                 .read_line(&mut announced)
                 .expect("dbus-daemon did not announce its address");
-            assert!(announced.trim().starts_with(&address_text));
+            if !announced.trim().starts_with(&address_text) {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = fs::remove_file(&socket);
+                return None;
+            }
             Some(Self {
                 child,
                 socket,
@@ -562,7 +600,7 @@ mod tests {
                         "mail-unread",
                         "Subject",
                         "Body",
-                        Vec::<String>::new(),
+                        vec!["open".to_owned(), "Open".to_owned()],
                         HashMap::<String, OwnedValue>::new(),
                         -1_i32,
                     ),
@@ -571,6 +609,15 @@ mod tests {
                 .unwrap();
             let id = NotificationId::from_raw(id).unwrap();
             assert_eq!(store.lock().unwrap().active(id).unwrap().summary, "Subject");
+            let action = proxy.subscribe("ActionInvoked").await.unwrap();
+            service.emit_action(id, "open".to_owned()).unwrap();
+            let mut action_signals = proxy.signal_stream(action);
+            let signal = action_signals.next().await.unwrap();
+            assert_eq!(
+                signal.body::<(u32, String)>().unwrap(),
+                (id.get(), "open".to_owned())
+            );
+            let _ = action_signals.close().await.unwrap();
             let closed = proxy.subscribe("NotificationClosed").await.unwrap();
             let _: () = proxy.call("CloseNotification", &id.get()).await.unwrap();
             assert!(store.lock().unwrap().active(id).is_none());

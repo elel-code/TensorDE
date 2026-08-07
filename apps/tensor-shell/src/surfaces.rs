@@ -22,10 +22,9 @@ pub fn surface_plan(
     component: ShellComponent,
     output: OutputId,
     layout: ShellLayout,
-) -> SurfacePlan {
+) -> Option<SurfacePlan> {
     let attributes = match component {
         ShellComponent::Panel => panel(output, layout),
-        ShellComponent::Launcher => top_left_popover("tensor-shell.launcher", output, layout),
         ShellComponent::NotificationCenter => {
             top_right_popover("tensor-shell.notification-center", output, layout, true)
         }
@@ -36,12 +35,19 @@ pub fn surface_plan(
         ShellComponent::ControlCenter => {
             top_right_popover("tensor-shell.control-center", output, layout, true)
         }
-        ShellComponent::Overview => fullscreen("tensor-shell.overview", output, false),
-        ShellComponent::LockScreen => fullscreen("tensor-shell.lock-screen", output, true),
+        ShellComponent::Overview => fullscreen("tensor-shell.overview", output),
+        ShellComponent::LockScreen => return None,
     };
-    SurfacePlan {
+    Some(SurfacePlan {
         key: SurfaceKey { output, component },
         attributes,
+    })
+}
+
+pub const fn lock_surface_key(output: OutputId) -> SurfaceKey {
+    SurfaceKey {
+        output,
+        component: ShellComponent::LockScreen,
     }
 }
 
@@ -59,20 +65,6 @@ fn panel(output: OutputId, layout: ShellLayout) -> LayerSurfaceAttributes {
             layer: LayerSurfaceLayer::Top,
         },
     }
-}
-
-fn top_left_popover(
-    namespace: &str,
-    output: OutputId,
-    layout: ShellLayout,
-) -> LayerSurfaceAttributes {
-    popover(
-        namespace,
-        output,
-        layout,
-        LayerAnchor::TOP | LayerAnchor::LEFT,
-        true,
-    )
 }
 
 fn top_right_popover(
@@ -137,7 +129,7 @@ fn osd(output: OutputId, layout: ShellLayout) -> LayerSurfaceAttributes {
     }
 }
 
-fn fullscreen(namespace: &str, output: OutputId, lock: bool) -> LayerSurfaceAttributes {
+fn fullscreen(namespace: &str, output: OutputId) -> LayerSurfaceAttributes {
     LayerSurfaceAttributes {
         namespace: namespace.into(),
         output: Some(output),
@@ -147,11 +139,7 @@ fn fullscreen(namespace: &str, output: OutputId, lock: bool) -> LayerSurfaceAttr
             exclusive_zone: -1,
             exclusive_edge: None,
             margins: LayerMargins::default(),
-            keyboard_interactivity: if lock {
-                LayerKeyboardInteractivity::Exclusive
-            } else {
-                LayerKeyboardInteractivity::OnDemand
-            },
+            keyboard_interactivity: LayerKeyboardInteractivity::OnDemand,
             layer: LayerSurfaceLayer::Overlay,
         },
     }
@@ -166,6 +154,7 @@ mod tests {
     #[test]
     fn panel_reserves_exactly_its_height() {
         let plan = surface_plan(ShellComponent::Panel, OUTPUT, ShellLayout::default());
+        let plan = plan.expect("panel has a layer-surface plan");
         assert_eq!(plan.attributes.state.size, LogicalSize::new(0, 40));
         assert_eq!(plan.attributes.state.exclusive_zone, 40);
         assert_eq!(plan.attributes.state.exclusive_edge, Some(LayerEdge::Top));
@@ -174,14 +163,12 @@ mod tests {
     }
 
     #[test]
-    fn lock_screen_covers_output_and_takes_exclusive_focus() {
-        let plan = surface_plan(ShellComponent::LockScreen, OUTPUT, ShellLayout::default());
-        assert_eq!(plan.attributes.state.size, LogicalSize::new(0, 0));
+    fn lock_screen_cannot_be_lowered_to_an_insecure_layer_surface() {
+        assert!(surface_plan(ShellComponent::LockScreen, OUTPUT, ShellLayout::default()).is_none());
         assert_eq!(
-            plan.attributes.state.keyboard_interactivity,
-            LayerKeyboardInteractivity::Exclusive
+            lock_surface_key(OUTPUT).component,
+            ShellComponent::LockScreen
         );
-        assert_eq!(plan.attributes.state.layer, LayerSurfaceLayer::Overlay);
     }
 
     #[test]
@@ -190,12 +177,14 @@ mod tests {
             ShellComponent::NotificationCenter,
             OUTPUT,
             ShellLayout::default(),
-        );
+        )
+        .unwrap();
         let popups = surface_plan(
             ShellComponent::NotificationPopups,
             OUTPUT,
             ShellLayout::default(),
-        );
+        )
+        .unwrap();
         assert_eq!(
             center.attributes.state.keyboard_interactivity,
             LayerKeyboardInteractivity::OnDemand

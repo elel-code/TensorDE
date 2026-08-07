@@ -8,7 +8,6 @@ use crate::{ShellLayout, SurfaceKey, SurfacePlan, surface_plan};
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ShellComponent {
     Panel,
-    Launcher,
     NotificationCenter,
     NotificationPopups,
     Osd,
@@ -68,7 +67,15 @@ impl ShellModel {
         self.visible
             .iter()
             .copied()
-            .map(|(output, component)| surface_plan(component, output, self.layout))
+            .filter_map(|(output, component)| surface_plan(component, output, self.layout))
+    }
+
+    pub fn layout(&self) -> ShellLayout {
+        self.layout
+    }
+
+    pub fn set_layout(&mut self, layout: ShellLayout) {
+        self.layout = layout;
     }
 
     pub fn visible(&self, output: OutputId, component: ShellComponent) -> bool {
@@ -91,11 +98,7 @@ impl ShellComponent {
     pub const fn is_interactive(self) -> bool {
         matches!(
             self,
-            Self::Launcher
-                | Self::NotificationCenter
-                | Self::ControlCenter
-                | Self::Overview
-                | Self::LockScreen
+            Self::NotificationCenter | Self::ControlCenter | Self::Overview
         )
     }
 }
@@ -143,9 +146,9 @@ mod tests {
         let id = OutputId::from_raw(1);
         let mut model = ShellModel::new(ShellLayout::default());
         model.apply_output_event(OutputEvent::Added(output(1)));
-        model.set_visible(id, ShellComponent::Launcher, true);
+        model.set_visible(id, ShellComponent::Overview, true);
         model.set_visible(id, ShellComponent::ControlCenter, true);
-        assert!(!model.visible(id, ShellComponent::Launcher));
+        assert!(!model.visible(id, ShellComponent::Overview));
         assert!(model.visible(id, ShellComponent::ControlCenter));
     }
 
@@ -164,9 +167,9 @@ mod tests {
         let id = OutputId::from_raw(1);
         let mut model = ShellModel::new(ShellLayout::default());
         model.apply_output_event(OutputEvent::Added(output(1)));
-        model.set_visible(id, ShellComponent::Launcher, true);
+        model.set_visible(id, ShellComponent::Overview, true);
         model.set_visible(id, ShellComponent::NotificationCenter, true);
-        assert!(!model.visible(id, ShellComponent::Launcher));
+        assert!(!model.visible(id, ShellComponent::Overview));
         assert!(model.visible(id, ShellComponent::NotificationCenter));
     }
 
@@ -179,5 +182,36 @@ mod tests {
         model.set_visible(id, ShellComponent::NotificationPopups, true);
         assert!(model.visible(id, ShellComponent::ControlCenter));
         assert!(model.visible(id, ShellComponent::NotificationPopups));
+    }
+
+    #[test]
+    fn control_center_replaces_and_can_release_modal_ownership() {
+        let id = OutputId::from_raw(1);
+        let mut model = ShellModel::new(ShellLayout::default());
+        model.apply_output_event(OutputEvent::Added(output(1)));
+        model.set_visible(id, ShellComponent::Overview, true);
+        model.set_visible(id, ShellComponent::ControlCenter, true);
+        assert!(!model.visible(id, ShellComponent::Overview));
+        assert!(model.visible(id, ShellComponent::ControlCenter));
+
+        model.set_visible(id, ShellComponent::ControlCenter, false);
+        assert!(!model.visible(id, ShellComponent::ControlCenter));
+        assert!(model.visible(id, ShellComponent::Panel));
+    }
+
+    #[test]
+    fn changing_layout_updates_existing_surface_plans_without_changing_identity() {
+        let mut model = ShellModel::new(ShellLayout::default());
+        model.apply_output_event(OutputEvent::Added(output(1)));
+        let original = model.plans().next().unwrap();
+        let layout = ShellLayout {
+            panel_height: 52,
+            ..ShellLayout::default()
+        };
+        model.set_layout(layout);
+        let updated = model.plans().next().unwrap();
+        assert_eq!(model.layout(), layout);
+        assert_eq!(original.key, updated.key);
+        assert_eq!(updated.attributes.state.size.height, 52);
     }
 }

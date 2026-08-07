@@ -142,6 +142,7 @@ struct QueuedPopup {
 pub struct NotificationStore {
     config: NotificationStoreConfig,
     next_id: u32,
+    revision: u64,
     do_not_disturb: bool,
     active: BTreeMap<NotificationId, Notification>,
     history: VecDeque<Notification>,
@@ -160,6 +161,7 @@ impl NotificationStore {
         Ok(Self {
             config,
             next_id: 1,
+            revision: 0,
             do_not_disturb: false,
             active: BTreeMap::new(),
             history: VecDeque::with_capacity(config.max_history),
@@ -196,6 +198,7 @@ impl NotificationStore {
         if !self.do_not_disturb || notification.urgency == NotificationUrgency::Critical {
             self.enqueue_popup(&notification, now_ms);
         }
+        self.bump_revision();
         id
     }
 
@@ -208,6 +211,7 @@ impl NotificationStore {
         self.active.remove(&id)?;
         self.remove_popup(id);
         self.promote_popups(now_ms);
+        self.bump_revision();
         Some(ClosedNotification { id, reason })
     }
 
@@ -225,6 +229,9 @@ impl NotificationStore {
     }
 
     pub fn set_do_not_disturb(&mut self, enabled: bool, now_ms: u64) {
+        if self.do_not_disturb == enabled {
+            return;
+        }
         self.do_not_disturb = enabled;
         if enabled {
             self.visible.retain(|popup| {
@@ -236,10 +243,15 @@ impl NotificationStore {
                 .retain(|popup| popup.urgency == NotificationUrgency::Critical);
         }
         self.promote_popups(now_ms);
+        self.bump_revision();
     }
 
     pub const fn do_not_disturb(&self) -> bool {
         self.do_not_disturb
+    }
+
+    pub const fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn active_count(&self) -> usize {
@@ -291,11 +303,19 @@ impl NotificationStore {
     pub fn dismiss_history(&mut self, id: NotificationId) -> bool {
         let previous_len = self.history.len();
         self.history.retain(|entry| entry.id != id);
-        previous_len != self.history.len()
+        let changed = previous_len != self.history.len();
+        if changed {
+            self.bump_revision();
+        }
+        changed
     }
 
     pub fn clear_history(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
         self.history.clear();
+        self.bump_revision();
     }
 
     fn allocate_id(&mut self) -> NotificationId {
@@ -382,6 +402,10 @@ impl NotificationStore {
         while self.history.len() > self.config.max_history {
             self.history.pop_back();
         }
+    }
+
+    fn bump_revision(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 }
 
@@ -496,5 +520,19 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["3", "2"]
         );
+    }
+
+    #[test]
+    fn revision_changes_only_when_notification_state_changes() {
+        let mut store = NotificationStore::default();
+        assert_eq!(store.revision(), 0);
+        let id = store.notify(request("Mail", "New"), 0);
+        assert_eq!(store.revision(), 1);
+        assert!(!store.dismiss_history(NotificationId::from_raw(99).unwrap()));
+        assert_eq!(store.revision(), 1);
+        assert!(store.dismiss_history(id));
+        assert_eq!(store.revision(), 2);
+        assert!(store.close(id, CloseReason::DismissedByUser, 0).is_some());
+        assert_eq!(store.revision(), 3);
     }
 }

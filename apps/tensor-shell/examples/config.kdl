@@ -13,6 +13,16 @@ panel {
     right "media" "system-status" "notifications" "control-center"
 }
 
+media {
+    playback-osd #true
+    playback-osd-timeout-ms 3000
+}
+
+// Direct argv submitted through Tensorland's activation-aware Spawn command.
+launcher {
+    command "tensor-launcher"
+}
+
 // Usually resolved from TENSOR_CONFIG/TENSOR_IPC_SOCKET or XDG defaults.
 // tensorland {
 //     config-path "/etc/tensor/config.kdl"

@@ -11,11 +11,24 @@ use tensor_kdl::Decode;
 
 use crate::{PanelWidgetKind, ShellLayout, ShellLayoutError};
 
+pub const MAX_LAUNCHER_COMMAND_ARGS: usize = 64;
+pub const MAX_LAUNCHER_COMMAND_BYTES: usize = 16 * 1024;
+pub const MAX_SHELL_CONFIG_BYTES: u64 = 256 * 1024;
+pub const MIN_MEDIA_OSD_TIMEOUT_MS: u64 = 250;
+pub const MAX_MEDIA_OSD_TIMEOUT_MS: u64 = 60_000;
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ShellConfig {
     pub layout: ShellLayout,
     pub panel: PanelConfig,
+    pub media: MediaConfig,
+    pub launcher: LauncherEndpoint,
     pub tensorland: TensorlandConfigEndpoint,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LauncherEndpoint {
+    command: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,6 +36,12 @@ pub struct PanelConfig {
     left: Vec<PanelWidgetKind>,
     center: Vec<PanelWidgetKind>,
     right: Vec<PanelWidgetKind>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MediaConfig {
+    pub playback_osd: bool,
+    pub playback_osd_timeout_ms: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,6 +73,14 @@ impl ShellConfig {
         }
     }
 
+    pub(crate) fn from_bytes(path: &Path, document: &[u8]) -> Result<Self, ShellConfigError> {
+        let document = std::str::from_utf8(document).map_err(|error| ShellConfigError::Parse {
+            path: path.to_owned(),
+            message: format!("configuration is not valid UTF-8: {error}"),
+        })?;
+        Self::from_kdl(path, document)
+    }
+
     fn from_kdl(path: &Path, document: &str) -> Result<Self, ShellConfigError> {
         let parsed: FileConfig =
             tensor_kdl::read(document).map_err(|error| ShellConfigError::Parse {
@@ -82,6 +109,20 @@ impl PanelConfig {
     }
 }
 
+impl LauncherEndpoint {
+    pub fn command(&self) -> &[String] {
+        &self.command
+    }
+}
+
+impl Default for LauncherEndpoint {
+    fn default() -> Self {
+        Self {
+            command: vec!["tensor-launcher".into()],
+        }
+    }
+}
+
 impl Default for PanelConfig {
     fn default() -> Self {
         Self {
@@ -97,6 +138,15 @@ impl Default for PanelConfig {
                 PanelWidgetKind::Notifications,
                 PanelWidgetKind::ControlCenter,
             ],
+        }
+    }
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            playback_osd: true,
+            playback_osd_timeout_ms: 3_000,
         }
     }
 }
@@ -127,6 +177,10 @@ struct FileConfig {
     #[kdl(child)]
     panel: Option<PanelFileConfig>,
     #[kdl(child)]
+    media: Option<MediaFileConfig>,
+    #[kdl(child)]
+    launcher: Option<LauncherFileConfig>,
+    #[kdl(child)]
     tensorland: Option<TensorlandFileConfig>,
 }
 
@@ -143,6 +197,16 @@ impl FileConfig {
             .map(PanelFileConfig::resolve)
             .transpose()?
             .unwrap_or(defaults.panel);
+        let media = self
+            .media
+            .map(MediaFileConfig::resolve)
+            .transpose()?
+            .unwrap_or(defaults.media);
+        let launcher = self
+            .launcher
+            .map(LauncherFileConfig::resolve)
+            .transpose()?
+            .unwrap_or(defaults.launcher);
         let tensorland = self
             .tensorland
             .map(TensorlandFileConfig::resolve)
@@ -150,6 +214,8 @@ impl FileConfig {
         Ok(ShellConfig {
             layout,
             panel,
+            media,
+            launcher,
             tensorland,
         })
     }
@@ -195,6 +261,36 @@ struct PanelFileConfig {
     center: Option<WidgetList>,
     #[kdl(child)]
     right: Option<WidgetList>,
+}
+
+#[derive(Debug, Default, Decode)]
+struct MediaFileConfig {
+    #[kdl(child(name = "playback-osd"), unwrap(argument))]
+    playback_osd: Option<bool>,
+    #[kdl(child(name = "playback-osd-timeout-ms"), unwrap(argument))]
+    playback_osd_timeout_ms: Option<u64>,
+}
+
+impl MediaFileConfig {
+    fn resolve(self) -> Result<MediaConfig, ShellConfigError> {
+        let defaults = MediaConfig::default();
+        let config = MediaConfig {
+            playback_osd: self.playback_osd.unwrap_or(defaults.playback_osd),
+            playback_osd_timeout_ms: self
+                .playback_osd_timeout_ms
+                .unwrap_or(defaults.playback_osd_timeout_ms),
+        };
+        if !(MIN_MEDIA_OSD_TIMEOUT_MS..=MAX_MEDIA_OSD_TIMEOUT_MS)
+            .contains(&config.playback_osd_timeout_ms)
+        {
+            return Err(ShellConfigError::MediaOsdTimeout {
+                milliseconds: config.playback_osd_timeout_ms,
+                minimum: MIN_MEDIA_OSD_TIMEOUT_MS,
+                maximum: MAX_MEDIA_OSD_TIMEOUT_MS,
+            });
+        }
+        Ok(config)
+    }
 }
 
 impl PanelFileConfig {
@@ -247,6 +343,58 @@ struct TensorlandFileConfig {
     ipc_socket: Option<String>,
 }
 
+#[derive(Debug, Default, Decode)]
+struct LauncherFileConfig {
+    #[kdl(child)]
+    command: Option<CommandList>,
+}
+
+#[derive(Debug, Decode)]
+struct CommandList {
+    #[kdl(arguments)]
+    arguments: Vec<String>,
+}
+
+impl LauncherFileConfig {
+    fn resolve(self) -> Result<LauncherEndpoint, ShellConfigError> {
+        let command = self
+            .command
+            .map(|command| command.arguments)
+            .unwrap_or_else(|| LauncherEndpoint::default().command);
+        validate_launcher_command(&command)?;
+        Ok(LauncherEndpoint { command })
+    }
+}
+
+fn validate_launcher_command(command: &[String]) -> Result<(), ShellConfigError> {
+    if command.is_empty() || command[0].is_empty() {
+        return Err(ShellConfigError::EmptyLauncherCommand);
+    }
+    if command.len() > MAX_LAUNCHER_COMMAND_ARGS {
+        return Err(ShellConfigError::LauncherCommandArgs {
+            count: command.len(),
+            maximum: MAX_LAUNCHER_COMMAND_ARGS,
+        });
+    }
+    let bytes = command
+        .iter()
+        .try_fold(0_usize, |total, argument| {
+            if argument.contains('\0') {
+                None
+            } else {
+                total.checked_add(argument.len())
+            }
+        })
+        .ok_or(ShellConfigError::InvalidLauncherCommand)?;
+    if bytes > MAX_LAUNCHER_COMMAND_BYTES {
+        return Err(ShellConfigError::LauncherCommandBytes {
+            bytes,
+            maximum: MAX_LAUNCHER_COMMAND_BYTES,
+        });
+    }
+    Ok(())
+}
+
 impl TensorlandFileConfig {
     fn resolve(self) -> TensorlandConfigEndpoint {
         let defaults = TensorlandConfigEndpoint::default();
@@ -278,12 +426,32 @@ pub enum ShellConfigError {
     },
     #[error("failed to parse Tensor Shell configuration {path}: {message}")]
     Parse { path: PathBuf, message: String },
+    #[error("Tensor Shell configuration {path} is {bytes} bytes; maximum is {maximum} bytes")]
+    TooLarge {
+        path: PathBuf,
+        bytes: u64,
+        maximum: u64,
+    },
     #[error(transparent)]
     Layout(#[from] ShellLayoutError),
     #[error("unknown panel widget `{name}` in `{section}` section")]
     UnknownPanelWidget { section: &'static str, name: String },
     #[error("panel widget `{0}` is configured more than once")]
     DuplicatePanelWidget(PanelWidgetKind),
+    #[error("launcher command must contain a non-empty program")]
+    EmptyLauncherCommand,
+    #[error("launcher command contains a NUL byte or overflows its size accounting")]
+    InvalidLauncherCommand,
+    #[error("launcher command contains {count} arguments; maximum is {maximum}")]
+    LauncherCommandArgs { count: usize, maximum: usize },
+    #[error("launcher command contains {bytes} bytes; maximum is {maximum}")]
+    LauncherCommandBytes { bytes: usize, maximum: usize },
+    #[error("media playback OSD timeout is {milliseconds} ms; expected {minimum}..={maximum} ms")]
+    MediaOsdTimeout {
+        milliseconds: u64,
+        minimum: u64,
+        maximum: u64,
+    },
 }
 
 #[cfg(test)]
@@ -300,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn kdl_controls_layout_widget_order_and_tensorland_endpoint() {
+    fn kdl_controls_layout_widgets_media_launcher_and_tensorland_endpoint() {
         let config = parse(
             r#"
                 layout {
@@ -311,6 +479,13 @@ mod tests {
                     left "launcher" "active-window"
                     center "workspaces" "clock"
                     right "notifications" "control-center"
+                }
+                media {
+                    playback-osd #false
+                    playback-osd-timeout-ms 4500
+                }
+                launcher {
+                    command "tensor-launcher" "--surface" "apps"
                 }
                 tensorland {
                     config-path "/tmp/tensor.kdl"
@@ -324,6 +499,12 @@ mod tests {
             config.panel.center(),
             [PanelWidgetKind::Workspaces, PanelWidgetKind::Clock]
         );
+        assert!(!config.media.playback_osd);
+        assert_eq!(config.media.playback_osd_timeout_ms, 4_500);
+        assert_eq!(
+            config.launcher.command(),
+            ["tensor-launcher", "--surface", "apps"]
+        );
         assert_eq!(config.tensorland.config_path, Path::new("/tmp/tensor.kdl"));
     }
 
@@ -336,6 +517,37 @@ mod tests {
         assert!(matches!(
             parse("panel { left \"unknown\"; }").unwrap_err(),
             ShellConfigError::UnknownPanelWidget { .. }
+        ));
+    }
+
+    #[test]
+    fn launcher_command_is_argv_and_strictly_bounded() {
+        assert!(matches!(
+            parse("launcher { command }").unwrap_err(),
+            ShellConfigError::EmptyLauncherCommand
+        ));
+        assert!(matches!(
+            parse("launcher { command \"\" }").unwrap_err(),
+            ShellConfigError::EmptyLauncherCommand
+        ));
+        let arguments = std::iter::repeat_n("\"arg\"", MAX_LAUNCHER_COMMAND_ARGS + 1)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(matches!(
+            parse(&format!("launcher {{ command {arguments} }}")).unwrap_err(),
+            ShellConfigError::LauncherCommandArgs { .. }
+        ));
+    }
+
+    #[test]
+    fn media_osd_timeout_is_strictly_bounded() {
+        assert!(matches!(
+            parse("media { playback-osd-timeout-ms 249 }").unwrap_err(),
+            ShellConfigError::MediaOsdTimeout { .. }
+        ));
+        assert!(matches!(
+            parse("media { playback-osd-timeout-ms 60001 }").unwrap_err(),
+            ShellConfigError::MediaOsdTimeout { .. }
         ));
     }
 }

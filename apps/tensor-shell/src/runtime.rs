@@ -9,24 +9,46 @@ use wayland_client_runtime::{
     SurfaceEvent, SurfaceId, TouchEvent, TouchEventKind,
 };
 
+use crate::config_reload::ShellConfigReloadHandle;
+use crate::control_center_scene::{ControlCenterInteraction, ControlCenterScene};
+use crate::media::MediaServiceHandle;
+use crate::media_osd::MediaOsdState;
+use crate::media_osd_scene::{MediaOsdInteraction, MediaOsdScene};
+use crate::network::NetworkServiceHandle;
+use crate::notification_scene::{NotificationInteraction, NotificationScene};
 use crate::notification_service::NotificationServiceHandle;
+use crate::overview::{OverviewServiceHandle, OverviewServiceSnapshot};
+use crate::overview_scene::{OverviewInteraction, OverviewScene};
 use crate::panel::PanelInteraction;
-use crate::present::{PanelPresentation, ShellPresenter};
+use crate::present::{RetainedSceneInput, ShellPresenter, SurfacePresentation};
+use crate::session_lock_service::{SessionLockServiceError, SessionLockServiceHandle};
 use crate::system_status::PowerServiceHandle;
 use crate::{
+    LauncherEndpoint, MediaActionState, MediaConfig, MediaServiceSnapshot,
     NotificationServiceError, NotificationStore, PanelAppletEmphasis, PanelAppletState,
     PanelAppletStore, PanelAppletUpdate, PanelConfig, PanelScene, PanelWidgetKind, ShellComponent,
-    ShellConfig, ShellConfigError, ShellModel, ShellPresentError, SurfaceKey,
-    TensorlandConfigEndpoint,
+    ShellConfig, ShellConfigError, ShellConfigReloadError, ShellModel, ShellPresentError,
+    SurfaceKey, TensorlandConfigEndpoint,
 };
 
 const BTN_LEFT: u32 = 0x110;
+
+mod config;
+mod control_center;
+mod media_osd;
+mod notification;
+mod overview;
+mod session_lock;
 
 /// Protocol runtime for the shell's model-driven layer surfaces.
 pub struct ShellRuntime {
     wayland: Runtime,
     model: ShellModel,
+    config_reload: Option<ShellConfigReloadHandle>,
+    config_revision: u64,
     panel_config: PanelConfig,
+    media_config: MediaConfig,
+    launcher: LauncherEndpoint,
     tensorland: TensorlandConfigEndpoint,
     surfaces: BTreeMap<SurfaceKey, SurfaceId>,
     surface_keys: BTreeMap<SurfaceId, SurfaceKey>,
@@ -35,30 +57,84 @@ pub struct ShellRuntime {
     panel_input: BTreeMap<SurfaceId, PanelInteraction>,
     panel_touches: BTreeMap<i32, PanelTouch>,
     panel_applets: PanelAppletStore,
+    overview: OverviewServiceHandle,
+    overview_revision: u64,
+    overview_snapshot: OverviewServiceSnapshot,
+    overview_scenes: BTreeMap<SurfaceId, OverviewScene>,
+    overview_input: BTreeMap<SurfaceId, OverviewInteraction>,
+    notification_scenes: BTreeMap<SurfaceId, NotificationScene>,
+    notification_input: BTreeMap<SurfaceId, NotificationInteraction>,
+    control_center_scenes: BTreeMap<SurfaceId, ControlCenterScene>,
+    control_center_input: BTreeMap<SurfaceId, ControlCenterInteraction>,
+    control_center_revisions: (u64, u64, u64, u64, u64),
     events: Vec<Event>,
     notifications: NotificationServiceHandle,
+    notification_revision: u64,
     power: PowerServiceHandle,
     power_revision: u64,
+    media: MediaServiceHandle,
+    media_revision: u64,
+    media_snapshot: MediaServiceSnapshot,
+    media_action: MediaActionState,
+    media_osd: MediaOsdState,
+    media_osd_observed_revision: u64,
+    media_osd_revision: u64,
+    media_osd_scenes: BTreeMap<SurfaceId, MediaOsdScene>,
+    media_osd_input: BTreeMap<SurfaceId, MediaOsdInteraction>,
+    network: NetworkServiceHandle,
+    session_lock: SessionLockServiceHandle,
+    session_lock_revision: u64,
+    lock_surfaces: BTreeMap<OutputId, SurfaceId>,
     presenter: Option<ShellPresenter>,
 }
 
 impl ShellRuntime {
     pub fn connect() -> Result<Self, ShellRuntimeError> {
-        Self::connect_with_config(ShellConfig::load_default_path()?)
+        let wayland = Self::connect_wayland()?;
+        let (reload, config) =
+            ShellConfigReloadHandle::start(ShellConfig::resolve_path(), wayland.wake_handle())?;
+        Self::with_wayland(wayland, config, Some(reload))
     }
 
     pub fn connect_with_config(config: ShellConfig) -> Result<Self, ShellRuntimeError> {
+        let wayland = Self::connect_wayland()?;
+        Self::with_wayland(wayland, config, None)
+    }
+
+    fn connect_wayland() -> Result<Runtime, ShellRuntimeError> {
         let wayland = Runtime::connect()?;
         if !wayland.capabilities().layer_shell_v1 {
             return Err(RuntimeError::Unsupported("layer-shell-v1").into());
         }
+        if !wayland.capabilities().session_lock_v1 {
+            return Err(RuntimeError::Unsupported("ext-session-lock-v1").into());
+        }
+        Ok(wayland)
+    }
+
+    fn with_wayland(
+        wayland: Runtime,
+        config: ShellConfig,
+        config_reload: Option<ShellConfigReloadHandle>,
+    ) -> Result<Self, ShellRuntimeError> {
+        let session_lock = SessionLockServiceHandle::start(wayland.wake_handle())?;
         let notifications =
             NotificationServiceHandle::start(Arc::new(Mutex::new(NotificationStore::default())))?;
         let power = PowerServiceHandle::start();
+        let media = MediaServiceHandle::start(wayland.wake_handle());
+        let network = NetworkServiceHandle::start(wayland.wake_handle());
+        let overview = OverviewServiceHandle::start(
+            config.tensorland.ipc_socket.clone(),
+            wayland.wake_handle(),
+        );
         Ok(Self {
             wayland,
             model: ShellModel::new(config.layout),
+            config_reload,
+            config_revision: 0,
             panel_config: config.panel,
+            media_config: config.media,
+            launcher: config.launcher,
             tensorland: config.tensorland,
             surfaces: BTreeMap::new(),
             surface_keys: BTreeMap::new(),
@@ -67,10 +143,34 @@ impl ShellRuntime {
             panel_input: BTreeMap::new(),
             panel_touches: BTreeMap::new(),
             panel_applets: PanelAppletStore::default(),
+            overview,
+            overview_revision: 0,
+            overview_snapshot: OverviewServiceSnapshot::Pending,
+            overview_scenes: BTreeMap::new(),
+            overview_input: BTreeMap::new(),
+            notification_scenes: BTreeMap::new(),
+            notification_input: BTreeMap::new(),
+            control_center_scenes: BTreeMap::new(),
+            control_center_input: BTreeMap::new(),
+            control_center_revisions: (0, 0, 0, 0, 0),
             events: Vec::with_capacity(128),
             notifications,
+            notification_revision: 0,
             power,
             power_revision: 0,
+            media,
+            media_revision: 0,
+            media_snapshot: MediaServiceSnapshot::Pending,
+            media_action: MediaActionState::Idle,
+            media_osd: MediaOsdState::default(),
+            media_osd_observed_revision: 0,
+            media_osd_revision: 0,
+            media_osd_scenes: BTreeMap::new(),
+            media_osd_input: BTreeMap::new(),
+            network,
+            session_lock,
+            session_lock_revision: 0,
+            lock_surfaces: BTreeMap::new(),
             presenter: None,
         })
     }
@@ -84,7 +184,13 @@ impl ShellRuntime {
             for event in &events {
                 self.handle_event(event)?;
             }
+            self.reconcile_config()?;
+            self.reconcile_session_lock_service()?;
+            self.reconcile_overview_service()?;
             self.reconcile_panel_services()?;
+            self.reconcile_media_osd()?;
+            self.reconcile_notification_scenes()?;
+            self.reconcile_control_center_scenes()?;
             self.reconcile_surfaces()?;
             self.events = events;
         }
@@ -131,6 +237,16 @@ impl ShellRuntime {
             ));
             self.power_revision = power_revision;
         }
+        let (media_revision, media, media_action) = self.media.read();
+        if media_revision != self.media_revision {
+            self.panel_applets.apply(PanelAppletUpdate::new(
+                PanelWidgetKind::Media,
+                media.panel_state(),
+            ));
+            self.media_snapshot = media;
+            self.media_action = media_action;
+            self.media_revision = media_revision;
+        }
         if self.panel_applets.take_dirty() {
             self.present_configured_panels()?;
         }
@@ -142,24 +258,36 @@ impl ShellRuntime {
             Event::Output(output) => self.model.apply_output_event(output.clone()),
             Event::LayerSurface(LayerSurfaceEvent::Configure { surface, .. }) => {
                 self.configured_surfaces.insert(*surface);
-                self.refresh_panel_scene(*surface)?;
+                self.refresh_surface_scenes(*surface)?;
                 self.present_surface(*surface)?;
             }
             Event::LayerSurface(LayerSurfaceEvent::Closed { surface }) => {
                 if let Some(key) = self.surface_keys.remove(surface) {
                     self.surfaces.remove(&key);
                     self.configured_surfaces.remove(surface);
-                    self.remove_panel_state(*surface);
+                    self.remove_surface_state(*surface);
                     self.remove_presented_surface(*surface)?;
                     self.wayland.destroy_surface(*surface)?;
                 }
             }
+            Event::SessionLock(event) => self.handle_session_lock_event(event)?,
             Event::Surface(SurfaceEvent::ScaleFactorChanged { surface, .. })
                 if self.configured_surfaces.contains(surface) =>
             {
                 self.present_surface(*surface)?;
             }
-            Event::Pointer(event) => self.handle_panel_pointer(event)?,
+            Event::Pointer(event) => {
+                self.handle_panel_pointer(event)?;
+                self.handle_overview_pointer(event)?;
+                self.handle_notification_pointer(event)?;
+                self.handle_media_osd_pointer(event)?;
+                self.handle_control_center_pointer(event)?;
+            }
+            Event::Keyboard(event) => {
+                self.handle_overview_keyboard(event)?;
+                self.handle_notification_keyboard(event)?;
+                self.handle_control_center_keyboard(event)?;
+            }
             Event::Touch(event) => self.handle_panel_touch(event)?,
             _ => {}
         }
@@ -181,7 +309,27 @@ impl ShellRuntime {
             .buffer_size(surface)
             .ok_or(ShellRuntimeError::MissingBufferExtent(surface))?;
         let extent = vulkan_renderer::Extent2D::new(width, height);
-        let interaction = self.panel_interaction(surface);
+        let panel_interaction = self.panel_interaction(surface);
+        let overview_interaction = self
+            .overview_input
+            .get(&surface)
+            .copied()
+            .unwrap_or_default();
+        let notification_interaction = self
+            .notification_input
+            .get(&surface)
+            .copied()
+            .unwrap_or_default();
+        let media_osd_interaction = self
+            .media_osd_input
+            .get(&surface)
+            .copied()
+            .unwrap_or_default();
+        let control_center_interaction = self
+            .control_center_input
+            .get(&surface)
+            .copied()
+            .unwrap_or_default();
         match self.presenter.as_mut() {
             Some(presenter) => presenter.ensure_surface(surface, key, Arc::new(host), extent)?,
             None => {
@@ -196,10 +344,25 @@ impl ShellRuntime {
             .present(
                 surface,
                 extent,
-                PanelPresentation::new(
-                    self.panel_scenes.get(&surface),
-                    interaction,
+                SurfacePresentation::new(
+                    RetainedSceneInput::new(self.panel_scenes.get(&surface), panel_interaction),
                     &self.panel_applets,
+                    RetainedSceneInput::new(
+                        self.overview_scenes.get(&surface),
+                        overview_interaction,
+                    ),
+                    RetainedSceneInput::new(
+                        self.notification_scenes.get(&surface),
+                        notification_interaction,
+                    ),
+                    RetainedSceneInput::new(
+                        self.media_osd_scenes.get(&surface),
+                        media_osd_interaction,
+                    ),
+                    RetainedSceneInput::new(
+                        self.control_center_scenes.get(&surface),
+                        control_center_interaction,
+                    ),
                 ),
             )?;
         Ok(())
@@ -240,13 +403,21 @@ impl ShellRuntime {
         Ok(())
     }
 
+    fn refresh_surface_scenes(&mut self, surface: SurfaceId) -> Result<(), ShellRuntimeError> {
+        self.refresh_panel_scene(surface)?;
+        self.refresh_overview_scene(surface)?;
+        self.refresh_notification_scene(surface)?;
+        self.refresh_media_osd_scene(surface)?;
+        self.refresh_control_center_scene(surface)
+    }
+
     fn panel_interaction(&self, surface: SurfaceId) -> PanelInteraction {
         let mut interaction = self.panel_input.get(&surface).copied().unwrap_or_default();
         let Some(key) = self.surface_keys.get(&surface) else {
             return interaction;
         };
         interaction.active = [
-            (ShellComponent::Launcher, PanelWidgetKind::Launcher),
+            (ShellComponent::Overview, PanelWidgetKind::Workspaces),
             (
                 ShellComponent::NotificationCenter,
                 PanelWidgetKind::Notifications,
@@ -302,7 +473,7 @@ impl ShellRuntime {
         };
         let changed = previous != *state;
         if let Some(widget) = activation {
-            self.activate_panel_widget(event.surface, widget);
+            self.activate_panel_widget(event.surface, widget)?;
         }
         if changed || activation.is_some() {
             self.present_surface(event.surface)?;
@@ -358,7 +529,7 @@ impl ShellRuntime {
                 };
                 self.panel_input.entry(touch.surface).or_default().pressed = None;
                 if touch.current == Some(touch.pressed) {
-                    self.activate_panel_widget(touch.surface, touch.pressed);
+                    self.activate_panel_widget(touch.surface, touch.pressed)?;
                 }
                 self.present_surface(touch.surface)?;
             }
@@ -379,22 +550,41 @@ impl ShellRuntime {
         Ok(())
     }
 
-    fn activate_panel_widget(&mut self, surface: SurfaceId, widget: PanelWidgetKind) {
+    fn activate_panel_widget(
+        &mut self,
+        surface: SurfaceId,
+        widget: PanelWidgetKind,
+    ) -> Result<(), ShellRuntimeError> {
+        if widget == PanelWidgetKind::Launcher {
+            self.overview
+                .spawn(self.launcher.command())
+                .map_err(|error| ShellRuntimeError::OverviewCommand(error.to_string()))?;
+            return Ok(());
+        }
         let Some(component) = widget.activation() else {
-            return;
+            return Ok(());
         };
         let Some(key) = self.surface_keys.get(&surface).copied() else {
-            return;
+            return Ok(());
         };
         let visible = self.model.visible(key.output, component);
         self.model.set_visible(key.output, component, !visible);
+        Ok(())
     }
 
-    fn remove_panel_state(&mut self, surface: SurfaceId) {
+    fn remove_surface_state(&mut self, surface: SurfaceId) {
         self.panel_scenes.remove(&surface);
         self.panel_input.remove(&surface);
         self.panel_touches
             .retain(|_, touch| touch.surface != surface);
+        self.overview_scenes.remove(&surface);
+        self.overview_input.remove(&surface);
+        self.notification_scenes.remove(&surface);
+        self.notification_input.remove(&surface);
+        self.media_osd_scenes.remove(&surface);
+        self.media_osd_input.remove(&surface);
+        self.control_center_scenes.remove(&surface);
+        self.control_center_input.remove(&surface);
     }
 
     fn remove_presented_surface(&mut self, surface: SurfaceId) -> Result<(), ShellPresentError> {
@@ -420,7 +610,7 @@ impl ShellRuntime {
             if let Some(surface) = self.surfaces.remove(&key) {
                 self.surface_keys.remove(&surface);
                 self.configured_surfaces.remove(&surface);
-                self.remove_panel_state(surface);
+                self.remove_surface_state(surface);
                 self.remove_presented_surface(surface)?;
                 self.wayland.destroy_surface(surface)?;
             }
@@ -442,6 +632,9 @@ impl ShellRuntime {
         component: ShellComponent,
         visible: bool,
     ) -> Result<(), ShellRuntimeError> {
+        if component == ShellComponent::LockScreen {
+            return Err(ShellRuntimeError::SecureLockControlledByLogind);
+        }
         self.model.set_visible(output, component, visible);
         self.reconcile_surfaces()
     }
@@ -463,9 +656,17 @@ pub enum ShellRuntimeError {
     #[error(transparent)]
     Config(#[from] ShellConfigError),
     #[error(transparent)]
+    ConfigReload(#[from] ShellConfigReloadError),
+    #[error(transparent)]
     Wayland(#[from] RuntimeError),
     #[error(transparent)]
     NotificationService(#[from] NotificationServiceError),
+    #[error(transparent)]
+    SessionLockService(#[from] SessionLockServiceError),
+    #[error(transparent)]
+    MediaService(#[from] crate::MediaServiceError),
+    #[error(transparent)]
+    NetworkService(#[from] crate::NetworkServiceError),
     #[error(transparent)]
     Present(#[from] ShellPresentError),
     #[error("Tensor Shell received configure for unknown surface {0:?}")]
@@ -478,4 +679,14 @@ pub enum ShellRuntimeError {
     MissingLogicalExtent(SurfaceId),
     #[error("Tensor Shell notification store lock is poisoned")]
     NotificationStorePoisoned,
+    #[error("Tensor Shell overview command failed: {0}")]
+    OverviewCommand(String),
+    #[error("Tensor Shell secure lock is controlled by logind, not layer-surface visibility")]
+    SecureLockControlledByLogind,
+    #[error("Tensor Shell received conflicting session-lock surfaces for output {output:?}")]
+    ConflictingLockSurface { output: OutputId },
+    #[error("Tensor Shell's logind lock monitor stopped while the session was unlocked")]
+    SessionLockMonitorStopped,
+    #[error("the compositor finished Tensor Shell's session-lock request (locked={was_locked})")]
+    SessionLockFinished { was_locked: bool },
 }
