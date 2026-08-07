@@ -1,56 +1,8 @@
-struct IconFrameResources<'a> {
-    resolver: &'a mut FileIconResolver,
-    thumbnails: &'a mut ThumbnailSourceResolver,
-    /// Resident GPU icon rasters at frame start (identity + raster size → sample).
-    gpu_resident: IconGpuResidentIndex,
-}
-
-impl<'a> IconFrameResources<'a> {
-    fn new(
-        resolver: &'a mut FileIconResolver,
-        thumbnails: &'a mut ThumbnailSourceResolver,
-        gpu_resident: IconGpuResidentIndex,
-    ) -> Self {
-        Self {
-            resolver,
-            thumbnails,
-            gpu_resident,
-        }
-    }
-
-    fn from_engine(engine: &'a mut IconEngine, gpu_resident: IconGpuResidentIndex) -> Self {
-        Self::new(&mut engine.resolver, &mut engine.thumbnails, gpu_resident)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct FolderPreviewCacheStats {
-    ready_entries: usize,
-    ready_bytes: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct IconFrameConfig {
-    surface_size: PhysicalSize<u32>,
-    ui_scale: f32,
-    sync_resolve_budget: usize,
-    role_updates_paused: bool,
-    icon_size_update_pending: bool,
-    folder_preview_cache: FolderPreviewCacheStats,
-}
-
-impl IconFrameConfig {
-    #[cfg(test)]
-    fn new(surface_size: PhysicalSize<u32>, ui_scale: f32, sync_resolve_budget: usize) -> Self {
-        Self {
-            surface_size,
-            ui_scale,
-            sync_resolve_budget,
-            role_updates_paused: false,
-            icon_size_update_pending: false,
-            folder_preview_cache: FolderPreviewCacheStats::default(),
-        }
-    }
+#[derive(Clone, Copy)]
+struct ItemIconDrawTarget {
+    pixmap_layout: ItemPixmapLayout,
+    clip: ViewRect,
+    layer: IconDrawLayer,
 }
 
 impl<'a> IconFrameBuilder<'a> {
@@ -73,7 +25,10 @@ impl<'a> IconFrameBuilder<'a> {
                 children.hash(&mut hasher);
                 seed.hash(&mut hasher);
                 IconGpuUploadKey::content(
-                    PathBuf::from(format!("tensor-files-folder-preview-{:016x}", hasher.finish())),
+                    PathBuf::from(format!(
+                        "tensor-files-folder-preview-{:016x}",
+                        hasher.finish()
+                    )),
                     *seed,
                 )
             }
@@ -93,7 +48,19 @@ impl<'a> IconFrameBuilder<'a> {
         )
     }
 
+    #[cfg(test)]
     fn new(resources: IconFrameResources<'a>, config: IconFrameConfig) -> Self {
+        if !config.role_updates_paused {
+            let _ = resources.resolver.drain_results();
+        }
+        Self::new_with_staging(resources, config, IconFrameStaging::default())
+    }
+
+    fn new_with_staging(
+        resources: IconFrameResources<'a>,
+        config: IconFrameConfig,
+        mut staging: IconFrameStaging,
+    ) -> Self {
         let IconFrameResources {
             resolver,
             thumbnails,
@@ -107,16 +74,35 @@ impl<'a> IconFrameBuilder<'a> {
             icon_size_update_pending,
             folder_preview_cache,
         } = config;
+        staging.clear();
+        let IconFrameStaging {
+            slot_by_identity,
+            slots,
+            draws,
+            overlay_draws,
+            content_batches,
+            overlay_batches,
+            content_vertices,
+            overlay_vertices,
+            batch_draw_indices,
+            batch_slot_order,
+        } = staging;
         Self {
             resolver,
             thumbnails,
             gpu_resident,
             surface_size,
             ui_scale: ui_scale.clamp(1.0, 2.0),
-            slot_by_identity: HashMap::new(),
-            slots: Vec::with_capacity(64),
-            draws: Vec::with_capacity(64),
-            overlay_draws: Vec::with_capacity(16),
+            slot_by_identity,
+            slots,
+            draws,
+            overlay_draws,
+            content_batches,
+            overlay_batches,
+            content_vertices,
+            overlay_vertices,
+            batch_draw_indices,
+            batch_slot_order,
             icons: 0,
             fallbacks: 0,
             thumbnails_loaded: 0,
@@ -135,170 +121,130 @@ impl<'a> IconFrameBuilder<'a> {
             sync_resolve_budget,
             role_updates_paused,
             icon_size_update_pending,
-            resolve_us: 0,
+            resolve_timing: FrameTiming::new(tensor_files_log_enabled()),
         }
     }
 
-    fn push_icon(
+    pub(crate) fn push_thumbnail_or_icon_with_shared_path(
         &mut self,
-        directory: &Path,
+        shared_path: &Arc<Path>,
         entry: &Entry,
-        rect: ViewRect,
-        clip: ViewRect,
-        layer: IconDrawLayer,
-    ) -> bool {
-        if rect.width <= 0.0 || rect.height <= 0.0 {
-            self.fallbacks += 1;
-            return false;
-        }
-        let Some(screen) = intersect_rect(rect, clip) else {
-            return true;
-        };
-
-        self.icons += 1;
-        let resolve_start = Instant::now();
-        let icon_size = rect.width.max(rect.height).clamp(16.0, 256.0);
-        let size_px = icon_cache_size(icon_size);
-        let path = directory.join(entry.name.as_ref());
-        let path_key = file_icon_path_cache_key_with_stamp(
-            &path,
-            entry.is_dir,
-            entry.mime_type.clone(),
-            entry.mime_magic_checked,
-            entry.modified_secs,
-            icon_size,
-        );
-        let role_key = path_key.role.clone();
-        let requested_gpu_key = IconGpuUploadKey::role(role_key.kind.clone(), size_px);
-        if self.push_paused_resident_draw(&requested_gpu_key, rect, screen, layer) {
-            self.resolve_us += resolve_start.elapsed().as_micros();
-            return true;
-        }
-        let resolved = if self.icon_size_update_pending {
-            // Dolphin invalidates each visible widget's pixmap cache on every
-            // icon-size change. A stable iconName is rasterized at the new
-            // size immediately; a newly visible unresolved role keeps its
-            // preliminary icon until the 300 ms updater timer expires.
-            self.resolver
-                .resolve_path_cache_key_for_icon_size_change(path_key)
-        } else if self.role_updates_paused {
-            self.resolver.cached_path_cache_key(&path_key)
-        } else if self.sync_resolve_budget > 0 {
-            self.sync_resolve_budget -= 1;
-            Some(self.resolver.resolve_path_cache_key_visible(path_key).0)
-        } else {
-            self.resolver.resolve_path_cache_key(path_key)
-        };
-        let (role_key, snapshot) = if let Some(snapshot) = resolved {
-            (role_key, snapshot)
-        } else {
-            self.deferred += 1;
-            let Some(fallback) = self.resolver.cached_preliminary_file_icon(size_px) else {
-                self.resolve_us += resolve_start.elapsed().as_micros();
-                self.fallbacks += 1;
-                return false;
-            };
-            fallback
-        };
-        self.resolve_us += resolve_start.elapsed().as_micros();
-
-        // MIME / directory / generic icons share one GPU slot per *role*, not
-        // per filesystem path. Each FileManager raster size has its own
-        // retained variant, matching Dolphin's size-keyed QPixmapCache without
-        // making thousands of /bin entries thrash VRAM.
-        let gpu_key = IconGpuUploadKey::role(role_key.kind.clone(), size_px);
-        if self.push_paused_resident_draw(&gpu_key, rect, screen, layer) {
-            return true;
-        }
-        let Some(theme_path) = snapshot.path else {
-            self.fallbacks += 1;
-            return false;
-        };
-        self.push_gpu_source_draw(
-            gpu_key,
-            IconGpuSource::file(theme_path, size_px),
-            rect,
-            screen,
-            layer,
-        );
-        true
-    }
-
-    fn push_thumbnail_or_icon(
-        &mut self,
-        directory: &Path,
-        entry: &Entry,
+        retained_role: Option<&FileIconRoleCacheKey>,
         folder_preview: Option<&FolderPreviewReady>,
         pixmap_layout: ItemPixmapLayout,
         clip: ViewRect,
     ) -> bool {
-        self.push_thumbnail_or_icon_on_layer(
-            directory,
+        self.push_thumbnail_or_icon_on_layer_with_shared_path(
+            shared_path,
             entry,
+            retained_role,
             folder_preview,
-            pixmap_layout,
-            clip,
-            IconDrawLayer::Content,
+            ItemIconDrawTarget {
+                pixmap_layout,
+                clip,
+                layer: IconDrawLayer::Content,
+            },
         )
     }
 
-    fn push_thumbnail_or_icon_on_layer(
+    fn push_thumbnail_or_icon_on_layer_with_shared_path(
         &mut self,
-        directory: &Path,
+        shared_path: &Arc<Path>,
         entry: &Entry,
+        retained_role: Option<&FileIconRoleCacheKey>,
         folder_preview: Option<&FolderPreviewReady>,
-        pixmap_layout: ItemPixmapLayout,
-        clip: ViewRect,
-        layer: IconDrawLayer,
+        target: ItemIconDrawTarget,
     ) -> bool {
+        let ItemIconDrawTarget {
+            pixmap_layout,
+            clip,
+            layer,
+        } = target;
+        let path = shared_path.as_ref();
         let drew = if entry.is_dir {
-            self.push_folder_preview_or_icon(
-                directory,
+            self.push_folder_preview_or_icon_with_shared_path(
+                shared_path,
                 entry,
+                retained_role,
                 folder_preview,
-                pixmap_layout,
+                target,
+            )
+        } else if self.push_thumbnail_with_shared_path(
+            shared_path,
+            entry,
+            pixmap_layout.icon_rect,
+            clip,
+            layer,
+        ) {
+            true
+        } else {
+            self.push_icon(
+                path,
+                entry,
+                retained_role,
+                pixmap_layout.icon_rect,
                 clip,
                 layer,
             )
-        } else if self.push_thumbnail(directory, entry, pixmap_layout.icon_rect, clip, layer) {
-            true
-        } else {
-            self.push_icon(directory, entry, pixmap_layout.icon_rect, clip, layer)
         };
         if drew {
-            self.push_entry_icon_emblems(directory, entry, pixmap_layout.icon_rect, clip);
+            self.push_entry_icon_emblems(path, entry, pixmap_layout.icon_rect, clip);
         }
         drew
     }
 
-    fn push_folder_preview_or_icon(
+    fn push_folder_preview_or_icon_with_shared_path(
         &mut self,
-        directory: &Path,
+        shared_path: &Arc<Path>,
         entry: &Entry,
+        retained_role: Option<&FileIconRoleCacheKey>,
         folder_preview: Option<&FolderPreviewReady>,
-        pixmap_layout: ItemPixmapLayout,
-        clip: ViewRect,
-        layer: IconDrawLayer,
+        target: ItemIconDrawTarget,
     ) -> bool {
-        let path = entry_path_for_thumbnail(directory, entry);
+        let ItemIconDrawTarget {
+            pixmap_layout,
+            clip,
+            layer,
+        } = target;
+        let path = shared_path.as_ref();
         let Some(_modified_secs) = entry.modified_secs else {
-            return self.push_icon(directory, entry, pixmap_layout.icon_rect, clip, layer);
+            return self.push_icon(
+                path,
+                entry,
+                retained_role,
+                pixmap_layout.icon_rect,
+                clip,
+                layer,
+            );
         };
-        if !entry.metadata_complete || is_network_path(&path) {
-            return self.push_icon(directory, entry, pixmap_layout.icon_rect, clip, layer);
+        if !entry.metadata_complete || is_network_path(path) {
+            return self.push_icon(
+                path,
+                entry,
+                retained_role,
+                pixmap_layout.icon_rect,
+                clip,
+                layer,
+            );
         }
-        let drew_folder_shell =
-            self.push_icon(directory, entry, pixmap_layout.icon_rect, clip, layer);
+        let drew_folder_shell = self.push_icon(
+            path,
+            entry,
+            retained_role,
+            pixmap_layout.icon_rect,
+            clip,
+            layer,
+        );
         let Some(preview) = folder_preview else {
             self.folder_preview_deferred += 1;
             return drew_folder_shell;
         };
-        let preview_rect = folder_preview_gpu_draw_rect(pixmap_layout, preview.size_px);
+        let preview_rect = folder_preview_gpu_draw_rect(pixmap_layout);
         let Some(screen) = intersect_rect(preview_rect, clip) else {
             return drew_folder_shell;
         };
         let size_px = preview.size_px;
-        let gpu_key = IconGpuUploadKey::content(path, preview.stamp);
+        let gpu_key = IconGpuUploadKey::content(Arc::clone(shared_path), preview.stamp);
         if self.push_paused_resident_draw(&gpu_key, preview_rect, screen, layer) {
             self.folder_preview_quads += 1;
             return drew_folder_shell;
@@ -318,58 +264,66 @@ impl<'a> IconFrameBuilder<'a> {
         drew_folder_shell
     }
 
+    #[cfg(test)]
     fn push_thumbnail(
         &mut self,
-        directory: &Path,
+        path: &Path,
         entry: &Entry,
         rect: ViewRect,
         clip: ViewRect,
         layer: IconDrawLayer,
     ) -> bool {
-        // FileManager still shows previews in Details / Compact at SizeSmall (16px).
-        // Only skip below the smallest icon-cache bucket so list mode does not
-        // fall back to MIME icons while read-ahead already has a thumbnail.
+        let shared_path = Arc::from(path);
+        self.push_thumbnail_with_shared_path(&shared_path, entry, rect, clip, layer)
+    }
+
+    fn push_thumbnail_with_shared_path(
+        &mut self,
+        shared_path: &Arc<Path>,
+        entry: &Entry,
+        rect: ViewRect,
+        clip: ViewRect,
+        layer: IconDrawLayer,
+    ) -> bool {
+        let path = shared_path.as_ref();
+        // Details and Compact still show previews at the smallest 16 px bucket.
         if rect.width.max(rect.height) < 16.0 {
             return false;
         }
-        let path = entry_path_for_thumbnail(directory, entry);
         let Some(modified_secs) = entry.modified_secs else {
             return false;
         };
         if !entry.metadata_complete
-            || is_network_path(&path)
+            || is_network_path(path)
             || mime_magic_resolution_required(
                 entry.is_dir,
                 entry.size_bytes,
                 entry.mime_type.as_deref(),
                 entry.mime_magic_checked,
             )
-            || !thumbnail_request_may_have_preview(&path, entry.mime_type.as_deref())
+            || !thumbnail_request_may_have_preview(path, entry.mime_type.as_deref())
         {
             return false;
         }
         let Some(screen) = intersect_rect(rect, clip) else {
             return true;
         };
-        // Generate a freestanding encoded thumbnail at least as large as the
-        // on-screen icon. Scaling and placement happen in the GPU target.
+        // Upload a freestanding thumbnail at least as large as the icon; the
+        // GPU target handles scaling and placement.
         let display_px = rect.width.max(rect.height).clamp(16.0, 256.0);
         let size_px = thumbnail_display_cache_size(display_px);
         // Content previews are path+mtime only — zoom reuses the same GPU texture.
-        let gpu_key = IconGpuUploadKey::content(path.clone(), modified_secs);
+        let gpu_key = IconGpuUploadKey::content(Arc::clone(shared_path), modified_secs);
         if self.push_paused_resident_draw(&gpu_key, rect, screen, layer) {
             self.thumbnail_quads += 1;
             return true;
         }
-        // Dolphin keeps the current iconPixmap while its 300 ms icon-size
-        // timer is active. Do not start an exact-size thumbnail job mid-zoom:
-        // reuse a completed preview even if its GPU texture was evicted while
-        // the item moved out of view; only a genuinely new item uses its
-        // stable MIME icon until settling.
+        // During Dolphin's 300 ms icon-size pause, reuse a completed preview;
+        // only a genuinely new item falls back to its stable MIME icon.
         if self.role_updates_paused {
             if let Some(source) =
                 self.thumbnails
-                    .cached_or_closest_ready(&path, modified_secs, size_px)
+                    .cached_or_closest_ready(path, modified_secs, size_px)
             {
                 self.push_gpu_source_draw(gpu_key, source, rect, screen, layer);
                 self.thumbnail_quads += 1;
@@ -387,7 +341,7 @@ impl<'a> IconFrameBuilder<'a> {
             }
         }
         match self.thumbnails.resolve(
-            &path,
+            path,
             modified_secs,
             entry
                 .mime_type
@@ -439,7 +393,7 @@ impl<'a> IconFrameBuilder<'a> {
             return true;
         };
         self.icons += 1;
-        let resolve_start = Instant::now();
+        let resolve_start = self.resolve_timing.start();
         let icon_size = rect.width.max(rect.height).clamp(16.0, 256.0);
         let snapshot = if self.sync_resolve_budget > 0 {
             self.resolver
@@ -448,12 +402,12 @@ impl<'a> IconFrameBuilder<'a> {
             self.resolver.resolve_named(icon_name, fallback, icon_size)
         };
         let Some(snapshot) = snapshot else {
-            self.resolve_us += resolve_start.elapsed().as_micros();
+            self.resolve_timing.record(resolve_start);
             self.deferred += 1;
             self.fallbacks += 1;
             return false;
         };
-        self.resolve_us += resolve_start.elapsed().as_micros();
+        self.resolve_timing.record(resolve_start);
 
         let Some(path) = snapshot.path else {
             self.fallbacks += 1;
@@ -484,21 +438,21 @@ impl<'a> IconFrameBuilder<'a> {
         let Some(screen) = intersect_rect(rect, clip) else {
             return true;
         };
-        let icon_name = icon_name.trim();
-        if icon_name.is_empty() {
+        let Some(icon_name) = self.resolver.intern_named_icon_name(icon_name) else {
             return false;
-        }
+        };
         let icon_size = rect.width.max(rect.height).clamp(8.0, 256.0);
         let size_px = icon_size.round() as u16;
-        let gpu_key = IconGpuUploadKey::named_asset(icon_name.to_string(), size_px);
+        let gpu_key = IconGpuUploadKey::named_asset(Arc::clone(&icon_name), size_px);
         if self.push_paused_resident_draw(&gpu_key, rect, screen, layer) {
             return true;
         }
-        // KIconUtils asks the theme for the exact 8/16/22 px emblem variant.
-        // Routing an 8 px badge through the generic >=16 px cache chooses
-        // different artwork and then downsamples it, which visibly softens
-        // the permission/link mark.
-        let Some(path) = self.resolver.resolve_named_exact_fast(icon_name, icon_size) else {
+        // Emblems use the theme's exact 8/16/22 px variant; generic >=16 px
+        // caching would downsample and soften the badge.
+        let Some(path) = self
+            .resolver
+            .resolve_named_exact_fast(icon_name.as_ref(), icon_size)
+        else {
             return false;
         };
         self.push_gpu_source_draw(
@@ -513,18 +467,17 @@ impl<'a> IconFrameBuilder<'a> {
 
     fn push_entry_icon_emblems(
         &mut self,
-        directory: &Path,
+        path: &Path,
         entry: &Entry,
         icon_rect: ViewRect,
         clip: ViewRect,
     ) {
-        let path = directory.join(entry.name.as_ref());
-        let emblems = icon_emblem_kinds_for_path(&path);
-        if emblems.is_empty() {
+        let emblems = self.resolver.icon_emblem_mask_for_entry(path, entry);
+        let rects = icon_emblem_rects(icon_rect, self.ui_scale);
+        if emblems.iter().next().is_none() {
             return;
         }
-        let rects = icon_emblem_rects(icon_rect, self.ui_scale);
-        for (index, emblem) in emblems.into_iter().take(rects.len()).enumerate() {
+        for (index, emblem) in emblems.iter().take(rects.len()).enumerate() {
             for icon_name in emblem.theme_names() {
                 if self.push_named_theme_icon_exact(
                     icon_name,
@@ -580,8 +533,8 @@ impl<'a> IconFrameBuilder<'a> {
         self.push_slot_draw(slot, rect, screen, layer);
     }
 
-    /// During Dolphin's icon-size transaction, reuse an exact-size theme
-    /// raster or a size-independent retained content preview when available.
+    /// Reuse paused residents except semantic roles during an icon-size
+    /// transaction; those must verify target-size source content first.
     fn push_paused_resident_draw(
         &mut self,
         identity: &IconGpuUploadKey,
@@ -589,7 +542,11 @@ impl<'a> IconFrameBuilder<'a> {
         screen: ViewRect,
         layer: IconDrawLayer,
     ) -> bool {
-        if !self.role_updates_paused || self.gpu_resident.get(identity).is_none() {
+        if (matches!(&identity.identity, IconGpuIdentity::Role { .. })
+            && self.icon_size_update_pending)
+            || !self.role_updates_paused
+            || self.gpu_resident.get(identity).is_none()
+        {
             return false;
         }
         self.cache_hits += 1;
@@ -606,11 +563,7 @@ impl<'a> IconFrameBuilder<'a> {
         layer: IconDrawLayer,
     ) {
         let side = u32::from(source.size_px().max(1));
-        let content_hash = {
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            source.hash(&mut hasher);
-            hasher.finish()
-        };
+        let content_hash = source.content_hash();
         let slot = if let Some(&slot) = self.slot_by_identity.get(&identity) {
             let existing = &mut self.slots[slot as usize];
             let old_area = existing
@@ -698,8 +651,7 @@ impl<'a> IconFrameBuilder<'a> {
         let gpu_slot = &self.slots[slot as usize];
         let content_w = gpu_slot.content_width.max(1) as f32;
         let content_h = gpu_slot.content_height.max(1) as f32;
-        // Sample the full content rect of the resident texture into the screen
-        // icon box — zoom changes `rect` only, never the GPU identity.
+        // Zoom changes `rect` only; the resident GPU identity stays stable.
         let scale_x = content_w / rect.width.max(1.0);
         let scale_y = content_h / rect.height.max(1.0);
         let source = ViewRect {
@@ -720,16 +672,31 @@ impl<'a> IconFrameBuilder<'a> {
         }
     }
 
-    fn finish(self) -> IconFrame {
-        let (content_vertices, content_batches) =
-            pack_icon_batches(&self.draws, &self.slots, self.surface_size);
-        let (overlay_vertices, overlay_batches) =
-            pack_icon_batches(&self.overlay_draws, &self.slots, self.surface_size);
+    fn finish(mut self) -> IconFrame {
+        pack_icon_batches_into(
+            &self.draws,
+            &self.slots,
+            self.surface_size,
+            &mut self.content_vertices,
+            &mut self.content_batches,
+            &mut self.batch_draw_indices,
+            &mut self.batch_slot_order,
+        );
+        pack_icon_batches_into(
+            &self.overlay_draws,
+            &self.slots,
+            self.surface_size,
+            &mut self.overlay_vertices,
+            &mut self.overlay_batches,
+            &mut self.batch_draw_indices,
+            &mut self.batch_slot_order,
+        );
         let (content_hash, geometry_hash, vertex_hash, slot_hash) = if tensor_files_log_enabled() {
             (
                 icon_draw_content_hash(&self.draws, &self.overlay_draws, &self.slots),
                 icon_draw_geometry_hash(&self.draws, &self.overlay_draws),
-                vertex_pair_hash(&content_vertices, &overlay_vertices).unwrap_or_default(),
+                vertex_pair_hash(&self.content_vertices, &self.overlay_vertices)
+                    .unwrap_or_default(),
                 icon_slot_hash(&self.slots),
             )
         } else {
@@ -750,15 +717,21 @@ impl<'a> IconFrameBuilder<'a> {
             .iter()
             .filter(|slot| slot.source.is_some() || slot.dmabuf.is_some())
             .count();
+        let quads = self.draws.len() + self.overlay_draws.len();
         IconFrame {
             slots: self.slots,
-            content_batches,
-            overlay_batches,
-            content_vertices,
-            overlay_vertices,
+            content_batches: self.content_batches,
+            overlay_batches: self.overlay_batches,
+            content_vertices: self.content_vertices,
+            overlay_vertices: self.overlay_vertices,
+            slot_by_identity: self.slot_by_identity,
+            draws: self.draws,
+            overlay_draws: self.overlay_draws,
+            batch_draw_indices: self.batch_draw_indices,
+            batch_slot_order: self.batch_slot_order,
             stats: IconFrameStats {
                 icons: self.icons,
-                quads: self.draws.len() + self.overlay_draws.len(),
+                quads,
                 fallbacks: self.fallbacks,
                 deferred: self.deferred,
                 thumbnails: self.thumbnails_loaded,
@@ -786,7 +759,7 @@ impl<'a> IconFrameBuilder<'a> {
                 geometry_hash,
                 vertex_hash,
                 slot_hash,
-                resolve_us: self.resolve_us,
+                resolve_us: self.resolve_timing.total_us(),
             },
         }
     }

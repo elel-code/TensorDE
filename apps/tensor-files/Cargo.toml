@@ -19,6 +19,7 @@ name = "tensor-files-privileged-helper"
 path = "src/bin/tensor-files-privileged-helper.rs"
 
 [dependencies]
+arrayvec = "0.7"
 async-channel = "2"
 async-lock = "3"
 bevy_ecs = { version = "0.19", default-features = false, features = ["std"] }
@@ -40,6 +41,7 @@ serde = "1"
 rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 svgtypes = "0.16"
 tensor-dbus = { path = "../../crates/tensor-dbus" }
+tensor-kdl = { path = "../../crates/tensor-kdl" }
 # Default features include Compio event-loop integration.
 wayland-client-runtime = { path = "../../crates/wayland-client-runtime", features = ["compio"] }
 vulkan-renderer = { path = "../../crates/vulkan-renderer" }

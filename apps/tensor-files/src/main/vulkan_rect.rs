@@ -121,6 +121,11 @@ impl NativeFrameLayers {
             overlay_rects: &self.overlay_rects,
         }
     }
+
+    pub(crate) fn clear(&mut self) {
+        self.base_rects.clear();
+        self.overlay_rects.clear();
+    }
 }
 
 pub(crate) struct VulkanRectRenderer {
@@ -220,8 +225,8 @@ impl VulkanRectStream {
         })
     }
 
-    pub(crate) fn vertex_buffer(&self) -> Option<&Buffer> {
-        (self.instance_count != 0).then_some(self.instance_buffer.buffer())
+    pub(crate) fn buffer(&self) -> &Buffer {
+        self.instance_buffer.buffer()
     }
 }
 

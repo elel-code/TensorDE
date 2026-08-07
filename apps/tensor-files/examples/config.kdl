@@ -1,0 +1,20 @@
+places {
+    sidebar {
+        width 280.0
+        visible #true
+    }
+}
+
+view {
+    mode "compact"
+    show-hidden #false
+    icons-preview-size 64
+    compact-preview-size 48
+    details-preview-size 48
+}
+
+appearance {
+    dark-mode #false
+    background-blur #false
+    background-opacity 1.0
+}

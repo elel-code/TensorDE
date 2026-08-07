@@ -8,13 +8,13 @@ pub(crate) enum FileIconKind {
         mime: Arc<str>,
     },
     PreliminaryFile {
-        extension: Option<String>,
+        extension: Option<Arc<str>>,
     },
     File {
-        extension: Option<String>,
+        extension: Option<Arc<str>>,
     },
     Named {
-        icon_name: String,
+        icon_name: Arc<str>,
         fallback: NamedIconFallback,
     },
 }
@@ -67,16 +67,26 @@ pub(crate) fn file_icon_path_cache_key_with_stamp(
     icon_size: f32,
 ) -> FileIconPathCacheKey {
     FileIconPathCacheKey {
-        role: FileIconRoleCacheKey {
-            kind: file_icon_kind_with_stamp(
-                path,
-                is_dir,
-                mime_type,
-                mime_magic_checked,
-                modified_secs,
-            ),
-        },
+        role: file_icon_role_cache_key_with_stamp(
+            path,
+            is_dir,
+            mime_type,
+            mime_magic_checked,
+            modified_secs,
+        ),
         size_px: icon_cache_size(icon_size),
+    }
+}
+
+pub(crate) fn file_icon_role_cache_key_with_stamp(
+    path: &Path,
+    is_dir: bool,
+    mime_type: Option<Arc<str>>,
+    mime_magic_checked: bool,
+    modified_secs: Option<u64>,
+) -> FileIconRoleCacheKey {
+    FileIconRoleCacheKey {
+        kind: file_icon_kind_with_stamp(path, is_dir, mime_type, mime_magic_checked, modified_secs),
     }
 }
 
@@ -123,13 +133,13 @@ fn file_icon_kind_with_stamp(
     }
 }
 
-fn desktop_entry_icon_name_cached(path: &Path, modified_secs: Option<u64>) -> Option<String> {
+fn desktop_entry_icon_name_cached(path: &Path, modified_secs: Option<u64>) -> Option<Arc<str>> {
     const MAX_ENTRIES: usize = 512;
-    type DesktopIconCache = std::collections::HashMap<(std::path::PathBuf, u64), Option<String>>;
+    type DesktopIconCache = std::collections::HashMap<(std::path::PathBuf, u64), Option<Arc<str>>>;
     static CACHE: OnceLock<Mutex<DesktopIconCache>> = OnceLock::new();
 
     let Some(stamp) = modified_secs else {
-        return desktop_entry_icon_name(path);
+        return desktop_entry_icon_name(path).map(Arc::<str>::from);
     };
     let key = (path.to_path_buf(), stamp);
     let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
@@ -139,7 +149,7 @@ fn desktop_entry_icon_name_cached(path: &Path, modified_secs: Option<u64>) -> Op
         return icon.clone();
     }
 
-    let icon = desktop_entry_icon_name(path);
+    let icon = desktop_entry_icon_name(path).map(Arc::<str>::from);
     if let Ok(mut cache) = cache.lock() {
         if cache.len() >= MAX_ENTRIES {
             cache.clear();
@@ -155,7 +165,10 @@ fn desktop_entry_icon_name_cached(path: &Path, modified_secs: Option<u64>) -> Op
 
 fn is_desktop_entry_file(path: &Path, mime_type: Option<&str>) -> bool {
     path.file_name().is_some_and(|name| name == ".directory")
-        || file_extension(path).as_deref() == Some("desktop")
+        || path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("desktop"))
         || mime_type.is_some_and(|mime| {
             matches!(
                 mime,
@@ -255,10 +268,10 @@ pub(crate) fn file_icon_profile(
     }
 }
 
-fn file_extension(path: &Path) -> Option<String> {
+fn file_extension(path: &Path) -> Option<Arc<str>> {
     path.extension()
         .and_then(|extension| extension.to_str())
-        .map(|extension| extension.to_ascii_lowercase())
+        .map(|extension| Arc::from(extension.to_ascii_lowercase()))
 }
 
 fn mime_icon_candidates(mime_name: &str, mime: &tensor_files_core::MimeDatabase) -> Vec<String> {
@@ -422,7 +435,7 @@ mod tests {
         assert_eq!(
             file_icon_kind(&path, false, Some(Arc::from("application/x-desktop")), true),
             FileIconKind::Named {
-                icon_name: "7352_OCS Desktop.0".to_string(),
+                icon_name: Arc::from("7352_OCS Desktop.0"),
                 fallback: NamedIconFallback::Application,
             }
         );
@@ -430,7 +443,7 @@ mod tests {
         assert_eq!(
             file_icon_kind(&path, false, None, false),
             FileIconKind::Named {
-                icon_name: "7352_OCS Desktop.0".to_string(),
+                icon_name: Arc::from("7352_OCS Desktop.0"),
                 fallback: NamedIconFallback::Application,
             }
         );
@@ -492,7 +505,7 @@ mod tests {
         assert_eq!(
             file_icon_kind(&path, false, None, false),
             FileIconKind::Named {
-                icon_name: "user-desktop".to_string(),
+                icon_name: Arc::from("user-desktop"),
                 fallback: NamedIconFallback::Application,
             }
         );
@@ -542,7 +555,7 @@ mod tests {
         assert_eq!(same_stamp.role, first.role);
         assert!(matches!(
             changed_stamp.role.kind,
-            FileIconKind::Named { ref icon_name, .. } if icon_name == "second-icon"
+            FileIconKind::Named { ref icon_name, .. } if icon_name.as_ref() == "second-icon"
         ));
         let _ = fs::remove_dir_all(root);
     }
@@ -611,6 +624,37 @@ mod tests {
     }
 
     #[test]
+    fn zoom_size_keys_share_retained_preliminary_extension_storage() {
+        let first = file_icon_path_cache_key_with_stamp(
+            Path::new("/tmp/payload.ZZZ"),
+            false,
+            Some(Arc::from(tensor_files_core::GENERIC_BINARY_MIME)),
+            false,
+            Some(1),
+            48.0,
+        );
+        let second = FileIconPathCacheKey {
+            role: first.role.clone(),
+            size_px: 128,
+        };
+
+        match (&first.role.kind, &second.role.kind) {
+            (
+                FileIconKind::PreliminaryFile {
+                    extension: Some(first),
+                },
+                FileIconKind::PreliminaryFile {
+                    extension: Some(second),
+                },
+            ) => {
+                assert_eq!(first.as_ref(), "zzz");
+                assert!(Arc::ptr_eq(first, second));
+            }
+            roles => panic!("unexpected preliminary roles: {roles:?}"),
+        }
+    }
+
+    #[test]
     fn exe_preliminary_icon_candidates_include_executable_alias() {
         let database = tensor_files_core::MimeDatabase::from_maps(
             [("exe".to_string(), "application/x-msdownload".to_string())].into(),
@@ -619,7 +663,7 @@ mod tests {
         );
         let profile = file_icon_profile(
             &FileIconKind::PreliminaryFile {
-                extension: Some("exe".to_string()),
+                extension: Some(Arc::from("exe")),
             },
             &database,
         );

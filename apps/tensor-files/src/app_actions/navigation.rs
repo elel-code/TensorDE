@@ -46,7 +46,7 @@ impl TensorFilesApp {
         }
     }
 
-    pub(crate) fn reload_scene_path(&mut self, event_loop: &ActiveEventLoop) {
+    pub(crate) fn reload_scene_path(&mut self, _event_loop: &ActiveEventLoop) {
         let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
             return;
         };
@@ -57,10 +57,7 @@ impl TensorFilesApp {
                     self.scene.active_pane_path_label(),
                     false,
                 ));
-                self.apply_action_outcome(
-                    event_loop,
-                    ShellActionOutcome::Present("reload-directory"),
-                );
+                self.apply_window_action_outcome(ShellActionOutcome::Present("reload-directory"));
             }
             Ok(false) => {
                 self.scene.record_task_status(ShellTaskStatus::completed(

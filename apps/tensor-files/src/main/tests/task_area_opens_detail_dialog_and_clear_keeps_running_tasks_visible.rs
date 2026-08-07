@@ -15,6 +15,12 @@
             "1 item to /tmp",
             false,
         ));
+        let layers = native_frame_layers(&mut scene, size);
+        assert!(layers.base_rects.iter().any(|instance| {
+            instance.color() == scene.theme().task_status_color(ShellTaskStatusKind::Running)
+        }));
+        let text = native_text_frame(&mut scene, size);
+        assert!(text.stats.labels >= 4);
         let task_area = scene.places_task_area_rect(size).unwrap();
         assert_eq!(
             scene.open_task_detail_dialog_at_screen_point(
@@ -334,7 +340,7 @@
     }
 
     #[test]
-    fn rubber_band_drag_from_blank_space_selects_intersecting_visual_rects() {
+    fn rubber_band_drag_selects_intersections_and_reuses_index_staging() {
         let mut scene = test_scene(
             vec![
                 test_entry("alpha.txt", false),
@@ -368,6 +374,15 @@
         assert!(scene.set_pointer(current, size));
         assert!(scene.panes[ShellPaneId::SLOT_0].selection.contains(0));
         assert!(scene.rubber_band.as_ref().is_some_and(|band| band.active));
+        let staging = &scene.rubber_band.as_ref().unwrap().index_staging;
+        let staging_capacity = staging.capacity();
+        let staging_pointer = staging.as_ptr();
+        assert!(staging_capacity > 0);
+
+        let _ = scene.set_pointer(current, size);
+        let staging = &scene.rubber_band.as_ref().unwrap().index_staging;
+        assert_eq!(staging.capacity(), staging_capacity);
+        assert_eq!(staging.as_ptr(), staging_pointer);
         assert!(scene.end_pane_pointer(current, size));
         assert!(scene.rubber_band.is_none());
     }

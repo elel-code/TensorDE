@@ -82,8 +82,8 @@ use ui::icon_role_read_ahead::ShellIconRoleReadAheadQueue;
 #[cfg(test)]
 use ui::icon_roles::file_icon_profile;
 use ui::icon_roles::{
-    FileIconKind, FileIconProfile, NamedIconFallback, file_icon_path_cache_key_with_stamp,
-    icon_cache_size, thumbnail_display_cache_size,
+    FileIconKind, FileIconPathCacheKey, FileIconProfile, FileIconRoleCacheKey, NamedIconFallback,
+    file_icon_path_cache_key_with_stamp, icon_cache_size, thumbnail_display_cache_size,
 };
 use ui::location::{
     LocationDraftPurpose, PathHistory, ShellLocationDraft, ShellPaneHistories,
@@ -139,7 +139,6 @@ use ui::pane::{
     ShellPaneGeometry, ShellPaneId, ShellPaneProjection, ShellPaneScrollMetrics,
     ShellPaneSplitMetrics, ShellPaneState, ShellPaneStates, ShellPaneView, ShellPaneVisibleItem,
     ShellPaneVisibleSlotPools, ShellPaneZoomLevels, ShellVisibleItemSlotStats,
-    ShellVisibleSlotItem,
 };
 use ui::pane_layout::{
     CompactLayoutCache, CompactLayoutCacheKey, CompactLayoutCacheValue, DetailsLayout,
@@ -259,6 +258,12 @@ fn startup_zoom_levels(settings: &AppSettings) -> ShellPaneZoomLevels {
 fn startup_places_visible(settings: &AppSettings) -> bool {
     settings.places_sidebar.visible.unwrap_or(true)
 }
+fn startup_places_width(settings: &AppSettings) -> f32 {
+    settings
+        .places_sidebar
+        .width
+        .unwrap_or(PLACES_SIDEBAR_WIDTH)
+}
 fn startup_dark_mode(settings: &AppSettings) -> bool {
     settings.appearance.dark_mode.unwrap_or(false)
 }
@@ -319,6 +324,13 @@ fn save_places_visible_setting(settings_path: &Path, visible: bool) -> Result<()
     save_app_settings(settings_path, &settings)
         .map_err(|error| format!("save settings {}: {error}", settings_path.display()))
 }
+fn save_places_width_setting(settings_path: &Path, width: f32) -> Result<(), String> {
+    let mut settings = load_app_settings(settings_path)
+        .map_err(|error| format!("load settings {}: {error}", settings_path.display()))?;
+    settings.places_sidebar.width = Some(width);
+    save_app_settings(settings_path, &settings)
+        .map_err(|error| format!("save settings {}: {error}", settings_path.display()))
+}
 fn save_dark_mode_setting(settings_path: &Path, dark_mode: bool) -> Result<(), String> {
     let mut settings = load_app_settings(settings_path)
         .map_err(|error| format!("load settings {}: {error}", settings_path.display()))?;
@@ -371,6 +383,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut scene = ShellScene::load_with_hidden_visibility(options.path, view_mode, show_hidden)?;
     scene.apply_startup_zoom_levels(startup_zoom_levels(&settings));
     scene.places_visible = startup_places_visible(&settings);
+    scene.places_width = startup_places_width(&settings);
     scene.dark_mode = startup_dark_mode(&settings);
     scene.background_blur = startup_background_blur(&settings);
     scene.background_opacity = startup_background_opacity(&settings);

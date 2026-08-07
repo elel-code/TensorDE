@@ -18,7 +18,7 @@ fn folder_preview_gpu_draw_rect_stays_inside_folder_shell_slot() {
     };
     let shell = folder_preview_role_shell_rect(layout);
     let slot = folder_preview_role_slot(layout);
-    let draw = folder_preview_gpu_draw_rect(layout, 80);
+    let draw = folder_preview_gpu_draw_rect(layout);
 
     assert!(slot.x >= shell.x);
     assert!(slot.y >= shell.y);
@@ -29,6 +29,7 @@ fn folder_preview_gpu_draw_rect_stays_inside_folder_shell_slot() {
     assert!((draw.width - draw.height).abs() < 0.05);
     assert!((draw.x + draw.width / 2.0 - (slot.x + slot.width / 2.0)).abs() < f32::EPSILON);
     assert!((draw.y + draw.height / 2.0 - (slot.y + slot.height / 2.0)).abs() < f32::EPSILON);
+    assert_eq!(draw, slot);
 }
 
 #[test]
@@ -50,13 +51,14 @@ fn folder_preview_gpu_draw_rect_uses_file_manager_text_midline_shift_in_compact_
         text_midline_shift: 3.0,
     };
     let area = folder_preview_role_shell_rect(layout);
-    let draw = folder_preview_gpu_draw_rect(layout, 48);
+    let draw = folder_preview_gpu_draw_rect(layout);
     let expected_center_y = layout.text_rect.y + layout.text_rect.height / 2.0 + 3.0;
 
     assert!((area.y + area.height / 2.0 - expected_center_y).abs() < f32::EPSILON);
     assert!(draw.y >= area.y);
     assert!(draw.bottom() <= area.bottom() + f32::EPSILON);
     assert!((draw.x + draw.width / 2.0 - (area.x + area.width / 2.0)).abs() < f32::EPSILON);
+    assert_eq!(draw, area);
 }
 
 #[test]

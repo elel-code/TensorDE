@@ -1,10 +1,9 @@
 impl TensorFilesApp {
-    fn queue_scene_change(&mut self, reason: &'static str, redraw_frames: u8) {
+    fn queue_scene_change(&mut self, reason: &'static str) {
         if let Some(kind) = crate::ui::prewarm::visible_role_update_kind_for_reason(reason) {
             self.visible_role_updates.schedule(kind, Instant::now());
         }
-        self.pending_redraw_frames = self.pending_redraw_frames.max(redraw_frames);
-        self.pending_render_reason = Some(reason);
+        self.scene_present.request(reason);
         if let Some(window) = self.window.as_ref() {
             window.set_title(&window_title(&self.scene));
             window.request_redraw();
@@ -14,9 +13,8 @@ impl TensorFilesApp {
         }
     }
 
-    fn present_scene_change(&mut self, event_loop: &ActiveEventLoop, reason: &'static str) {
-        self.pending_redraw_frames = VIEW_SWITCH_REDRAW_FRAMES;
-        self.pending_render_reason = None;
+    fn present_scene_change(&mut self, reason: &'static str) {
+        self.scene_present.request(reason);
         if let Some(window) = self.window.as_ref() {
             window.set_title(&window_title(&self.scene));
             window.request_redraw();
@@ -25,23 +23,21 @@ impl TensorFilesApp {
             self.sync_task_detail_dialog_window();
         }
         self.visible_role_sync_required = true;
-        self.render_now(event_loop, reason, true);
+        // Present through the normal RedrawRequested transaction. This keeps
+        // one scene change to one submitted frame and still lets the renderer
+        // retain the request when acquire/present is deferred.
     }
 
     fn settle_visible_icon_roles(&mut self) {
         let Some(kind) = self.visible_role_updates.take_due_update(Instant::now()) else {
             return;
         };
-        let (reason, redraw_frames) = match kind {
-            crate::ui::prewarm::VisibleRoleUpdateKind::VisibleRange => {
-                ("scroll-settle", SCROLL_REDRAW_FRAMES)
-            }
-            crate::ui::prewarm::VisibleRoleUpdateKind::IconSize => {
-                ("zoom-settle", ZOOM_REDRAW_FRAMES)
-            }
+        let reason = match kind {
+            crate::ui::prewarm::VisibleRoleUpdateKind::VisibleRange => "scroll-settle",
+            crate::ui::prewarm::VisibleRoleUpdateKind::IconSize => "zoom-settle",
         };
         self.visible_role_sync_required = true;
-        self.queue_scene_change(reason, redraw_frames);
+        self.queue_scene_change(reason);
     }
 
     fn render_create_dialog_now(
@@ -276,9 +272,7 @@ impl TensorFilesApp {
             )
         };
 
-        if rendered.consumed_redraw_request() && self.pending_redraw_frames > 0 {
-            self.pending_redraw_frames -= 1;
-        }
+        self.scene_present.complete(rendered);
         if rendered.presented() {
             self.visible_role_sync_required = false;
             self.drive_autosmoke_after_render();

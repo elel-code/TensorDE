@@ -106,18 +106,6 @@ fn folder_preview_thumbnail_stamp_from_sources(
     }
     hasher.finish()
 }
-fn fit_size_to_rect(
-    source_width: u32,
-    source_height: u32,
-    max_width: u32,
-    max_height: u32,
-) -> (u32, u32) {
-    let scale =
-        (max_width as f32 / source_width as f32).min(max_height as f32 / source_height as f32);
-    let width = ((source_width as f32 * scale).round() as u32).clamp(1, max_width);
-    let height = ((source_height as f32 * scale).round() as u32).clamp(1, max_height);
-    (width, height)
-}
 fn thumbnail_request_from_source_request(
     request: &ThumbnailSourceRequest,
 ) -> Option<ThumbnailRequest> {
@@ -125,7 +113,7 @@ fn thumbnail_request_from_source_request(
         SHELL_PANE_ID,
         Generation(0),
         ItemId(0),
-        request.key.path.clone(),
+        request.key.path.to_path_buf(),
         request.key.stamp?,
         request.mime_type.clone(),
         request.priority,
@@ -164,6 +152,23 @@ enum IconEmblemKind {
     Unreadable,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct IconEmblemMask(u8);
+
+impl IconEmblemMask {
+    const LINK: u8 = 1 << 0;
+    const UNREADABLE: u8 = 1 << 1;
+
+    fn iter(self) -> impl Iterator<Item = IconEmblemKind> {
+        [
+            (self.0 & Self::LINK != 0).then_some(IconEmblemKind::Link),
+            (self.0 & Self::UNREADABLE != 0).then_some(IconEmblemKind::Unreadable),
+        ]
+        .into_iter()
+        .flatten()
+    }
+}
+
 impl IconEmblemKind {
     fn theme_names(self) -> &'static [&'static str] {
         match self {
@@ -174,29 +179,33 @@ impl IconEmblemKind {
 }
 
 fn icon_emblem_kinds_for_path(path: &Path) -> Vec<IconEmblemKind> {
+    icon_emblem_mask_for_path(path).iter().collect()
+}
+
+fn icon_emblem_mask_for_path(path: &Path) -> IconEmblemMask {
     if is_network_path(path)
         || path
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("desktop"))
     {
-        return Vec::new();
+        return IconEmblemMask::default();
     }
-    let mut emblems = Vec::new();
+    let mut mask = IconEmblemMask::default();
     let symlink_metadata = fs::symlink_metadata(path).ok();
     if symlink_metadata
         .as_ref()
         .is_some_and(|metadata| metadata.file_type().is_symlink())
     {
-        emblems.push(IconEmblemKind::Link);
+        mask.0 |= IconEmblemMask::LINK;
     }
     let metadata = fs::metadata(path).ok();
     if let Some(metadata) = metadata.as_ref()
         && !path_is_readable(path, metadata)
     {
-        emblems.push(IconEmblemKind::Unreadable);
+        mask.0 |= IconEmblemMask::UNREADABLE;
     }
-    emblems
+    mask
 }
 
 #[cfg(unix)]
@@ -267,19 +276,20 @@ fn icon_emblem_rects(paint_area: ViewRect, scale: f32) -> [ViewRect; 4] {
     ]
 }
 
-fn folder_preview_gpu_draw_rect(layout: ItemPixmapLayout, size_px: u16) -> ViewRect {
+/// Returns the stable destination for a folder preview.
+///
+/// `size_px` belongs to the retained source raster, not to the item geometry.
+/// A cached 128px preview must therefore occupy the same role slot as a later
+/// 256px replacement; otherwise a zoom transaction visibly resizes the preview
+/// a second time when the higher-resolution source arrives.
+fn folder_preview_gpu_draw_rect(layout: ItemPixmapLayout) -> ViewRect {
     let area = folder_preview_role_slot(layout);
-    let (width, height) = fit_size_to_rect(
-        u32::from(size_px),
-        u32::from(size_px),
-        area.width.ceil().max(1.0) as u32,
-        area.height.ceil().max(1.0) as u32,
-    );
+    let side = area.width.min(area.height).max(0.0);
     ViewRect {
-        x: area.x + (area.width - width as f32) / 2.0,
-        y: area.y + (area.height - height as f32) / 2.0,
-        width: width as f32,
-        height: height as f32,
+        x: area.x + (area.width - side) / 2.0,
+        y: area.y + (area.height - side) / 2.0,
+        width: side,
+        height: side,
     }
 }
 fn folder_preview_role_shell_rect(layout: ItemPixmapLayout) -> ViewRect {
@@ -306,11 +316,77 @@ struct ShellThumbnailCandidate {
     modified_secs: u64,
     mime_type: Option<String>,
 }
+
+struct IconFrameResources<'a> {
+    resolver: &'a mut FileIconResolver,
+    thumbnails: &'a mut ThumbnailSourceResolver,
+    gpu_resident: IconGpuResidentSource<'a>,
+}
+
+impl<'a> IconFrameResources<'a> {
+    fn new(
+        resolver: &'a mut FileIconResolver,
+        thumbnails: &'a mut ThumbnailSourceResolver,
+        gpu_resident: IconGpuResidentIndex,
+    ) -> Self {
+        Self {
+            resolver,
+            thumbnails,
+            gpu_resident: IconGpuResidentSource::Owned(gpu_resident),
+        }
+    }
+
+    fn from_engine(engine: &'a mut IconEngine, gpu_resident: IconGpuResidentIndex) -> Self {
+        Self::new(&mut engine.resolver, &mut engine.thumbnails, gpu_resident)
+    }
+
+    fn from_engine_borrowed(
+        engine: &'a mut IconEngine,
+        gpu_resident: &'a dyn IconGpuResidentLookup,
+    ) -> Self {
+        Self {
+            resolver: &mut engine.resolver,
+            thumbnails: &mut engine.thumbnails,
+            gpu_resident: IconGpuResidentSource::Borrowed(gpu_resident),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct FolderPreviewCacheStats {
+    ready_entries: usize,
+    ready_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct IconFrameConfig {
+    surface_size: PhysicalSize<u32>,
+    ui_scale: f32,
+    sync_resolve_budget: usize,
+    role_updates_paused: bool,
+    icon_size_update_pending: bool,
+    folder_preview_cache: FolderPreviewCacheStats,
+}
+
+impl IconFrameConfig {
+    #[cfg(test)]
+    fn new(surface_size: PhysicalSize<u32>, ui_scale: f32, sync_resolve_budget: usize) -> Self {
+        Self {
+            surface_size,
+            ui_scale,
+            sync_resolve_budget,
+            role_updates_paused: false,
+            icon_size_update_pending: false,
+            folder_preview_cache: FolderPreviewCacheStats::default(),
+        }
+    }
+}
+
 struct IconFrameBuilder<'a> {
     resolver: &'a mut FileIconResolver,
     thumbnails: &'a mut ThumbnailSourceResolver,
     /// Snapshot of GPU-resident icon rasters at frame start.
-    gpu_resident: IconGpuResidentIndex,
+    gpu_resident: IconGpuResidentSource<'a>,
     surface_size: PhysicalSize<u32>,
     ui_scale: f32,
     /// Dedup logical icon identities → slot index for this frame.
@@ -318,6 +394,12 @@ struct IconFrameBuilder<'a> {
     slots: Vec<IconGpuSlot>,
     draws: Vec<IconDraw>,
     overlay_draws: Vec<IconDraw>,
+    content_batches: Vec<IconSlotBatch>,
+    overlay_batches: Vec<IconSlotBatch>,
+    content_vertices: Vec<IconVertex>,
+    overlay_vertices: Vec<IconVertex>,
+    batch_draw_indices: Vec<Vec<usize>>,
+    batch_slot_order: Vec<u32>,
     icons: usize,
     fallbacks: usize,
     thumbnails_loaded: usize,
@@ -336,7 +418,7 @@ struct IconFrameBuilder<'a> {
     sync_resolve_budget: usize,
     role_updates_paused: bool,
     icon_size_update_pending: bool,
-    resolve_us: u128,
+    resolve_timing: FrameTiming,
 }
 include!("icon_frame_builder/builder.rs");
 // Atlas packing removed (scheme C: per-icon GPU textures).
@@ -374,39 +456,48 @@ fn push_icon_draw_vertices(
         vertex([right, top], [u1, v0]),
     ]);
 }
-/// Pack draws into per-slot batches and a single vertex buffer range list.
-fn pack_icon_batches(
+/// Pack draws into per-slot batches while retaining all frame containers.
+fn pack_icon_batches_into(
     draws: &[IconDraw],
     slots: &[IconGpuSlot],
     surface_size: PhysicalSize<u32>,
-) -> (Vec<IconVertex>, Vec<IconSlotBatch>) {
-    if draws.is_empty() {
-        return (Vec::new(), Vec::new());
+    vertices: &mut Vec<IconVertex>,
+    batches: &mut Vec<IconSlotBatch>,
+    by_slot: &mut Vec<Vec<usize>>,
+    slot_order: &mut Vec<u32>,
+) {
+    vertices.clear();
+    batches.clear();
+    if by_slot.len() < slots.len() {
+        by_slot.resize_with(slots.len(), Vec::new);
     }
-    // Group draw indices by slot while preserving first-seen slot order for locality.
-    let mut by_slot: HashMap<u32, Vec<usize>> = HashMap::new();
-    let mut slot_order: Vec<u32> = Vec::new();
+    for indices in by_slot.iter_mut() {
+        indices.clear();
+    }
+    slot_order.clear();
+
+    // Slots are dense frame-local indexes, so a retained Vec is cheaper than
+    // rebuilding a HashMap and one nested Vec allocation per icon identity.
     for (i, draw) in draws.iter().enumerate() {
-        by_slot
-            .entry(draw.slot)
-            .or_insert_with(|| {
-                slot_order.push(draw.slot);
-                Vec::new()
-            })
-            .push(i);
-    }
-    let mut vertices = Vec::with_capacity(draws.len() * 6);
-    let mut batches = Vec::with_capacity(slot_order.len());
-    for slot in slot_order {
-        let Some(indices) = by_slot.get(&slot) else {
+        let Some(indices) = by_slot.get_mut(draw.slot as usize) else {
+            debug_assert!(false, "icon draw references a missing frame slot");
             continue;
         };
+        if indices.is_empty() {
+            slot_order.push(draw.slot);
+        }
+        indices.push(i);
+    }
+    vertices.reserve(draws.len().saturating_mul(6));
+    batches.reserve(slot_order.len());
+    for &slot in slot_order.iter() {
+        let indices = &by_slot[slot as usize];
         let Some(gpu_slot) = slots.get(slot as usize) else {
             continue;
         };
         let start = vertices.len() as u32;
         for &i in indices {
-            push_icon_draw_vertices(&mut vertices, &draws[i], gpu_slot, surface_size);
+            push_icon_draw_vertices(vertices, &draws[i], gpu_slot, surface_size);
         }
         let count = vertices.len() as u32 - start;
         if count > 0 {
@@ -417,7 +508,6 @@ fn pack_icon_batches(
             });
         }
     }
-    (vertices, batches)
 }
 
 fn icon_draw_content_hash(

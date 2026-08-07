@@ -35,6 +35,151 @@
     }
 
     #[test]
+    fn priority_worker_queue_discards_stale_deferred_generation_after_requeue() {
+        let mut queue = PriorityWorkerQueue::default();
+        let deferred =
+            test_thumbnail_source_request("reused.png", ThumbnailRequestPriority::Deferred);
+        let other =
+            test_thumbnail_source_request("other.png", ThumbnailRequestPriority::Deferred);
+        let visible =
+            test_thumbnail_source_request("reused.png", ThumbnailRequestPriority::Visible);
+
+        queue.push(deferred);
+        queue.push(other.clone());
+        queue.push(visible.clone());
+        assert_eq!(queue.pop_ready().unwrap().priority, ThumbnailRequestPriority::Visible);
+
+        queue.push(test_thumbnail_source_request(
+            "reused.png",
+            ThumbnailRequestPriority::Deferred,
+        ));
+        let next = queue.pop_ready().expect("unrelated deferred request remains ordered");
+        assert_eq!(next.key, other.key);
+        let next = queue.pop_ready().expect("new deferred generation remains queued");
+        assert_eq!(next.key, visible.key);
+        assert_eq!(next.priority, ThumbnailRequestPriority::Deferred);
+        assert!(queue.pop_ready().is_none());
+    }
+
+    #[test]
+    fn folder_preview_ready_index_selects_nearest_size_without_scanning_ready_entries() {
+        let mut runtime = ShellFolderPreviewRoleRuntime::with_cache_root(PathBuf::from(
+            "/tmp/tensor-files-folder-preview-index",
+        ));
+        runtime.ready_max_bytes = usize::MAX;
+        let path = PathBuf::from("/downloads/folder");
+        for (size_px, seed) in [(128, 3), (256, 5)] {
+            runtime.insert_ready(
+                FolderPreviewRoleKey::new(path.clone(), 7, size_px),
+                FolderPreviewReady {
+                    stamp: 11,
+                    size_px,
+                    source: test_folder_preview_source(test_gpu_icon_spec(2, seed)),
+                },
+            );
+        }
+
+        assert_eq!(
+            runtime
+                .ready_sizes
+                .get(path.as_path())
+                .and_then(|stamps| stamps.get(&7))
+                .map(|sizes| sizes.iter().copied().collect::<Vec<_>>()),
+            Some(vec![128, 256])
+        );
+        assert_eq!(
+            runtime
+                .preview_or_closest_touch(&path, 7, 224)
+                .expect("closest retained folder preview")
+                .size_px,
+            256
+        );
+    }
+
+    #[test]
+    fn folder_preview_ready_index_tracks_eviction_and_path_prefix_clear() {
+        let mut runtime = ShellFolderPreviewRoleRuntime::with_cache_root(PathBuf::from(
+            "/tmp/tensor-files-folder-preview-index-lifecycle",
+        ));
+        let evicted_path = PathBuf::from("/leave/old-folder");
+        let retained_path = PathBuf::from("/keep/current-folder");
+        let first_source = test_folder_preview_source(test_gpu_icon_spec(2, 7));
+        let second_source = test_folder_preview_source(test_gpu_icon_spec(2, 9));
+        runtime.ready_max_bytes = second_source.memory_bytes();
+        runtime.insert_ready(
+            FolderPreviewRoleKey::new(evicted_path.clone(), 1, 128),
+            FolderPreviewReady {
+                stamp: 11,
+                size_px: 128,
+                source: first_source,
+            },
+        );
+        runtime.insert_ready(
+            FolderPreviewRoleKey::new(retained_path.clone(), 2, 128),
+            FolderPreviewReady {
+                stamp: 13,
+                size_px: 128,
+                source: second_source,
+            },
+        );
+
+        assert!(!runtime.ready_sizes.contains_key(evicted_path.as_path()));
+        assert!(runtime.ready_sizes.contains_key(retained_path.as_path()));
+        runtime.clear_path_prefix(Path::new("/keep"));
+        assert!(runtime.ready.is_empty());
+        assert!(runtime.ready_sizes.is_empty());
+    }
+
+    #[test]
+    fn folder_preview_candidate_refresh_reuses_active_set_capacity() {
+        let mut runtime = ShellFolderPreviewRoleRuntime::with_cache_root(PathBuf::from(
+            "/tmp/tensor-files-folder-preview-active-capacity",
+        ));
+        runtime.active.reserve(32);
+        let capacity = runtime.active.capacity();
+        let key = FolderPreviewRoleKey::new(PathBuf::from("/keep/folder"), 7, 128);
+
+        runtime.queue_candidates([FolderPreviewRoleRequest {
+            key: key.clone(),
+            priority: ThumbnailRequestPriority::Deferred,
+        }]);
+        assert_eq!(runtime.active.capacity(), capacity);
+        assert!(runtime.active.contains(&key));
+    }
+
+    #[test]
+    fn folder_preview_candidate_refresh_drops_stale_deferred_without_cloning_keys() {
+        let mut runtime = ShellFolderPreviewRoleRuntime::with_cache_root(PathBuf::from(
+            "/tmp/tensor-files-folder-preview-deferred-prune",
+        ));
+        let stale = FolderPreviewRoleKey::new(PathBuf::from("/old/folder"), 1, 128);
+        let current = FolderPreviewRoleKey::new(PathBuf::from("/current/folder"), 2, 128);
+        runtime
+            .pending
+            .insert(stale.clone(), ThumbnailRequestPriority::Deferred);
+        runtime
+            .pending
+            .insert(current.clone(), ThumbnailRequestPriority::Visible);
+
+        runtime.queue_candidates([FolderPreviewRoleRequest {
+            key: current.clone(),
+            priority: ThumbnailRequestPriority::Visible,
+        }]);
+
+        assert!(!runtime.pending.contains_key(&stale));
+        assert!(runtime.pending.contains_key(&current));
+    }
+
+    #[test]
+    fn folder_preview_role_key_clones_share_retained_path() {
+        let key = FolderPreviewRoleKey::new(PathBuf::from("/downloads/folder"), 7, 128);
+        let cloned = key.clone();
+
+        assert!(Arc::ptr_eq(&key.path, &cloned.path));
+        assert_eq!(key, cloned);
+    }
+
+    #[test]
     fn folder_preview_source_chooses_first_visible_previewable_file() {
         let root = test_dir("directory-preview-source");
         fs::create_dir_all(&root).unwrap();
@@ -195,6 +340,7 @@
         let (_result_tx, result_rx) = mpsc::channel();
         let mut runtime = ShellFolderPreviewRoleRuntime {
             ready: HashMap::new(),
+            ready_sizes: HashMap::new(),
             failed: HashSet::from([key.clone()]),
             pending: HashMap::new(),
             finished: HashSet::from([key.clone()]),
@@ -224,6 +370,7 @@
         let (result_tx, result_rx) = mpsc::channel();
         let mut runtime = ShellFolderPreviewRoleRuntime {
             ready: HashMap::new(),
+            ready_sizes: HashMap::new(),
             failed: HashSet::new(),
             pending: HashMap::from([(key.clone(), ThumbnailRequestPriority::Visible)]),
             finished: HashSet::new(),
@@ -265,6 +412,7 @@
         let (_result_tx, result_rx) = mpsc::channel();
         let mut runtime = ShellFolderPreviewRoleRuntime {
             ready: HashMap::new(),
+            ready_sizes: HashMap::new(),
             failed: HashSet::new(),
             pending: HashMap::from([(key.clone(), ThumbnailRequestPriority::Deferred)]),
             finished: HashSet::new(),
@@ -297,6 +445,7 @@
         let (_result_tx, result_rx) = mpsc::channel();
         let mut runtime = ShellFolderPreviewRoleRuntime {
             ready: HashMap::new(),
+            ready_sizes: HashMap::new(),
             failed: HashSet::new(),
             pending: HashMap::from([(key.clone(), ThumbnailRequestPriority::Visible)]),
             finished: HashSet::new(),
@@ -326,6 +475,7 @@
         let (result_tx, result_rx) = mpsc::channel();
         let mut runtime = ShellFolderPreviewRoleRuntime {
             ready: HashMap::new(),
+            ready_sizes: HashMap::new(),
             failed: HashSet::new(),
             pending: HashMap::from([(key.clone(), ThumbnailRequestPriority::Visible)]),
             finished: HashSet::new(),
@@ -364,6 +514,7 @@
         let (result_tx, result_rx) = mpsc::channel();
         let mut runtime = ShellFolderPreviewRoleRuntime {
             ready: HashMap::new(),
+            ready_sizes: HashMap::new(),
             failed: HashSet::new(),
             pending: HashMap::from([(key.clone(), ThumbnailRequestPriority::Visible)]),
             finished: HashSet::new(),

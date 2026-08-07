@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 #[test]
-fn pending_navigation_publishes_target_and_hides_the_previous_model() {
+fn pending_navigation_publishes_target_and_retains_the_previous_model() {
     let mut scene = test_scene(
         vec![test_entry("Desktop", true), test_entry("notes.txt", false)],
         ShellViewMode::Icons,
@@ -18,9 +18,9 @@ fn pending_navigation_publishes_target_and_hides_the_previous_model() {
     assert_eq!(scene.panes[pane].pending_path.as_ref(), Some(&target));
     assert!(scene.panes[pane].selection.selected.is_empty());
     let projection = scene.pane_projection(pane, size).unwrap();
-    assert_eq!(projection.view.path, target.as_path());
-    assert!(projection.view.entries.is_empty());
-    assert!(projection.visible_items.is_empty());
+    assert_eq!(projection.view.path, source.as_path());
+    assert_eq!(projection.view.entries.len(), 2);
+    assert_eq!(projection.visible_items.len(), 2);
     assert!(scene.cancel_pane_navigation(pane));
     let restored = scene.pane_projection(pane, size).unwrap();
     assert_eq!(restored.view.path, source.as_path());

@@ -41,8 +41,8 @@ impl Entry {
         Self(Arc::new(data))
     }
 
-    #[cfg(test)]
-    pub(crate) fn ptr_eq(left: &Self, right: &Self) -> bool {
+    /// Returns whether both entries share the same retained data allocation.
+    pub fn ptr_eq(left: &Self, right: &Self) -> bool {
         Arc::ptr_eq(&left.0, &right.0)
     }
 

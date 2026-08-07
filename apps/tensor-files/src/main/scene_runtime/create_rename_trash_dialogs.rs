@@ -1,5 +1,4 @@
 impl ShellScene {
-
     fn set_rename_dialog_error(&mut self, error: String) -> bool {
         let Some(dialog) = self.rename_dialog.as_mut() else {
             tensor_files_log!("[tensor-files] rename-error {error}");
@@ -37,7 +36,10 @@ impl ShellScene {
             return false;
         }
         self.rename_changes += 1;
-        tensor_files_log!("[tensor-files] rename open=0 changes={}", self.rename_changes);
+        tensor_files_log!(
+            "[tensor-files] rename open=0 changes={}",
+            self.rename_changes
+        );
         true
     }
 
@@ -88,7 +90,10 @@ impl ShellScene {
                 dialog.error,
                 self.rename_changes
             ),
-            None => tensor_files_log!("[tensor-files] rename open=0 changes={}", self.rename_changes),
+            None => tensor_files_log!(
+                "[tensor-files] rename open=0 changes={}",
+                self.rename_changes
+            ),
         }
     }
 
@@ -428,18 +433,52 @@ impl ShellScene {
         self.pane_projection_from_prepared(prepared)
     }
 
+    pub(crate) fn pane_layout_context(
+        &self,
+        kind: ShellPaneId,
+        size: PhysicalSize<u32>,
+    ) -> Option<(ShellPaneView<'_>, ShellPaneGeometry, ShellLayout)> {
+        let view = self.pane_view(kind)?;
+        let geometry = self.pane_geometry(kind, size)?;
+        let layout =
+            self.pane_layout_for_pane(kind, view, geometry.content.width, geometry.content.height);
+        Some((view, geometry, layout))
+    }
+
     pub(crate) fn prepare_frame_projection_layouts(
         &self,
         size: PhysicalSize<u32>,
     ) -> ShellPreparedFrameProjectionLayouts {
-        let projection_layout_start = Instant::now();
-        let layouts = ShellPaneId::ALL
-            .into_iter()
-            .filter_map(|kind| self.pane_projection_layout(kind, size))
-            .collect();
+        self.prepare_frame_projection_layouts_with_staging(
+            size,
+            ShellFrameProjectionStaging::default(),
+        )
+    }
+
+    pub(crate) fn prepare_frame_projection_layouts_with_staging(
+        &self,
+        size: PhysicalSize<u32>,
+        staging: ShellFrameProjectionStaging,
+    ) -> ShellPreparedFrameProjectionLayouts {
+        let ShellFrameProjectionStaging {
+            mut layouts,
+            mut visible_items,
+        } = staging;
+        layouts.clear();
+        let reflow_now = self.projection_reflow_time(ShellPaneId::ALL);
+        for kind in ShellPaneId::ALL {
+            if let Some(layout) = self.pane_projection_layout_with_staging_at(
+                kind,
+                size,
+                &mut visible_items[kind.index()],
+                reflow_now,
+            ) {
+                layouts.push(layout);
+            }
+        }
         ShellPreparedFrameProjectionLayouts {
             layouts,
-            layout_us: projection_layout_start.elapsed().as_micros(),
+            recycled_visible_items: visible_items,
         }
     }
 
@@ -448,30 +487,53 @@ impl ShellScene {
         kind: ShellPaneId,
         size: PhysicalSize<u32>,
     ) -> Option<ShellPreparedPaneProjection> {
-        let view = self.pane_view(kind)?;
-        let geometry = self.pane_geometry(kind, size)?;
-        let layout = self.pane_layout_for_pane(
-            geometry.kind,
-            view,
-            geometry.content.width,
-            geometry.content.height,
-        );
-        let mut visible_items = Vec::with_capacity(layout.visible_item_count());
+        let reflow_now = self.projection_reflow_time([kind]);
+        self.pane_projection_layout_with_staging_at(kind, size, &mut Vec::new(), reflow_now)
+    }
+
+    fn projection_reflow_time(
+        &self,
+        panes: impl IntoIterator<Item = ShellPaneId>,
+    ) -> Option<Instant> {
+        panes
+            .into_iter()
+            .any(|pane| self.has_item_reflow_for_pane(pane))
+            .then(Instant::now)
+    }
+
+    fn pane_projection_layout_with_staging_at(
+        &self,
+        kind: ShellPaneId,
+        size: PhysicalSize<u32>,
+        visible_items: &mut Vec<ShellPaneVisibleItem>,
+        reflow_now: Option<Instant>,
+    ) -> Option<ShellPreparedPaneProjection> {
+        let (view, geometry, layout) = self.pane_layout_context(kind, size)?;
+        visible_items.clear();
+        visible_items.reserve(layout.visible_item_count());
+        let reflow_now = reflow_now.filter(|now| self.item_reflow_active_for_pane_at(kind, *now));
         layout.for_each_visible_item(|layout| {
-            let path = view
-                .filtered_indexes
-                .get(layout.model_index)
-                .and_then(|entry_index| self.entry_path_for_pane_view(view, *entry_index));
-            visible_items.push(ShellPreparedPaneVisibleItem {
+            let entry_index = view.filtered_indexes.get(layout.model_index).copied();
+            let reflow_offset = if let Some(reflow_now) = reflow_now {
+                entry_index
+                    .and_then(|index| {
+                        self.item_reflow_offset_for_entry_at(kind, view, index, reflow_now)
+                    })
+                    .unwrap_or_default()
+            } else {
+                (0.0, 0.0)
+            };
+            visible_items.push(ShellPaneVisibleItem {
                 layout,
-                path,
+                entry_index,
                 slot_id: 0,
+                reflow_offset,
             });
         });
         let scroll_metrics = ShellPaneScrollMetrics::new(layout.content_size(), geometry.content);
         Some(ShellPreparedPaneProjection {
             geometry,
-            visible_items,
+            visible_items: std::mem::take(visible_items),
             scroll_metrics,
         })
     }

@@ -14,7 +14,8 @@ use super::pointer_route::{
 use crate::ui::animation::ShellAnimationKind;
 use crate::ui::selection::SelectionClick;
 use crate::{
-    ShellItemActivation, ShellPlaceActivation, TensorFilesApp, view_point_from_physical_position,
+    ShellItemActivation, ShellPlaceActivation, TensorFilesApp, save_places_width_setting,
+    view_point_from_physical_position,
 };
 
 impl TensorFilesApp {
@@ -88,8 +89,8 @@ impl TensorFilesApp {
                 }
                 self.update_window_cursor_for_scene(size);
                 // Hover (and other pointer-driven motion) may start hover ease;
-                // queue the registry budget so presentation survives until the
-                // animation runtime is polled again in about_to_wait.
+                // queue its first paint, then let about_to_wait follow the
+                // animation runtime's deadlines.
                 ShellActionOutcome::redraw_if(changed)
                     .with_animation_if(changed, ShellAnimationKind::Hover)
             }
@@ -181,9 +182,18 @@ impl TensorFilesApp {
             MainLeftPointerButtonIntent::EndScrollbarDrag => {
                 let role_update = self.scene.scrollbar_drag_visible_role_update_kind();
                 let zoom_pane = self.scene.scrollbar_drag_zoom_pane();
+                let places_resized = self.scene.scrollbar_drag_resizes_places();
                 let changed = self.scene.end_scrollbar_drag(point, size);
                 if let Some(pane) = zoom_pane {
                     self.record_zoom_setting_for_pane(pane);
+                }
+                if places_resized
+                    && let Err(error) = save_places_width_setting(
+                        &self.settings_path,
+                        self.scene.places_sidebar_width_setting(),
+                    )
+                {
+                    tensor_files_log!("[tensor-files] settings-save-error {error}");
                 }
                 if changed && let Some(kind) = role_update {
                     self.visible_role_updates.schedule(kind, Instant::now());

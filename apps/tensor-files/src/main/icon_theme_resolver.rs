@@ -1,12 +1,20 @@
 impl IconThemeResolver {
-    fn find(&mut self, icon_name: &str, desired_size: u16) -> Option<PathBuf> {
-        let key = (icon_name.to_string(), desired_size);
-        if let Some(path) = self.path_cache.get(&key) {
+    fn find(&mut self, icon_name: &str, desired_size: u16) -> Option<Arc<Path>> {
+        if let Some(path) = self
+            .path_cache
+            .get(icon_name)
+            .and_then(|sizes| sizes.get(&desired_size))
+        {
             return path.clone();
         }
 
-        let path = self.find_uncached(icon_name, desired_size);
-        self.path_cache.insert(key, path.clone());
+        let path = self
+            .find_uncached(icon_name, desired_size)
+            .map(Arc::<Path>::from);
+        self.path_cache
+            .entry(icon_name.to_owned())
+            .or_default()
+            .insert(desired_size, path.clone());
         path
     }
 
@@ -14,7 +22,7 @@ impl IconThemeResolver {
         &mut self,
         icon_names: &[String],
         desired_size: u16,
-    ) -> Option<(String, PathBuf)> {
+    ) -> Option<(String, Arc<Path>)> {
         icon_names.iter().find_map(|name| {
             self.find(name, desired_size)
                 .map(|path| (name.clone(), path))

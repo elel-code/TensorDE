@@ -1,6 +1,4 @@
 impl ShellScene {
-
-
     fn queue_thumbnail_read_ahead_for_projection(
         &self,
         projection: &ShellPaneProjection<'_>,
@@ -74,8 +72,6 @@ impl ShellScene {
                 .map(std::borrow::ToOwned::to_owned),
         })
     }
-
-
 
     fn push_details_header_text(
         &self,
@@ -183,7 +179,6 @@ impl ShellScene {
         }
     }
 
-
     fn push_native_pane_status_text(
         &self,
         text: &mut TextFrameBuilder<'_>,
@@ -191,13 +186,22 @@ impl ShellScene {
         theme: ShellTheme,
     ) {
         let pane = projection.view;
-        let status = self.pane_status(pane, projection.visible_items.len());
+        let zoom_percent = self.zoom_percent_for_level(pane.view_mode, pane.zoom_level);
+        let status = text.pane_status_text(
+            projection.geometry.kind.index(),
+            pane,
+            projection.visible_items.len(),
+            self.show_hidden,
+            self.filter_active || !self.filter_pattern.is_empty(),
+            zoom_percent,
+        );
         ui::status::paint::push_pane_status_bar_text(
             text,
             &PaneStatusBarPaint {
                 rect: projection.geometry.status_bar,
-                status: &status,
-                zoom_percent: self.zoom_percent_for_level(pane.view_mode, pane.zoom_level),
+                primary: status.primary.as_ref(),
+                qualifier: status.qualifier.as_ref(),
+                zoom: status.zoom.as_ref(),
                 zoom_fraction: Self::zoom_fraction_for_level(pane.zoom_level),
                 theme,
                 scale: self.ui_scale(),
@@ -259,14 +263,7 @@ impl ShellScene {
             return;
         };
         let radius = zoom.outer.height / 2.0;
-        push_native_rounded_rect_fill(
-            instances,
-            zoom.outer,
-            rect,
-            radius,
-            theme.divider(),
-            size,
-        );
+        push_native_rounded_rect_fill(instances, zoom.outer, rect, radius, theme.divider(), size);
         push_native_rounded_rect_fill(
             instances,
             zoom.inner,
@@ -311,7 +308,6 @@ impl ShellScene {
             );
         }
     }
-
 
     fn push_native_places_rows_chrome(
         &self,

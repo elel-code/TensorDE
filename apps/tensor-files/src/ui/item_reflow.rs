@@ -1,16 +1,16 @@
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 use crate::windowing::PhysicalSize;
+use bevy_ecs::entity::Entity;
 use tensor_files_core::ViewRect;
 
-use crate::ui::animation::item_reflow_rect_moved;
+use crate::ShellScene;
+use crate::ui::animation::{ShellItemReflowOffsets, ShellItemReflowRects};
 use crate::ui::metrics::ITEM_REFLOW_ANIMATION_DELAY;
 use crate::ui::pane::ShellPaneId;
-use crate::{ShellScene, pane_content_rect_to_screen};
 
-type ReflowRectsByPane = Vec<(ShellPaneId, HashMap<PathBuf, ViewRect>)>;
+type ReflowRectsByPane = Vec<(ShellPaneId, ShellItemReflowRects)>;
 
 #[derive(Default)]
 pub(crate) struct ShellItemReflowRuntime {
@@ -19,7 +19,7 @@ pub(crate) struct ShellItemReflowRuntime {
 
 struct ShellPendingItemReflow {
     previous_rects_by_pane: ReflowRectsByPane,
-    next_rects_by_pane: ReflowRectsByPane,
+    offsets_by_pane: [ShellItemReflowOffsets; 2],
     size: PhysicalSize<u32>,
     deadline: Instant,
 }
@@ -31,7 +31,8 @@ impl ShellItemReflowRuntime {
         next_rects_by_pane: ReflowRectsByPane,
         size: PhysicalSize<u32>,
     ) -> bool {
-        if !rects_by_pane_moved(&previous_rects_by_pane, &next_rects_by_pane) {
+        let offsets_by_pane = pending_offsets_by_pane(&previous_rects_by_pane, &next_rects_by_pane);
+        if offsets_by_pane.iter().all(ShellItemReflowOffsets::is_empty) {
             if self.pending.is_some() {
                 self.pending = None;
             }
@@ -39,7 +40,7 @@ impl ShellItemReflowRuntime {
         }
         self.pending = Some(ShellPendingItemReflow {
             previous_rects_by_pane,
-            next_rects_by_pane,
+            offsets_by_pane,
             size,
             deadline: Instant::now() + ITEM_REFLOW_ANIMATION_DELAY,
         });
@@ -52,11 +53,20 @@ impl ShellItemReflowRuntime {
             .map(|pending| clone_rects_by_pane(&pending.previous_rects_by_pane))
     }
 
-    fn pending_offset_for_path(&self, pane: ShellPaneId, path: &Path) -> Option<(f32, f32)> {
+    fn pending_offset_for_entity_or_path(
+        &self,
+        pane: ShellPaneId,
+        entity: Option<Entity>,
+        path: &Path,
+    ) -> Option<(f32, f32)> {
         let pending = self.pending.as_ref()?;
-        let from = rect_for_path(&pending.previous_rects_by_pane, pane, path)?;
-        let to = rect_for_path(&pending.next_rects_by_pane, pane, path)?;
-        item_reflow_rect_moved(from, to).then_some((from.x - to.x, from.y - to.y))
+        pending.offsets_by_pane[pane.index()].offset_for(entity, path)
+    }
+
+    fn active_for_pane(&self, pane: ShellPaneId) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|pending| !pending.offsets_by_pane[pane.index()].is_empty())
     }
 
     fn take_due(&mut self, now: Instant) -> Option<ShellPendingItemReflow> {
@@ -77,9 +87,7 @@ impl ShellItemReflowRuntime {
         pending
             .previous_rects_by_pane
             .retain(|(pending_pane, _)| *pending_pane != pane);
-        pending
-            .next_rects_by_pane
-            .retain(|(pending_pane, _)| *pending_pane != pane);
+        pending.offsets_by_pane[pane.index()].clear();
         if pending.previous_rects_by_pane.is_empty() {
             self.pending = None;
         }
@@ -90,43 +98,46 @@ impl ShellItemReflowRuntime {
     }
 }
 
-pub(crate) fn visible_item_rects_by_path_for_pane(
+pub(crate) fn visible_item_reflow_rects_for_pane(
     scene: &ShellScene,
     pane: ShellPaneId,
     size: PhysicalSize<u32>,
-) -> HashMap<PathBuf, ViewRect> {
-    let Some(projection) = scene.pane_projection(pane, size) else {
-        return HashMap::new();
+) -> ShellItemReflowRects {
+    let Some((view, geometry, layout)) = scene.pane_layout_context(pane, size) else {
+        return ShellItemReflowRects::default();
     };
-    let mut rects = HashMap::with_capacity(projection.visible_items.len());
-    for item in &projection.visible_items {
-        let Some(entry_index) = projection
-            .view
-            .filtered_indexes
-            .get(item.layout.model_index)
-            .copied()
-        else {
-            continue;
+    let mut rects = ShellItemReflowRects::default();
+    layout.for_each_visible_item(|item| {
+        let Some(entry_index) = view.filtered_indexes.get(item.model_index).copied() else {
+            return;
         };
-        let Some(path) = scene.entry_path_for_pane_view(projection.view, entry_index) else {
-            continue;
+        let rect = ViewRect {
+            x: item.visual_rect.x - view.scroll_x + geometry.content.x,
+            y: item.visual_rect.y - view.scroll_y + geometry.content.y,
+            width: item.visual_rect.width,
+            height: item.visual_rect.height,
         };
-        rects.insert(
-            path,
-            pane_content_rect_to_screen(item.layout.visual_rect, &projection),
-        );
-    }
+        if let Some(entity) = scene
+            .visible_slots
+            .get(pane)
+            .entity_for_entry(&view.entries[entry_index])
+        {
+            rects.insert_entity(entity, rect);
+        } else if let Some(path) = scene.entry_path_for_pane_view(view, entry_index) {
+            rects.insert_path(path, rect);
+        }
+    });
     rects
 }
 
-pub(crate) fn visible_item_rects_by_path_for_open_panes(
+pub(crate) fn visible_item_reflow_rects_for_open_panes(
     scene: &ShellScene,
     size: PhysicalSize<u32>,
-) -> Vec<(ShellPaneId, HashMap<PathBuf, ViewRect>)> {
+) -> ReflowRectsByPane {
     ShellPaneId::ALL
         .into_iter()
         .filter_map(|pane| {
-            let rects = visible_item_rects_by_path_for_pane(scene, pane, size);
+            let rects = visible_item_reflow_rects_for_pane(scene, pane, size);
             (!rects.is_empty()).then_some((pane, rects))
         })
         .collect()
@@ -144,7 +155,7 @@ pub(crate) fn reflow_pane_items_after_window_resize(
     let previous_rects = scene
         .item_reflow
         .pending_previous_rects()
-        .unwrap_or_else(|| visible_item_rects_by_path_for_open_panes(scene, previous_size));
+        .unwrap_or_else(|| visible_item_reflow_rects_for_open_panes(scene, previous_size));
     scene.clamp_scroll(next_size);
     let next_rects = next_rects_by_pane(scene, &previous_rects, next_size);
     scene
@@ -155,19 +166,19 @@ pub(crate) fn reflow_pane_items_after_window_resize(
 pub(crate) fn start_item_reflow_transitions(
     scene: &mut ShellScene,
     pane: ShellPaneId,
-    previous_rects: HashMap<PathBuf, ViewRect>,
+    previous_rects: ShellItemReflowRects,
     size: PhysicalSize<u32>,
 ) -> bool {
     scene.item_reflow.clear_pane(pane);
-    let next_rects = visible_item_rects_by_path_for_pane(scene, pane, size);
+    let next_rects = visible_item_reflow_rects_for_pane(scene, pane, size);
     scene
         .animations
-        .start_item_reflow(pane, previous_rects, next_rects)
+        .start_item_reflow_from_rects(pane, previous_rects, next_rects)
 }
 
 pub(crate) fn start_item_reflow_transitions_for_panes(
     scene: &mut ShellScene,
-    previous_rects_by_pane: Vec<(ShellPaneId, HashMap<PathBuf, ViewRect>)>,
+    previous_rects_by_pane: ReflowRectsByPane,
     size: PhysicalSize<u32>,
 ) -> bool {
     previous_rects_by_pane
@@ -177,15 +188,47 @@ pub(crate) fn start_item_reflow_transitions_for_panes(
         })
 }
 
-pub(crate) fn item_reflow_offset_for_path(
+pub(crate) fn item_reflow_offset_for_entity_or_path_at(
     scene: &ShellScene,
     pane: ShellPaneId,
+    entity: Option<Entity>,
     path: &Path,
+    now: Instant,
 ) -> Option<(f32, f32)> {
-    if let Some(offset) = scene.item_reflow.pending_offset_for_path(pane, path) {
+    if let Some(offset) = scene
+        .item_reflow
+        .pending_offset_for_entity_or_path(pane, entity, path)
+    {
         return Some(offset);
     }
-    scene.animations.item_reflow_offset_for_path(pane, path)
+    if let Some(offset) = entity.and_then(|entity| {
+        scene
+            .animations
+            .item_reflow_offset_for_entity_at(pane, entity, now)
+    }) {
+        return Some(offset);
+    }
+    scene
+        .animations
+        .item_reflow_offset_for_path_at(pane, path, now)
+}
+
+pub(crate) fn item_reflow_active_for_pane_at(
+    scene: &ShellScene,
+    pane: ShellPaneId,
+    now: Instant,
+) -> bool {
+    scene.item_reflow.active_for_pane(pane)
+        || scene.animations.item_reflow_active_for_pane_at(pane, now)
+}
+
+pub(crate) fn has_item_reflow_for_pane(scene: &ShellScene, pane: ShellPaneId) -> bool {
+    scene.item_reflow.active_for_pane(pane) || scene.animations.has_item_reflow_for_pane(pane)
+}
+
+pub(crate) fn clear_item_reflow_for_pane(scene: &mut ShellScene, pane: ShellPaneId) {
+    scene.item_reflow.clear_pane(pane);
+    scene.animations.clear_item_reflow_for_pane(pane);
 }
 
 pub(crate) fn start_due_item_reflow_transitions(scene: &mut ShellScene, now: Instant) -> bool {
@@ -197,7 +240,12 @@ pub(crate) fn start_due_item_reflow_transitions(scene: &mut ShellScene, now: Ins
         .previous_rects_by_pane
         .into_iter()
         .fold(false, |started, (pane, previous_rects)| {
-            start_item_reflow_transitions(scene, pane, previous_rects, size) || started
+            scene.item_reflow.clear_pane(pane);
+            let next_rects = visible_item_reflow_rects_for_pane(scene, pane, size);
+            scene
+                .animations
+                .start_item_reflow_from_rects(pane, previous_rects, next_rects)
+                || started
         })
 }
 
@@ -212,7 +260,7 @@ pub(crate) fn has_pending_item_reflow(scene: &ShellScene) -> bool {
 
 fn next_rects_by_pane(
     scene: &ShellScene,
-    previous_rects_by_pane: &[(ShellPaneId, HashMap<PathBuf, ViewRect>)],
+    previous_rects_by_pane: &[(ShellPaneId, ShellItemReflowRects)],
     size: PhysicalSize<u32>,
 ) -> ReflowRectsByPane {
     previous_rects_by_pane
@@ -220,47 +268,31 @@ fn next_rects_by_pane(
         .map(|(pane, _)| {
             (
                 *pane,
-                visible_item_rects_by_path_for_pane(scene, *pane, size),
+                visible_item_reflow_rects_for_pane(scene, *pane, size),
             )
         })
         .collect()
 }
 
-fn rects_by_pane_moved(
-    previous_rects_by_pane: &[(ShellPaneId, HashMap<PathBuf, ViewRect>)],
-    next_rects_by_pane: &[(ShellPaneId, HashMap<PathBuf, ViewRect>)],
-) -> bool {
-    previous_rects_by_pane.iter().any(|(pane, previous_rects)| {
+fn pending_offsets_by_pane(
+    previous_rects_by_pane: &[(ShellPaneId, ShellItemReflowRects)],
+    next_rects_by_pane: &[(ShellPaneId, ShellItemReflowRects)],
+) -> [ShellItemReflowOffsets; 2] {
+    let mut offsets_by_pane = std::array::from_fn(|_| ShellItemReflowOffsets::default());
+    for (pane, previous_rects) in previous_rects_by_pane {
         let Some((_, next_rects)) = next_rects_by_pane
             .iter()
             .find(|(next_pane, _)| next_pane == pane)
         else {
-            return false;
+            continue;
         };
-        next_rects.iter().any(|(path, to)| {
-            previous_rects
-                .get(path)
-                .is_some_and(|from| item_reflow_rect_moved(*from, *to))
-        })
-    })
+        offsets_by_pane[pane.index()] =
+            ShellItemReflowOffsets::from_rects(previous_rects, next_rects);
+    }
+    offsets_by_pane
 }
 
-fn rect_for_path(
-    rects_by_pane: &[(ShellPaneId, HashMap<PathBuf, ViewRect>)],
-    pane: ShellPaneId,
-    path: &Path,
-) -> Option<ViewRect> {
-    rects_by_pane
-        .iter()
-        .find(|(rects_pane, _)| *rects_pane == pane)?
-        .1
-        .get(path)
-        .copied()
-}
-
-fn clone_rects_by_pane(
-    rects_by_pane: &[(ShellPaneId, HashMap<PathBuf, ViewRect>)],
-) -> ReflowRectsByPane {
+fn clone_rects_by_pane(rects_by_pane: &[(ShellPaneId, ShellItemReflowRects)]) -> ReflowRectsByPane {
     rects_by_pane
         .iter()
         .map(|(pane, rects)| (*pane, rects.clone()))

@@ -30,8 +30,7 @@ struct TensorFilesApp {
     clipboard: Option<ShellClipboard>,
     window: Option<Arc<Window>>,
     cursor_icon: CursorIcon,
-    pending_redraw_frames: u8,
-    pending_render_reason: Option<&'static str>,
+    scene_present: ShellScenePresentState,
     visible_role_updates: crate::ui::prewarm::VisibleRoleUpdateState,
     visible_role_sync_required: bool,
     next_animation_redraw: Option<Instant>,
@@ -184,13 +183,7 @@ impl ApplicationHandler for TensorFilesApp {
             if let Some(renderer) = self.renderer.as_ref() {
                 let next = self.scene.active_view_mode().next();
                 if self.scene.set_view_mode(next, renderer.size) {
-                    self.pending_redraw_frames = VIEW_SWITCH_REDRAW_FRAMES;
-                    if let Some(window) = self.window.as_ref() {
-                        window.set_title(&window_title(&self.scene));
-                        window.request_redraw();
-                    }
-                    self.visible_role_sync_required = true;
-                    self.render_now(event_loop, "auto-cycle", true);
+                    self.present_scene_change("auto-cycle");
                 }
             }
         }
@@ -239,7 +232,7 @@ impl ApplicationHandler for TensorFilesApp {
         let needs_redraw = self.renderer.as_ref().is_some_and(|renderer| {
             renderer.frame_count == 0
                 || renderer.rendered_view_switches != self.scene.view_switches
-                || self.pending_redraw_frames > 0
+                || self.scene_present.pending()
                 || animation_redraw_due
                 || location_caret_blink_due
         });
@@ -332,6 +325,13 @@ impl ApplicationHandler for TensorFilesApp {
         }
         match event {
             WindowEvent::CloseRequested => {
+                if self.dialog_windows.has_window_lifecycle() {
+                    tensor_files_dialog_trace!(
+                        "[tensor-files] main-close accept=0 reason=dialog-lifecycle"
+                    );
+                    self.request_main_redraw();
+                    return;
+                }
                 self.close_main_window_from_window_manager_request(
                     event_loop,
                     "main-close-requested",
@@ -366,7 +366,7 @@ impl ApplicationHandler for TensorFilesApp {
                         let previous_size = renderer.size;
                         let previous_rects = (renderer.frame_count > 0).then(|| {
                             self.scene
-                                .visible_item_rects_by_path_for_open_panes(previous_size)
+                                .visible_item_reflow_rects_for_open_panes(previous_size)
                         });
                         if let Err(error) = renderer.resize(surface_size) {
                             eprintln!("[tensor-files-vulkan] scale resize failed: {error}");
@@ -457,12 +457,8 @@ impl ApplicationHandler for TensorFilesApp {
                 self.handle_main_swipe_gesture(event_loop, gesture);
             }
             WindowEvent::RedrawRequested => {
-                let force_log = self.pending_redraw_frames > 0;
-                let reason = self.pending_render_reason.take().unwrap_or(if force_log {
-                    "switch-redraw"
-                } else {
-                    "redraw"
-                });
+                let force_log = self.scene_present.pending();
+                let reason = self.scene_present.reason().unwrap_or("redraw");
                 self.render_now(event_loop, reason, force_log);
             }
             _ => {}
@@ -485,4 +481,52 @@ fn schedule_animation_redraw(
     }
     *scheduled = Some(next_deadline.unwrap_or(now + Duration::from_millis(16)));
     true
+}
+
+#[cfg(test)]
+mod animation_redraw_schedule_tests {
+    use super::*;
+
+    #[test]
+    fn active_animation_redraws_only_when_its_deadline_is_due() {
+        let now = Instant::now();
+        let first_deadline = now + Duration::from_millis(16);
+        let mut scheduled = None;
+
+        assert!(schedule_animation_redraw(
+            true,
+            &mut scheduled,
+            now,
+            Some(first_deadline),
+        ));
+        assert_eq!(scheduled, Some(first_deadline));
+        assert!(!schedule_animation_redraw(
+            true,
+            &mut scheduled,
+            now + Duration::from_millis(1),
+            Some(first_deadline),
+        ));
+
+        let next_deadline = first_deadline + Duration::from_millis(16);
+        assert!(schedule_animation_redraw(
+            true,
+            &mut scheduled,
+            first_deadline,
+            Some(next_deadline),
+        ));
+        assert_eq!(scheduled, Some(next_deadline));
+    }
+
+    #[test]
+    fn inactive_animation_clears_a_scheduled_deadline() {
+        let now = Instant::now();
+        let mut scheduled = Some(now + Duration::from_millis(16));
+        assert!(!schedule_animation_redraw(
+            false,
+            &mut scheduled,
+            now,
+            None,
+        ));
+        assert_eq!(scheduled, None);
+    }
 }

@@ -374,19 +374,25 @@ impl CompactLayout {
     }
 
     pub fn indexes_intersecting(&self, rect: ViewRect) -> RangeSelection {
+        let mut indexes = Vec::new();
+        self.for_each_index_intersecting(rect, |index| indexes.push(index));
+        RangeSelection { indexes }
+    }
+
+    pub fn for_each_index_intersecting(&self, rect: ViewRect, mut visit: impl FnMut(usize)) {
         let column_range = self.column_range_intersecting(rect);
         let row_range = self.row_range_intersecting(rect);
-        let indexes = column_range
-            .flat_map(|column| {
-                row_range.clone().filter_map(move |row| {
-                    let index = column * self.rows_per_column + row;
-                    self.item(index)
-                        .filter(|item| item.item_rect.intersects(rect))
-                        .map(|item| item.model_index)
-                })
-            })
-            .collect();
-        RangeSelection { indexes }
+        for column in column_range {
+            for row in row_range.clone() {
+                let index = column * self.rows_per_column + row;
+                if let Some(item) = self
+                    .item(index)
+                    .filter(|item| item.item_rect.intersects(rect))
+                {
+                    visit(item.model_index);
+                }
+            }
+        }
     }
 
     fn column_range_intersecting(&self, rect: ViewRect) -> Range<usize> {
@@ -647,19 +653,25 @@ impl IconsLayout {
     }
 
     pub fn indexes_intersecting(&self, rect: ViewRect) -> RangeSelection {
+        let mut indexes = Vec::new();
+        self.for_each_index_intersecting(rect, |index| indexes.push(index));
+        RangeSelection { indexes }
+    }
+
+    pub fn for_each_index_intersecting(&self, rect: ViewRect, mut visit: impl FnMut(usize)) {
         let row_range = self.row_range_intersecting_y(rect.y, rect.bottom());
         let column_range = self.column_range_intersecting_x(rect.x, rect.right());
-        let indexes = row_range
-            .flat_map(|row| {
-                column_range.clone().filter_map(move |column| {
-                    let index = row * self.columns_per_row + column;
-                    self.item(index)
-                        .filter(|item| item.item_rect.intersects(rect))
-                        .map(|item| item.model_index)
-                })
-            })
-            .collect();
-        RangeSelection { indexes }
+        for row in row_range {
+            for column in column_range.clone() {
+                let index = row * self.columns_per_row + column;
+                if let Some(item) = self
+                    .item(index)
+                    .filter(|item| item.item_rect.intersects(rect))
+                {
+                    visit(item.model_index);
+                }
+            }
+        }
     }
 
     fn row_range_intersecting_y(&self, visible_start: f32, visible_end: f32) -> Range<usize> {

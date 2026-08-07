@@ -1,17 +1,19 @@
+use std::borrow::Cow;
+
 impl ShellScene {
 
     /// Starts a visible directory-navigation transaction before background
     /// enumeration begins.
     ///
-    /// This mirrors Dolphin's `setUrl()` ordering: publish the requested URL,
-    /// clear the visible model, then let the directory job populate it. The
-    /// committed entry storage remains owned by the previous path until the
-    /// completion succeeds, so a failed read can simply reveal it again.
+    /// The requested URL is published immediately, while the committed visual
+    /// model stays visible until enumeration produces its replacement. This
+    /// preserves Dolphin's URL notification ordering without presenting an
+    /// avoidable empty frame between two retained directory models.
     fn begin_pane_navigation(
         &mut self,
         pane: ShellPaneId,
         target_path: PathBuf,
-        size: PhysicalSize<u32>,
+        _size: PhysicalSize<u32>,
     ) -> bool {
         let pane = self.normalized_pane_id(pane);
         let Some(state) = self.pane_state_mut(pane) else {
@@ -21,23 +23,14 @@ impl ShellScene {
             return false;
         }
 
-        let previous_path = state.path.clone();
         let selection_changed = state.selection.clear();
         state.pending_path = Some(target_path);
-        state.scroll_x = 0.0;
-        state.scroll_y = 0.0;
 
         if selection_changed {
             self.selection_changes += 1;
         }
-        self.cancel_metadata_role_work_for_pane(pane);
-        self.folder_preview_roles
-            .borrow_mut()
-            .clear_path_prefix(&previous_path);
-        self.invalidate_layout_caches_for_pane(pane);
         self.active_pane = pane;
         self.clear_transient_after_pane_content_change(pane, true);
-        self.clamp_scroll(size);
         true
     }
 
@@ -49,11 +42,7 @@ impl ShellScene {
         let Some(state) = self.pane_state_mut(pane) else {
             return false;
         };
-        let changed = state.pending_path.take().is_some();
-        if changed {
-            self.invalidate_layout_caches_for_pane(pane);
-        }
-        changed
+        state.pending_path.take().is_some()
     }
 
     fn pending_pane_navigation_matches(&self, pane: ShellPaneId, target_path: &Path) -> bool {
@@ -124,6 +113,7 @@ impl ShellScene {
     }
 
     fn clear_transient_after_pane_content_change(&mut self, pane: ShellPaneId, clear_open: bool) {
+        self.clear_item_reflow_for_pane(pane);
         if self
             .location_draft
             .as_ref()
@@ -400,7 +390,7 @@ impl ShellScene {
         }
     }
 
-    fn location_label_for_pane(&self, pane: ShellPaneId) -> String {
+    fn location_label_for_pane(&self, pane: ShellPaneId) -> Cow<'_, str> {
         if let Some(draft) = self
             .location_draft
             .as_ref()
@@ -415,12 +405,12 @@ impl ShellScene {
                     draft.draft.cursor
                 },
                 draft.draft.preedit.as_ref(),
-            )
-            .into_owned();
+            );
         }
         self.pane_state(pane)
-            .map(|pane| pane.display_path().display().to_string())
-            .unwrap_or_default()
+            .map_or_else(|| Cow::Borrowed(""), |pane| {
+                pane.display_path().to_string_lossy()
+            })
     }
 
     fn location_cursor_for_pane(&self, pane: ShellPaneId) -> Option<usize> {

@@ -2,25 +2,24 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use bevy_ecs::entity::Entity;
 use tensor_files_core::ViewRect;
 
 use crate::ui::metrics::{
     HOVER_ANIMATION_DURATION, HOVER_ANIMATION_FRAME, ITEM_REFLOW_ANIMATION_DURATION,
     ITEM_REFLOW_ANIMATION_FRAME, LOCATION_FOCUS_SHINE_DELAY, LOCATION_FOCUS_SHINE_DURATION,
-    LOCATION_FOCUS_SHINE_FRAME, TEXT_CARET_BLINK_INTERVAL, ZOOM_REDRAW_FRAMES,
+    LOCATION_FOCUS_SHINE_FRAME, TEXT_CARET_BLINK_INTERVAL,
 };
 use crate::ui::pane::ShellPaneId;
 
 /// Named animation timelines that can request presentation via action outcomes.
 ///
-/// Frame budgets are derived from the same duration/frame constants the runtime
-/// uses, so Queue scheduling and `about_to_wait` animation polling stay aligned.
+/// The action layer queues the first paint; subsequent frames are driven by
+/// the animation runtime's deadlines in `about_to_wait`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ShellAnimationKind {
     /// Item/place hover highlight ease.
     Hover,
-    /// Delayed item reflow after layout changes (zoom, resize, reload).
-    ItemReflow,
     /// Path bar focus shine after location draft activation.
     LocationFocusShine,
     /// Immediate paint settle after zoom before delayed reflow starts.
@@ -31,7 +30,6 @@ pub(crate) enum ShellAnimationKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ShellAnimationPresentation {
     pub(crate) reason: &'static str,
-    pub(crate) redraw_frames: u8,
 }
 
 impl ShellAnimationKind {
@@ -39,48 +37,113 @@ impl ShellAnimationKind {
         match self {
             Self::Hover => ShellAnimationPresentation {
                 reason: "hover-animation",
-                redraw_frames: animation_redraw_frames(
-                    HOVER_ANIMATION_DURATION,
-                    HOVER_ANIMATION_FRAME,
-                ),
-            },
-            Self::ItemReflow => ShellAnimationPresentation {
-                reason: "item-reflow-animation",
-                redraw_frames: animation_redraw_frames(
-                    ITEM_REFLOW_ANIMATION_DURATION,
-                    ITEM_REFLOW_ANIMATION_FRAME,
-                ),
             },
             Self::LocationFocusShine => ShellAnimationPresentation {
                 reason: "location-focus-shine",
-                redraw_frames: animation_redraw_frames(
-                    LOCATION_FOCUS_SHINE_DELAY + LOCATION_FOCUS_SHINE_DURATION,
-                    LOCATION_FOCUS_SHINE_FRAME,
-                ),
             },
-            Self::ZoomSettle => ShellAnimationPresentation {
-                reason: "zoom",
-                redraw_frames: ZOOM_REDRAW_FRAMES,
-            },
+            Self::ZoomSettle => ShellAnimationPresentation { reason: "zoom" },
         }
     }
 }
 
-/// Ceiling of `duration / frame`, clamped to a single byte frame budget.
-pub(crate) fn animation_redraw_frames(duration: Duration, frame: Duration) -> u8 {
-    let frame_ms = frame.as_millis().max(1);
-    let duration_ms = duration.as_millis().max(frame_ms);
-    let frames = duration_ms.div_ceil(frame_ms);
-    frames.clamp(1, u128::from(u8::MAX)) as u8
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct ShellItemReflowTransition {
-    pub(crate) pane: ShellPaneId,
-    pub(crate) path: PathBuf,
     pub(crate) from: ViewRect,
     pub(crate) to: ViewRect,
-    started: Instant,
+}
+
+/// Base item geometry retained across a resize transaction.
+///
+/// A retained visible-item entity is the widget identity. Paths are kept only
+/// for the cold frame where the slot pool has not been populated yet, matching
+/// Dolphin's widget-keyed moving animation semantics.
+#[derive(Clone, Default)]
+pub(crate) struct ShellItemReflowRects {
+    by_entity: HashMap<Entity, ViewRect>,
+    by_path: HashMap<PathBuf, ViewRect>,
+}
+
+impl ShellItemReflowRects {
+    #[cfg(test)]
+    pub(crate) fn from_paths(by_path: HashMap<PathBuf, ViewRect>) -> Self {
+        Self {
+            by_entity: HashMap::new(),
+            by_path,
+        }
+    }
+
+    pub(crate) fn insert_entity(&mut self, entity: Entity, rect: ViewRect) {
+        self.by_entity.insert(entity, rect);
+    }
+
+    pub(crate) fn insert_path(&mut self, path: PathBuf, rect: ViewRect) {
+        self.by_path.insert(path, rect);
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.by_entity.is_empty() && self.by_path.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rect_for(&self, entity: Option<Entity>, path: &Path) -> Option<ViewRect> {
+        entity
+            .and_then(|entity| self.by_entity.get(&entity).copied())
+            .or_else(|| self.by_path.get(path).copied())
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ShellItemReflowOffsets {
+    by_entity: HashMap<Entity, (f32, f32)>,
+    by_path: HashMap<PathBuf, (f32, f32)>,
+}
+
+impl ShellItemReflowOffsets {
+    pub(crate) fn from_rects(previous: &ShellItemReflowRects, next: &ShellItemReflowRects) -> Self {
+        let mut offsets = Self::default();
+        offsets
+            .by_entity
+            .reserve(previous.by_entity.len().min(next.by_entity.len()));
+        offsets
+            .by_path
+            .reserve(previous.by_path.len().min(next.by_path.len()));
+        for (entity, to) in &next.by_entity {
+            let Some(from) = previous.by_entity.get(entity).copied() else {
+                continue;
+            };
+            if item_reflow_rect_moved(from, *to) {
+                offsets
+                    .by_entity
+                    .insert(*entity, (from.x - to.x, from.y - to.y));
+            }
+        }
+        for (path, to) in &next.by_path {
+            let Some(from) = previous.by_path.get(path).copied() else {
+                continue;
+            };
+            if item_reflow_rect_moved(from, *to) {
+                offsets
+                    .by_path
+                    .insert(path.clone(), (from.x - to.x, from.y - to.y));
+            }
+        }
+        offsets
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.by_entity.is_empty() && self.by_path.is_empty()
+    }
+
+    pub(crate) fn offset_for(&self, entity: Option<Entity>, path: &Path) -> Option<(f32, f32)> {
+        entity
+            .and_then(|entity| self.by_entity.get(&entity).copied())
+            .or_else(|| self.by_path.get(path).copied())
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.by_entity.clear();
+        self.by_path.clear();
+    }
 }
 
 impl ShellItemReflowTransition {
@@ -89,8 +152,8 @@ impl ShellItemReflowTransition {
         item_reflow_rect_moved(self.from, self.to)
     }
 
-    fn offset(&self, now: Instant) -> Option<(f32, f32)> {
-        let elapsed = now.duration_since(self.started);
+    fn offset(&self, started: Instant, now: Instant) -> Option<(f32, f32)> {
+        let elapsed = now.saturating_duration_since(started);
         if elapsed >= ITEM_REFLOW_ANIMATION_DURATION {
             return None;
         }
@@ -105,73 +168,185 @@ impl ShellItemReflowTransition {
             (self.from.y - self.to.y) * remaining,
         ))
     }
+}
 
-    fn active(&self, now: Instant) -> bool {
-        now.duration_since(self.started) < ITEM_REFLOW_ANIMATION_DURATION
+#[derive(Default)]
+struct ShellItemReflowTransitions {
+    by_entity: HashMap<Entity, ShellItemReflowTransition>,
+    by_path: HashMap<PathBuf, ShellItemReflowTransition>,
+    started: Option<Instant>,
+}
+
+impl ShellItemReflowTransitions {
+    fn is_empty(&self) -> bool {
+        self.by_entity.is_empty() && self.by_path.is_empty()
+    }
+
+    fn active_at(&self, now: Instant) -> bool {
+        self.started.is_some_and(|started| {
+            now.saturating_duration_since(started) < ITEM_REFLOW_ANIMATION_DURATION
+        }) && !self.is_empty()
+    }
+
+    fn clear(&mut self) {
+        self.by_entity.clear();
+        self.by_path.clear();
+        self.started = None;
     }
 }
 
 #[derive(Default)]
 pub(crate) struct ShellAnimationRuntime {
-    item_reflow_transitions: Vec<ShellItemReflowTransition>,
+    item_reflow_transitions: [ShellItemReflowTransitions; 2],
+    item_reflow_entity_staging: HashMap<Entity, ShellItemReflowTransition>,
+    item_reflow_path_staging: HashMap<PathBuf, ShellItemReflowTransition>,
     hover: ShellHoverAnimationRuntime,
     location_focus_shine: ShellLocationFocusShineRuntime,
     text_caret_blink: ShellTextCaretBlinkRuntime,
 }
 
 impl ShellAnimationRuntime {
+    #[cfg(test)]
     pub(crate) fn start_item_reflow(
         &mut self,
         pane: ShellPaneId,
         previous_rects: HashMap<PathBuf, ViewRect>,
         next_rects: HashMap<PathBuf, ViewRect>,
     ) -> bool {
+        self.start_item_reflow_from_rects(
+            pane,
+            ShellItemReflowRects::from_paths(previous_rects),
+            ShellItemReflowRects::from_paths(next_rects),
+        )
+    }
+
+    pub(crate) fn start_item_reflow_from_rects(
+        &mut self,
+        pane: ShellPaneId,
+        previous_rects: ShellItemReflowRects,
+        next_rects: ShellItemReflowRects,
+    ) -> bool {
+        self.item_reflow_entity_staging.clear();
+        self.item_reflow_path_staging.clear();
         if previous_rects.is_empty() || next_rects.is_empty() {
+            self.item_reflow_transitions[pane.index()].clear();
             return false;
         }
         let started = Instant::now();
-        let mut transitions = next_rects
-            .into_iter()
-            .filter_map(|(path, to)| {
-                let from = previous_rects.get(&path).copied()?;
-                item_reflow_rect_moved(from, to).then_some(ShellItemReflowTransition {
-                    pane,
-                    path,
-                    from,
-                    to,
-                    started,
-                })
-            })
-            .collect::<Vec<_>>();
-        if transitions.is_empty() {
+        self.item_reflow_entity_staging.reserve(
+            previous_rects
+                .by_entity
+                .len()
+                .min(next_rects.by_entity.len()),
+        );
+        self.item_reflow_path_staging
+            .reserve(previous_rects.by_path.len().min(next_rects.by_path.len()));
+        for (entity, to) in next_rects.by_entity {
+            let Some(from) = previous_rects.by_entity.get(&entity).copied() else {
+                continue;
+            };
+            if item_reflow_rect_moved(from, to) {
+                self.item_reflow_entity_staging
+                    .insert(entity, ShellItemReflowTransition { from, to });
+            }
+        }
+        for (path, to) in next_rects.by_path {
+            let Some(from) = previous_rects.by_path.get(&path).copied() else {
+                continue;
+            };
+            if item_reflow_rect_moved(from, to) {
+                self.item_reflow_path_staging
+                    .insert(path, ShellItemReflowTransition { from, to });
+            }
+        }
+        if self.item_reflow_entity_staging.is_empty() && self.item_reflow_path_staging.is_empty() {
+            self.item_reflow_transitions[pane.index()].clear();
             return false;
         }
-        self.item_reflow_transitions
-            .retain(|transition| transition.pane != pane);
-        self.item_reflow_transitions.append(&mut transitions);
-        // Keep registry presentation reachable so Queue budgets stay in sync
-        // when action-layer reflow scheduling is wired later.
-        let _ = ShellAnimationKind::ItemReflow.presentation();
+        let transitions = &mut self.item_reflow_transitions[pane.index()];
+        std::mem::swap(
+            &mut transitions.by_entity,
+            &mut self.item_reflow_entity_staging,
+        );
+        std::mem::swap(&mut transitions.by_path, &mut self.item_reflow_path_staging);
+        transitions.started = Some(started);
+        self.item_reflow_entity_staging.clear();
+        self.item_reflow_path_staging.clear();
         true
     }
 
-    pub(crate) fn item_reflow_offset_for_path(
+    #[cfg(test)]
+    pub(crate) fn start_item_reflow_with_entity_lookup(
+        &mut self,
+        pane: ShellPaneId,
+        previous_rects: HashMap<PathBuf, ViewRect>,
+        next_rects: HashMap<PathBuf, ViewRect>,
+        mut entity_for_path: impl FnMut(&Path) -> Option<Entity>,
+    ) -> bool {
+        let mut previous = ShellItemReflowRects::default();
+        let mut next = ShellItemReflowRects::default();
+        for (path, rect) in previous_rects {
+            if let Some(entity) = entity_for_path(path.as_path()) {
+                previous.insert_entity(entity, rect);
+            } else {
+                previous.insert_path(path, rect);
+            }
+        }
+        for (path, rect) in next_rects {
+            if let Some(entity) = entity_for_path(path.as_path()) {
+                next.insert_entity(entity, rect);
+            } else {
+                next.insert_path(path, rect);
+            }
+        }
+        self.start_item_reflow_from_rects(pane, previous, next)
+    }
+
+    pub(crate) fn item_reflow_offset_for_entity_at(
+        &self,
+        pane: ShellPaneId,
+        entity: Entity,
+        now: Instant,
+    ) -> Option<(f32, f32)> {
+        let transitions = &self.item_reflow_transitions[pane.index()];
+        let started = transitions.started?;
+        transitions
+            .by_entity
+            .get(&entity)
+            .and_then(|transition| transition.offset(started, now))
+    }
+
+    pub(crate) fn item_reflow_offset_for_path_at(
         &self,
         pane: ShellPaneId,
         path: &Path,
+        now: Instant,
     ) -> Option<(f32, f32)> {
-        let now = Instant::now();
-        self.item_reflow_transitions
-            .iter()
-            .find(|transition| transition.pane == pane && transition.path == path)
-            .and_then(|transition| transition.offset(now))
+        let transitions = &self.item_reflow_transitions[pane.index()];
+        let started = transitions.started?;
+        transitions
+            .by_path
+            .get(path)
+            .and_then(|transition| transition.offset(started, now))
+    }
+
+    pub(crate) fn item_reflow_active_for_pane_at(&self, pane: ShellPaneId, now: Instant) -> bool {
+        self.item_reflow_transitions[pane.index()].active_at(now)
+    }
+
+    pub(crate) fn has_item_reflow_for_pane(&self, pane: ShellPaneId) -> bool {
+        !self.item_reflow_transitions[pane.index()].is_empty()
+    }
+
+    pub(crate) fn clear_item_reflow_for_pane(&mut self, pane: ShellPaneId) {
+        self.item_reflow_transitions[pane.index()].clear();
     }
 
     pub(crate) fn active(&self) -> bool {
         let now = Instant::now();
         self.item_reflow_transitions
             .iter()
-            .any(|transition| transition.active(now))
+            .any(|transitions| transitions.active_at(now))
             || self.hover.active_at(now)
             || self.location_focus_shine.active_at(now)
     }
@@ -182,7 +357,7 @@ impl ShellAnimationRuntime {
         if self
             .item_reflow_transitions
             .iter()
-            .any(|transition| transition.active(now))
+            .any(|transitions| transitions.active_at(now))
         {
             deadline = Some(now + ITEM_REFLOW_ANIMATION_FRAME);
         }
@@ -213,7 +388,6 @@ impl ShellAnimationRuntime {
 
     pub(crate) fn start_location_focus_shine(&mut self) {
         self.location_focus_shine.start();
-        let _ = ShellAnimationKind::LocationFocusShine.presentation();
     }
 
     pub(crate) fn location_focus_shine_value(&self) -> Option<f32> {
@@ -243,29 +417,58 @@ impl ShellAnimationRuntime {
     pub(crate) fn prune_finished(&mut self) -> bool {
         let hover_pruned = self.hover.prune_finished();
         let shine_pruned = self.location_focus_shine.prune_finished();
-        if self.item_reflow_transitions.is_empty() {
+        let has_transitions = self
+            .item_reflow_transitions
+            .iter()
+            .any(|transitions| !transitions.is_empty());
+        if !has_transitions {
             return hover_pruned || shine_pruned;
         }
         let now = Instant::now();
-        let old_len = self.item_reflow_transitions.len();
-        self.item_reflow_transitions
-            .retain(|transition| transition.active(now));
-        if self.item_reflow_transitions.len() == old_len {
-            return hover_pruned || shine_pruned;
+        let mut reflow_pruned = false;
+        for transitions in &mut self.item_reflow_transitions {
+            if !transitions.is_empty() && !transitions.active_at(now) {
+                transitions.clear();
+                reflow_pruned = true;
+            }
         }
-        true
+        hover_pruned || shine_pruned || reflow_pruned
     }
 
     pub(crate) fn clear(&mut self) {
-        if self.item_reflow_transitions.is_empty() {
-            return;
+        for transitions in &mut self.item_reflow_transitions {
+            transitions.clear();
         }
-        self.item_reflow_transitions.clear();
+        self.item_reflow_entity_staging.clear();
+        self.item_reflow_path_staging.clear();
     }
 
     #[cfg(test)]
-    pub(crate) fn item_reflow_transitions(&self) -> &[ShellItemReflowTransition] {
-        &self.item_reflow_transitions
+    pub(crate) fn item_reflow_transition(
+        &self,
+        pane: ShellPaneId,
+        path: &Path,
+    ) -> Option<&ShellItemReflowTransition> {
+        self.item_reflow_transitions[pane.index()].by_path.get(path)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn item_reflow_transition_for_entity(
+        &self,
+        pane: ShellPaneId,
+        entity: Entity,
+    ) -> Option<&ShellItemReflowTransition> {
+        self.item_reflow_transitions[pane.index()]
+            .by_entity
+            .get(&entity)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn item_reflow_transition_count(&self) -> usize {
+        self.item_reflow_transitions
+            .iter()
+            .map(|transitions| transitions.by_entity.len() + transitions.by_path.len())
+            .sum()
     }
 }
 
@@ -458,6 +661,9 @@ impl ShellTextCaretBlinkRuntime {
 }
 
 #[cfg(test)]
+mod reflow_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -494,28 +700,12 @@ mod tests {
     }
 
     #[test]
-    fn animation_presentation_uses_duration_frame_budgets() {
+    fn animation_presentation_uses_stable_reasons() {
         assert_eq!(
             ShellAnimationKind::Hover.presentation(),
             ShellAnimationPresentation {
                 reason: "hover-animation",
-                redraw_frames: animation_redraw_frames(
-                    HOVER_ANIMATION_DURATION,
-                    HOVER_ANIMATION_FRAME,
-                ),
             }
-        );
-        assert_eq!(
-            ShellAnimationKind::ZoomSettle.presentation().redraw_frames,
-            ZOOM_REDRAW_FRAMES
-        );
-        assert_eq!(
-            ShellAnimationKind::ItemReflow.presentation().redraw_frames,
-            animation_redraw_frames(ITEM_REFLOW_ANIMATION_DURATION, ITEM_REFLOW_ANIMATION_FRAME)
-        );
-        assert_eq!(
-            animation_redraw_frames(Duration::from_millis(130), Duration::from_millis(16)),
-            9
         );
     }
 

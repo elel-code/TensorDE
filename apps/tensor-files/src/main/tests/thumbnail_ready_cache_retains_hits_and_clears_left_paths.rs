@@ -23,6 +23,59 @@
     }
 
     #[test]
+    fn thumbnail_ready_keys_share_indexed_path_storage() {
+        let mut thumbnails = ThumbnailSourceResolver::with_cache_root(PathBuf::from(
+            "/tmp/tensor-files-thumb-shared-path",
+        ));
+        let key = ThumbnailSourceKey::thumbnail(PathBuf::from("/photos/shared.jpg"), 96, 42);
+        thumbnails.insert_ready(key.clone(), test_thumbnail_source("shared.png", 96));
+
+        let indexed_path = thumbnails
+            .ready_sizes
+            .get_key_value(key.path.as_ref())
+            .map(|(path, _)| Arc::clone(path))
+            .expect("ready-size index path");
+        assert!(Arc::ptr_eq(&key.path, &indexed_path));
+        assert!(matches!(
+            thumbnails.resolve(key.path.as_ref(), 42, None, 96),
+            ThumbnailResolveState::Ready(_)
+        ));
+        assert!(Arc::ptr_eq(&key.path, &indexed_path));
+    }
+
+    #[test]
+    fn thumbnail_ready_cache_index_selects_nearest_size_without_scan() {
+        let mut thumbnails = ThumbnailSourceResolver::with_cache_root(PathBuf::from(
+            "/tmp/tensor-files-thumb-index-test",
+        ));
+        let path = PathBuf::from("/photos/nearest.jpg");
+        thumbnails.insert_ready(
+            ThumbnailSourceKey::thumbnail(path.clone(), 48, 42),
+            test_thumbnail_source("nearest-48.png", 48),
+        );
+        thumbnails.insert_ready(
+            ThumbnailSourceKey::thumbnail(path.clone(), 128, 42),
+            test_thumbnail_source("nearest-128.png", 128),
+        );
+
+        assert_eq!(
+            thumbnails
+                .ready_sizes
+                .get(path.as_path())
+                .and_then(|stamps| stamps.get(&42))
+                .map(|sizes| sizes.iter().copied().collect::<Vec<_>>()),
+            Some(vec![48, 128])
+        );
+        assert_eq!(
+            thumbnails
+                .take_closest_ready(&path, 42, 96)
+                .expect("nearest ready thumbnail")
+                .size_px(),
+            128
+        );
+    }
+
+    #[test]
     fn thumbnail_ready_cache_clears_left_directory_prefix() {
         let mut thumbnails = ThumbnailSourceResolver::with_cache_root(PathBuf::from("/tmp/tensor-files-thumb-test"));
         let keep = PathBuf::from("/keep/b.png");
@@ -51,6 +104,9 @@
         assert!(thumbnails
             .failed
             .contains(&ThumbnailProbeCacheKey::new(keep, 1)));
+        assert!(!thumbnails
+            .ready_sizes
+            .contains_key(Path::new("/leave/c.png")));
     }
 
     #[test]

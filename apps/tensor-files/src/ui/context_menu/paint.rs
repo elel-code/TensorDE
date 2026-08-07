@@ -203,7 +203,7 @@ pub(crate) fn push_drop_menu_overlay(
             size,
         );
         let text_x = icon.right() + gap;
-        text.push_label_aligned(
+        text.push_overlay_label_aligned(
             item.label,
             ViewRect {
                 x: text_x,
@@ -286,7 +286,7 @@ fn paint_context_menu_root(
         };
         push_context_menu_item_icon(vertices, icons, item, icon, rect, scale, size);
         let text_x = icon.right() + gap;
-        text.push_label_aligned(
+        text.push_overlay_label_aligned(
             context_menu_item_label(item, show_hidden).as_str(),
             ViewRect {
                 x: text_x,
@@ -303,7 +303,7 @@ fn paint_context_menu_root(
             LabelAlignment::Start,
         );
         if item.submenu.is_some() {
-            text.push_label_aligned(
+            text.push_overlay_label_aligned(
                 ">",
                 ViewRect {
                     x: row_rect.right() - row_padding_x - gap,
@@ -411,7 +411,7 @@ fn paint_context_submenu_overlay(
         };
         push_context_menu_item_icon(vertices, icons, item, icon, rect, scale, size);
         let text_x = icon.right() + gap;
-        text.push_label_aligned(
+        text.push_overlay_label_aligned(
             context_menu_item_label(item, show_hidden).as_str(),
             ViewRect {
                 x: text_x,

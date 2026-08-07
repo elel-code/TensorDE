@@ -5,7 +5,7 @@ use crate::ui::animation::ShellAnimationKind;
 use crate::ui::shortcuts::{
     PinchZoomTracker, SwipeNavigationTracker, zoom_action_for_scroll_delta,
 };
-use crate::{SCROLL_REDRAW_FRAMES, TensorFilesApp, scroll_delta_xy};
+use crate::{TensorFilesApp, scroll_delta_xy};
 
 impl TensorFilesApp {
     pub(crate) fn handle_main_mouse_wheel(&mut self, delta: MouseScrollDelta) {
@@ -28,7 +28,6 @@ impl TensorFilesApp {
         if self.scene.scroll_by_delta(delta_x, delta_y, size) {
             self.apply_window_action_outcome(ShellActionOutcome::Queue {
                 reason: "wheel-scroll",
-                redraw_frames: SCROLL_REDRAW_FRAMES,
             });
         }
     }

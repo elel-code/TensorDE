@@ -216,18 +216,16 @@ pub(crate) struct ShellPaneView<'a> {
 
 impl<'a> ShellPaneView<'a> {
     pub(crate) fn from_state(state: &'a ShellPaneState) -> Self {
-        let loading = state.pending_path.is_some();
         Self {
-            path: state.display_path(),
+            // The requested URL is published through `display_path()`, while
+            // this view keeps the committed directory and its retained visual
+            // model until the replacement listing commits atomically.
+            path: &state.path,
             view_mode: state.view_mode,
             zoom_level: state.zoom_level(),
-            entries: if loading { &[] } else { &state.entries },
-            dir_count: if loading { 0 } else { state.dir_count },
-            filtered_indexes: if loading {
-                &[]
-            } else {
-                &state.filtered_indexes
-            },
+            entries: &state.entries,
+            dir_count: state.dir_count,
+            filtered_indexes: &state.filtered_indexes,
             selection: &state.selection,
             scroll_x: state.scroll_x,
             scroll_y: state.scroll_y,
@@ -250,7 +248,19 @@ pub(crate) struct ShellPaneProjection<'a> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ShellPaneVisibleItem {
     pub(crate) layout: ItemLayout,
+    pub(crate) entry_index: Option<usize>,
     pub(crate) slot_id: u64,
+    pub(crate) reflow_offset: (f32, f32),
+}
+
+impl ShellVisibleSlotItem for ShellPaneVisibleItem {
+    fn visible_slot_entry_index(&self) -> Option<usize> {
+        self.entry_index
+    }
+
+    fn set_visible_slot_id(&mut self, slot_id: u64) {
+        self.slot_id = slot_id;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

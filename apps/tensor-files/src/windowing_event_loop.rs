@@ -160,7 +160,9 @@ impl EventLoop {
             | Event::OutputPower(_)
             | Event::Seat(_) => Ok(()),
             Event::Activation(_) => Ok(()),
-            Event::IdleNotify(_) | Event::Foreign(_) => Ok(()),
+            // Secure lock surfaces are owned by Tensor Shell; ordinary file
+            // windows must not interpret their lifecycle as app input.
+            Event::IdleNotify(_) | Event::Foreign(_) | Event::SessionLock(_) => Ok(()),
             Event::PointerConstraint(_) | Event::RelativePointer(_) => Ok(()),
             Event::PointerGesture(event) => {
                 self.dispatch_pointer_gesture_event(app, event);

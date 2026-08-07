@@ -100,14 +100,14 @@ impl TensorFilesApp {
 
     pub(crate) fn open_context_target_in_split_pane(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
         reason: &'static str,
     ) {
         let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
             return;
         };
         match self.scene.open_split_pane_from_context(size) {
-            Ok(true) => self.apply_action_outcome(event_loop, ShellActionOutcome::Present(reason)),
+            Ok(true) => self.apply_window_action_outcome(ShellActionOutcome::Present(reason)),
             Ok(false) => self.apply_window_action_outcome(ShellActionOutcome::Redraw),
             Err(error) => {
                 tensor_files_log!("[tensor-files] split-pane-error {error}");
@@ -116,15 +116,14 @@ impl TensorFilesApp {
         }
     }
 
-    pub(crate) fn toggle_split_view_from_toolbar(&mut self, event_loop: &ActiveEventLoop) {
+    pub(crate) fn toggle_split_view_from_toolbar(&mut self, _event_loop: &ActiveEventLoop) {
         let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
             return;
         };
         match self.scene.toggle_split_view_from_toolbar(size) {
-            Ok(true) => self.apply_action_outcome(
-                event_loop,
-                ShellActionOutcome::Present("toolbar-split-view"),
-            ),
+            Ok(true) => {
+                self.apply_window_action_outcome(ShellActionOutcome::Present("toolbar-split-view"))
+            }
             Ok(false) => self.apply_window_action_outcome(ShellActionOutcome::Redraw),
             Err(error) => {
                 tensor_files_log!("[tensor-files] split-pane-error {error}");

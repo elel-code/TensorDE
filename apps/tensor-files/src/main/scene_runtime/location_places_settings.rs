@@ -284,6 +284,8 @@ impl ShellScene {
         size: PhysicalSize<u32>,
     ) -> Result<bool, String> {
         let mut split_pane = ShellPaneState::load(path, view_mode, self.show_hidden)?;
+        self.clear_item_reflow_for_pane(ShellPaneId::SLOT_0);
+        self.clear_item_reflow_for_pane(ShellPaneId::SLOT_1);
         split_pane.zoom_levels = zoom_levels;
         split_pane.scroll_x = 0.0;
         split_pane.scroll_y = 0.0;
@@ -347,6 +349,8 @@ impl ShellScene {
         if !self.panes.is_open(ShellPaneId::SLOT_1) {
             return false;
         }
+        self.clear_item_reflow_for_pane(ShellPaneId::SLOT_0);
+        self.clear_item_reflow_for_pane(ShellPaneId::SLOT_1);
         let active = self.active_pane();
         match active {
             ShellPaneId::SLOT_0 => {

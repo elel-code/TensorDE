@@ -1,3 +1,4 @@
+#[cfg(test)]
 fn text_vertices_for_pending(
     pending: &[PendingTextDraw],
     atlases: &[AtlasRect],
@@ -7,26 +8,89 @@ fn text_vertices_for_pending(
 ) -> Vec<TextVertex> {
     let mut vertices = Vec::with_capacity(pending.len() * 6);
     for (draw, atlas) in pending.iter().zip(atlases.iter()) {
-        let guard = TEXT_ATLAS_GUARD_TEXELS as f32;
-        let scale_x = draw.label_width as f32 / draw.rect.width.max(1.0);
-        let scale_y = draw.label_height as f32 / draw.rect.height.max(1.0);
-        let atlas = AtlasRect {
-            x: atlas.x + guard + (draw.screen.x - draw.rect.x).max(0.0) * scale_x,
-            y: atlas.y + guard + (draw.screen.y - draw.rect.y).max(0.0) * scale_y,
-            width: draw.screen.width * scale_x,
-            height: draw.screen.height * scale_y,
-        };
-        push_textured_rect(
+        push_pending_text_vertices(
             &mut vertices,
-            draw.screen,
-            atlas,
+            draw,
+            *atlas,
             atlas_width,
             atlas_height,
             surface_size,
-            text_color_to_vertex_color(draw.color),
         );
     }
     vertices
+}
+
+#[cfg(test)]
+fn text_vertices_for_pending_indices(
+    pending: &[PendingTextDraw],
+    drawable_indices: &[usize],
+    atlases: &[AtlasRect],
+    atlas_width: u32,
+    atlas_height: u32,
+    surface_size: PhysicalSize<u32>,
+) -> Vec<TextVertex> {
+    let mut vertices = Vec::with_capacity(drawable_indices.len() * 6);
+    text_vertices_for_pending_indices_into(
+        &mut vertices,
+        pending,
+        drawable_indices,
+        atlases,
+        atlas_width,
+        atlas_height,
+        surface_size,
+    );
+    vertices
+}
+
+fn text_vertices_for_pending_indices_into(
+    vertices: &mut Vec<TextVertex>,
+    pending: &[PendingTextDraw],
+    drawable_indices: &[usize],
+    atlases: &[AtlasRect],
+    atlas_width: u32,
+    atlas_height: u32,
+    surface_size: PhysicalSize<u32>,
+) {
+    debug_assert_eq!(drawable_indices.len(), atlases.len());
+    vertices.reserve(drawable_indices.len().saturating_mul(6));
+    for (&draw_index, atlas) in drawable_indices.iter().zip(atlases.iter()) {
+        push_pending_text_vertices(
+            vertices,
+            &pending[draw_index],
+            *atlas,
+            atlas_width,
+            atlas_height,
+            surface_size,
+        );
+    }
+}
+
+fn push_pending_text_vertices(
+    vertices: &mut Vec<TextVertex>,
+    draw: &PendingTextDraw,
+    atlas: AtlasRect,
+    atlas_width: u32,
+    atlas_height: u32,
+    surface_size: PhysicalSize<u32>,
+) {
+    let guard = TEXT_ATLAS_GUARD_TEXELS as f32;
+    let scale_x = draw.label_width as f32 / draw.rect.width.max(1.0);
+    let scale_y = draw.label_height as f32 / draw.rect.height.max(1.0);
+    let atlas = AtlasRect {
+        x: atlas.x + guard + (draw.screen.x - draw.rect.x).max(0.0) * scale_x,
+        y: atlas.y + guard + (draw.screen.y - draw.rect.y).max(0.0) * scale_y,
+        width: draw.screen.width * scale_x,
+        height: draw.screen.height * scale_y,
+    };
+    push_textured_rect(
+        vertices,
+        draw.screen,
+        atlas,
+        atlas_width,
+        atlas_height,
+        surface_size,
+        text_color_to_vertex_color(draw.color),
+    );
 }
 
 fn text_atlas_upload_should_skip(
@@ -111,7 +175,7 @@ struct IconThemeResolver {
     themes: Vec<String>,
     search_order: Option<Vec<String>>,
     inherits_cache: HashMap<String, Vec<String>>,
-    path_cache: HashMap<(String, u16), Option<PathBuf>>,
+    path_cache: HashMap<String, HashMap<u16, Option<Arc<Path>>>>,
     dir_exists_cache: HashMap<PathBuf, bool>,
     renderable_file_cache: HashMap<PathBuf, bool>,
 }

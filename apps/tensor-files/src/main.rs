@@ -1,21 +1,33 @@
 mod windowing;
 
+#[path = "main/frame_timing.rs"]
+mod frame_timing;
 #[path = "main/icon_engine.rs"]
 mod icon_engine;
 #[path = "main/icon_frame.rs"]
 mod icon_frame;
 #[path = "main/navigation_completion.rs"]
 mod navigation_completion;
+#[path = "main/redraw_scheduler.rs"]
+mod redraw_scheduler;
 #[path = "main/scene_types.rs"]
 mod scene_types;
 #[path = "main/svg_geometry.rs"]
 mod svg_geometry;
 #[path = "main/tensor_files_renderer.rs"]
 mod tensor_files_renderer;
+#[path = "main/text_details_cache.rs"]
+mod text_details_cache;
 #[path = "main/text_engine.rs"]
 mod text_engine;
 #[path = "main/text_frame.rs"]
 mod text_frame;
+#[path = "main/text_label_interner.rs"]
+mod text_label_interner;
+#[path = "main/text_measure_cache.rs"]
+mod text_measure_cache;
+#[path = "main/text_status_cache.rs"]
+mod text_status_cache;
 #[path = "main/vulkan_color.rs"]
 mod vulkan_color;
 #[path = "main/vulkan_color_spirv.rs"]
@@ -38,13 +50,21 @@ mod vulkan_text;
 mod vulkan_text_spirv;
 
 include!("main/crate_prelude.rs");
+use frame_timing::FrameTiming;
 use icon_engine::*;
 use icon_frame::*;
+use redraw_scheduler::ShellScenePresentState;
 use scene_types::*;
 use svg_geometry::*;
 use tensor_files_renderer::*;
+use text_details_cache::DetailsTextCache;
 use text_engine::*;
 use text_frame::*;
+use text_label_interner::LabelTextInterner;
+use text_measure_cache::TextMeasureCache;
+#[cfg(test)]
+use text_measure_cache::TextMeasureCacheStats;
+use text_status_cache::{PaneStatusText, PaneStatusTextCache};
 
 mod app_actions;
 mod ui;

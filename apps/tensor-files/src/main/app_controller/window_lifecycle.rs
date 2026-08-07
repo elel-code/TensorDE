@@ -39,8 +39,7 @@ impl TensorFilesApp {
             clipboard: None,
             window: None,
             cursor_icon: CursorIcon::Default,
-            pending_redraw_frames: 0,
-            pending_render_reason: None,
+            scene_present: ShellScenePresentState::default(),
             visible_role_updates: crate::ui::prewarm::VisibleRoleUpdateState::default(),
             visible_role_sync_required: false,
             next_animation_redraw: None,
@@ -215,7 +214,7 @@ impl TensorFilesApp {
         }
         let dialog = match ShellDetachedDialogWindow::create(
             event_loop,
-            None,
+            self.renderer.as_ref(),
             kind,
             spec,
         ) {

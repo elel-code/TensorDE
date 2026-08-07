@@ -119,7 +119,7 @@
     #[test]
     fn view_mode_setting_round_trips_and_startup_uses_storage() {
         let root = test_dir("view-mode-settings");
-        let settings_path = root.join("storage/settings.tsv");
+        let settings_path = root.join("storage/files.kdl");
         let settings = tensor_files_core::AppSettings {
             places_sidebar: tensor_files_core::PlacesSidebarSettings {
                 width: Some(288.0),
@@ -132,11 +132,12 @@
 
         save_view_mode_setting(&settings_path, ShellViewMode::Details).unwrap();
         save_show_hidden_setting(&settings_path, true).unwrap();
+        save_places_width_setting(&settings_path, 304.0).unwrap();
         save_preview_size_settings(&settings_path, [Some(96), Some(80), Some(32)]).unwrap();
         save_dark_mode_setting(&settings_path, true).unwrap();
         save_background_effect_settings(&settings_path, true, 0.78).unwrap();
         let loaded = load_app_settings(&settings_path).unwrap();
-        assert_eq!(loaded.places_sidebar.width, Some(288.0));
+        assert_eq!(loaded.places_sidebar.width, Some(304.0));
         assert_eq!(loaded.places_sidebar.visible, Some(true));
         assert_eq!(loaded.view.mode, Some(ShellViewMode::Details));
         assert_eq!(loaded.view.show_hidden, Some(true));
@@ -159,6 +160,7 @@
         assert_eq!(zoom_levels.get(ShellViewMode::Compact), 5);
         assert_eq!(zoom_levels.get(ShellViewMode::Details), 2);
         assert!(startup_show_hidden(&loaded));
+        assert_eq!(startup_places_width(&loaded), 304.0);
         assert!(startup_places_visible(&loaded));
         assert!(startup_dark_mode(&loaded));
         assert!(startup_background_blur(&loaded));
@@ -208,12 +210,9 @@
         let gamma = root.join("gamma.txt");
         let transition = scene
             .animations
-            .item_reflow_transitions()
-            .iter()
-            .find(|transition| transition.path == gamma)
+            .item_reflow_transition(ShellPaneId::SLOT_0, &gamma)
             .expect("surviving item after deleted entry should reflow");
 
-        assert_eq!(transition.pane, ShellPaneId::SLOT_0);
         assert!(transition.moved());
         assert!(scene.animation_active());
 
@@ -240,21 +239,54 @@
         };
         assert!(narrow_columns < wide_columns);
 
+        let target = PathBuf::from("/tmp/item-02.txt");
+        scene.update_visible_slot_pools(narrow);
+        let target_entity = scene
+            .visible_slots
+            .get(ShellPaneId::SLOT_0)
+            .entity_for_path(&target)
+            .expect("warm visible item should have a retained entity");
         assert!(scene.reflow_pane_items_after_window_resize(narrow, wide));
         assert!(ui::item_reflow::has_pending_item_reflow(&scene));
-        assert!(scene.animations.item_reflow_transitions().is_empty());
-        let target = PathBuf::from("/tmp/item-02.txt");
+        assert_eq!(scene.animations.item_reflow_transition_count(), 0);
         let previous_rect = scene
-            .visible_item_rects_by_path_for_pane(ShellPaneId::SLOT_0, narrow)
-            .remove(&target)
+            .visible_item_reflow_rects_for_pane(ShellPaneId::SLOT_0, narrow)
+            .rect_for(Some(target_entity), &target)
             .expect("target should be visible before resize");
         let next_rect = scene
-            .visible_item_rects_by_path_for_pane(ShellPaneId::SLOT_0, wide)
-            .remove(&target)
+            .visible_item_reflow_rects_for_pane(ShellPaneId::SLOT_0, wide)
+            .rect_for(Some(target_entity), &target)
             .expect("target should remain visible after resize");
+        let projection = scene.pane_projection(ShellPaneId::SLOT_0, wide).unwrap();
+        let target_item = projection
+            .visible_items
+            .iter()
+            .find(|item| {
+                item.entry_index
+                    .and_then(|index| projection.view.entries.get(index))
+                    .is_some_and(|entry| entry.name.as_ref() == "item-02.txt")
+            })
+            .copied()
+            .expect("target should have retained visible geometry");
+        let expected_offset = (previous_rect.x - next_rect.x, previous_rect.y - next_rect.y);
         assert_eq!(
-            scene.item_reflow_offset_for_path(ShellPaneId::SLOT_0, &target),
-            Some((previous_rect.x - next_rect.x, previous_rect.y - next_rect.y))
+            scene.item_reflow_offset_for_entry_at(
+                ShellPaneId::SLOT_0,
+                projection.view,
+                target_item.entry_index.expect("target has an entry index"),
+                Instant::now(),
+            ),
+            Some(expected_offset)
+        );
+        assert_eq!(target_item.reflow_offset, expected_offset);
+        let prepared = scene.prepare_pane_item(&projection, target_item).unwrap();
+        assert_eq!(
+            prepared.visual_rect,
+            translated_rect(
+                pane_content_rect_to_screen(target_item.layout.visual_rect, &projection),
+                expected_offset.0,
+                expected_offset.1,
+            )
         );
 
         assert!(ui::item_reflow::start_due_item_reflow_transitions(
@@ -263,14 +295,26 @@
         ));
         let transition = scene
             .animations
-            .item_reflow_transitions()
-            .iter()
-            .find(|transition| transition.path == target)
+            .item_reflow_transition_for_entity(ShellPaneId::SLOT_0, target_entity)
             .expect("item should reflow when resize changes icon columns");
 
-        assert_eq!(transition.pane, ShellPaneId::SLOT_0);
         assert_eq!(transition.to, next_rect);
         assert!(transition.moved());
+        assert!(scene
+            .animations
+            .item_reflow_transition(ShellPaneId::SLOT_0, &target)
+            .is_none());
+        let animated_projection = scene.pane_projection(ShellPaneId::SLOT_0, wide).unwrap();
+        let animated_item = animated_projection
+            .visible_items
+            .iter()
+            .find(|item| {
+                item.entry_index
+                    .and_then(|index| animated_projection.view.entries.get(index))
+                    .is_some_and(|entry| entry.name.as_ref() == "item-02.txt")
+            })
+            .expect("entity-keyed item should remain visible during reflow");
+        assert_ne!(animated_item.reflow_offset, (0.0, 0.0));
         assert!(scene.animation_active());
     }
 
@@ -287,7 +331,42 @@
 
         assert!(!scene.reflow_pane_items_after_window_resize(short, tall));
         assert!(!ui::item_reflow::has_pending_item_reflow(&scene));
-        assert!(scene.animations.item_reflow_transitions().is_empty());
+        assert_eq!(scene.animations.item_reflow_transition_count(), 0);
+        let projection = scene.pane_projection(ShellPaneId::SLOT_0, tall).unwrap();
+        assert!(
+            projection
+                .visible_items
+                .iter()
+                .all(|item| item.reflow_offset == (0.0, 0.0))
+        );
+    }
+
+    #[test]
+    fn reflow_entry_path_uses_first_frame_fallback_then_borrows_retained_slot_path() {
+        let mut scene = test_scene(
+            (0..2)
+                .map(|index| test_entry(&format!("item-{index:02}.txt"), false))
+                .collect(),
+            ShellViewMode::Icons,
+        );
+        let size = PhysicalSize::new(720, 360);
+        {
+            let view = scene.pane_view(ShellPaneId::SLOT_0).unwrap();
+            let path = scene
+                .item_reflow_path_for_entry(ShellPaneId::SLOT_0, view, 0)
+                .expect("first-frame entry should derive a path");
+            assert!(matches!(path, std::borrow::Cow::Owned(_)));
+        }
+
+        let mut layouts = scene.prepare_frame_projection_layouts(size);
+        scene.update_visible_slot_pools_for_projection_layouts(&mut layouts);
+
+        let view = scene.pane_view(ShellPaneId::SLOT_0).unwrap();
+        let path = scene
+            .item_reflow_path_for_entry(ShellPaneId::SLOT_0, view, 0)
+            .expect("visible entry should resolve a path");
+        assert!(matches!(path, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(path.as_ref(), Path::new("/tmp/item-00.txt"));
     }
 
     #[test]

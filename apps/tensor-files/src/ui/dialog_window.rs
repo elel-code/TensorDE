@@ -104,21 +104,26 @@ pub(crate) struct ShellDetachedDialogWindow {
 impl ShellDetachedDialogWindow {
     pub(crate) fn create(
         event_loop: &ActiveEventLoop,
-        _shared_renderer: Option<&TensorFilesRenderer>,
+        shared_renderer: Option<&TensorFilesRenderer>,
         kind: ShellDialogWindowKind,
         spec: &ShellDialogWindowSpec,
     ) -> Result<Self, String> {
         let window = event_loop
             .create_window(spec.window_attributes(event_loop, kind))
             .map_err(|error| format!("{} dialog window create failed: {error}", kind.as_str()))?;
-        let renderer = TensorFilesRenderer::new(window.clone())
-            .map_err(|error| format!("{} dialog renderer init failed: {error}", kind.as_str()))?;
+        let shares_main_device = shared_renderer.is_some();
+        let renderer = match shared_renderer {
+            Some(shared) => TensorFilesRenderer::new_shared(window.clone(), shared),
+            None => TensorFilesRenderer::new(window.clone()),
+        }
+        .map_err(|error| format!("{} dialog renderer init failed: {error}", kind.as_str()))?;
         tensor_files_dialog_trace!(
-            "[tensor-files] dialog-window-created kind={} window={:?} surface={}x{}",
+            "[tensor-files] dialog-window-created kind={} window={:?} surface={}x{} shared_device={}",
             kind.as_str(),
             window.id(),
             spec.surface_size.width,
-            spec.surface_size.height
+            spec.surface_size.height,
+            shares_main_device as u8
         );
         Ok(Self {
             kind,
@@ -258,6 +263,10 @@ impl ShellDialogWindows {
             || self.settings.is_some()
             || self.task_detail.is_some()
             || self.trash_conflict.is_some()
+    }
+
+    pub(crate) fn has_window_lifecycle(&self) -> bool {
+        self.has_open_window() || !self.deferred_closes.is_empty()
     }
 
     pub(crate) fn is_open(&self, kind: ShellDialogWindowKind) -> bool {
@@ -466,6 +475,12 @@ impl ShellDialogWindows {
         .flatten()
         .find(|window| window.window_id() == window_id)
         .map(ShellDetachedDialogWindow::kind)
+        .or_else(|| {
+            self.deferred_closes
+                .iter()
+                .find(|close| close.window_id == window_id)
+                .map(|close| close.kind)
+        })
     }
 
     pub(crate) fn frame_count(&self, kind: ShellDialogWindowKind) -> Option<u64> {

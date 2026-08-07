@@ -1,13 +1,13 @@
 use tensor_files_core::ViewRect;
 
-use crate::ui::status::ShellPaneStatus;
 use crate::ui::theme::ShellTheme;
 use crate::{LabelAlignment, TextFrameBuilder, inset_rect};
 
 pub(crate) struct PaneStatusBarPaint<'a> {
     pub(crate) rect: ViewRect,
-    pub(crate) status: &'a ShellPaneStatus,
-    pub(crate) zoom_percent: i32,
+    pub(crate) primary: &'a str,
+    pub(crate) qualifier: &'a str,
+    pub(crate) zoom: &'a str,
     pub(crate) zoom_fraction: f32,
     pub(crate) theme: ShellTheme,
     pub(crate) scale: f32,
@@ -88,7 +88,7 @@ pub(crate) fn push_pane_status_bar_text(
 ) {
     let left_x = paint.rect.x + scale_metric(16.0, paint.scale);
     let text_y = paint.rect.y + (paint.rect.height - paint.line_height) / 2.0;
-    let qualifier = paint.status.qualifier_text();
+    let qualifier = paint.qualifier;
     let zoom_layout = pane_status_zoom_indicator_rects(
         paint.rect,
         paint.scale,
@@ -99,7 +99,7 @@ pub(crate) fn push_pane_status_bar_text(
     let right_edge = paint.rect.right() - scale_metric(12.0, paint.scale);
     if let Some(zoom_layout) = zoom_layout {
         text.push_label_aligned_no_wrap(
-            &format!("{}%", paint.zoom_percent),
+            paint.zoom,
             zoom_layout.label,
             paint.rect,
             paint.theme.muted_text(),
@@ -115,7 +115,7 @@ pub(crate) fn push_pane_status_bar_text(
             .max(1.0)
     };
     text.push_label_aligned_no_wrap(
-        &paint.status.primary,
+        paint.primary,
         ViewRect {
             x: left_x,
             y: text_y,

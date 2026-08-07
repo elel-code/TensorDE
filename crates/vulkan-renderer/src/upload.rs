@@ -16,6 +16,8 @@ mod texture;
 
 pub use texture::{ImageDataLayout, ImageUpload, TexelBlockLayout};
 
+const MAX_PREALLOCATED_TOUCHED_CHUNKS: usize = 64;
+
 /// Capacity policy for one reusable upload belt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UploadBeltDescriptor {
@@ -70,6 +72,7 @@ pub struct UploadBelt {
     allocator: MemoryAllocator,
     descriptor: UploadBeltDescriptor,
     chunks: Vec<UploadChunk>,
+    touched: Vec<(usize, u64)>,
 }
 
 impl fmt::Debug for UploadBelt {
@@ -96,11 +99,14 @@ impl Backend {
                 "upload allocator was created by a different Device".into(),
             ));
         }
+        let touched =
+            Vec::with_capacity(descriptor.max_chunks.min(MAX_PREALLOCATED_TOUCHED_CHUNKS));
         Ok(UploadBelt {
             owner,
             allocator: allocator.clone(),
             descriptor,
             chunks: Vec::new(),
+            touched,
         })
     }
 }
@@ -119,12 +125,12 @@ impl UploadBelt {
             ));
         }
         self.reclaim_completed(queue)?;
+        debug_assert!(self.touched.is_empty());
         let encoder = CommandEncoder::new(Arc::clone(&self.owner), descriptor)?;
         Ok(UploadBatch {
             belt: self,
             descriptor: descriptor.clone(),
             encoder: Some(encoder),
-            touched: Vec::new(),
             submitted: false,
         })
     }
@@ -283,7 +289,6 @@ pub struct UploadBatch<'belt> {
     belt: &'belt mut UploadBelt,
     descriptor: CommandEncoderDescriptor,
     encoder: Option<CommandEncoder>,
-    touched: Vec<(usize, u64)>,
     submitted: bool,
 }
 
@@ -291,7 +296,7 @@ impl fmt::Debug for UploadBatch<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("UploadBatch")
-            .field("touched_chunks", &self.touched.len())
+            .field("touched_chunks", &self.belt.touched.len())
             .field("submitted", &self.submitted)
             .finish_non_exhaustive()
     }
@@ -407,8 +412,13 @@ impl UploadBatch<'_> {
         let size = u64::try_from(data.len())
             .map_err(|_| Error::Validation("upload size exceeds u64".into()))?;
         let (chunk_index, offset, previous) = self.belt.reserve(size)?;
-        if !self.touched.iter().any(|(index, _)| *index == chunk_index) {
-            self.touched.push((chunk_index, previous));
+        if !self
+            .belt
+            .touched
+            .iter()
+            .any(|(index, _)| *index == chunk_index)
+        {
+            self.belt.touched.push((chunk_index, previous));
         }
         let chunk = &self.belt.chunks[chunk_index];
         unsafe { chunk.buffer.write(offset, data)? };
@@ -439,7 +449,7 @@ impl UploadBatch<'_> {
         waits: &[SemaphoreWait],
     ) -> Result<FrameToken> {
         self.validate_queue(queue)?;
-        if self.touched.is_empty() {
+        if self.belt.touched.is_empty() {
             return Err(Error::Validation(
                 "cannot flush an upload batch with no staged ranges".into(),
             ));
@@ -448,7 +458,6 @@ impl UploadBatch<'_> {
         let command = encoder.finish()?;
         let frame = queue.submit_retained([command], waits, std::iter::empty())?;
         self.commit(frame);
-        self.touched.clear();
         self.submitted = false;
         self.encoder = Some(CommandEncoder::new(
             Arc::clone(&self.belt.owner),
@@ -478,7 +487,7 @@ impl UploadBatch<'_> {
     /// Whether this encoder has staged ranges that can be submitted to make
     /// forward progress after a bounded-capacity failure.
     pub fn has_staged_uploads(&self) -> bool {
-        !self.touched.is_empty()
+        !self.belt.touched.is_empty()
     }
 
     /// Finishes and submits this transaction while retaining leases until its
@@ -553,9 +562,10 @@ impl UploadBatch<'_> {
     }
 
     fn commit(&mut self, frame: FrameToken) {
-        for (index, _) in &self.touched {
+        for (index, _) in &self.belt.touched {
             self.belt.chunks[*index].retire_after = frame.value();
         }
+        self.belt.touched.clear();
         self.submitted = true;
     }
 }
@@ -565,7 +575,7 @@ impl Drop for UploadBatch<'_> {
         if self.submitted {
             return;
         }
-        for (index, cursor) in self.touched.drain(..) {
+        for (index, cursor) in self.belt.touched.drain(..) {
             self.belt.chunks[index].cursor = cursor;
         }
     }

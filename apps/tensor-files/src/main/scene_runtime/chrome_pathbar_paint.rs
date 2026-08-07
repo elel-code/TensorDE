@@ -299,7 +299,8 @@ impl ShellScene {
         &self,
         projections: &[ShellPaneProjection<'_>],
     ) -> FolderPreviewRoleUpdateStats {
-        let mut requests = Vec::new();
+        let mut requests = self.folder_preview_request_staging.borrow_mut();
+        requests.clear();
         for projection in projections {
             let read_ahead_size_px = self.folder_preview_role_size_px_for_view_mode(
                 projection.view.view_mode,
@@ -354,7 +355,7 @@ impl ShellScene {
         }
         self.folder_preview_roles
             .borrow_mut()
-            .queue_candidates(requests)
+            .queue_candidates(requests.drain(..))
     }
 
     fn folder_preview_role_for_pane_entry(

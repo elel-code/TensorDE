@@ -1,5 +1,6 @@
 #[test]
 fn folder_preview_slot_composites_on_native_vulkan() {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use vulkan_renderer::{
@@ -125,6 +126,11 @@ fn folder_preview_slot_composites_on_native_vulkan() {
         overlay_batches: Vec::new(),
         content_vertices: Vec::new(),
         overlay_vertices: Vec::new(),
+        slot_by_identity: HashMap::new(),
+        draws: Vec::new(),
+        overlay_draws: Vec::new(),
+        batch_draw_indices: Vec::new(),
+        batch_slot_order: Vec::new(),
         stats: IconFrameStats::default(),
     };
 

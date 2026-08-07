@@ -2,14 +2,15 @@ use std::collections::BTreeMap;
 
 use vulkan_renderer::{
     AccessKind, BlendState, BufferDescriptor, BufferState, BufferUsages, ColorAttachment,
-    ColorTargetState, CompiledGraph, ComponentMapping, DescriptorHeap, Device, FragmentState,
-    GraphicsPipeline, GraphicsPipelineDescriptor, ImageViewDescriptor, ImageViewDimension,
-    IndexFormat, LoadOp, MemoryAllocator, MemoryLocation, MultisampleState, PassId, PipelineCache,
-    PrimitiveState, ProgrammableStage, Rect2D, RenderGraph, RenderGraphImageState, RenderPass,
-    RenderingDescriptor, ResolveMode, ResourceBinding, ResourceId, ResourceKind, ResourceState,
-    ResourceUse, SampledImageBinding, ShaderBindingMap, ShaderModuleDescriptor, StoreOp,
-    TextureAspects, TextureFormat, TextureLayout, TextureUsages, UploadBatch, VertexAttribute,
-    VertexBufferLayout, VertexState, VertexStepMode, Viewport,
+    ColorTargetState, CompiledGraph, ComponentMapping, DescriptorHeap, Device, Extent3D,
+    FragmentState, GraphicsPipeline, GraphicsPipelineDescriptor, Image, ImageDescriptor,
+    ImageDimension, ImageTiling, ImageViewDescriptor, ImageViewDimension, IndexFormat, LoadOp,
+    MemoryAllocator, MemoryLocation, MultisampleState, PassId, PipelineCache, PrimitiveState,
+    ProgrammableStage, Rect2D, RenderGraph, RenderGraphImageState, RenderPass, RenderingDescriptor,
+    ResolveMode, ResourceBinding, ResourceId, ResourceKind, ResourceState, ResourceUse,
+    SampledImageBinding, ShaderBindingMap, ShaderModuleDescriptor, StoreOp, TextureAspects,
+    TextureFormat, TextureLayout, TextureUsages, UploadBatch, VertexAttribute, VertexBufferLayout,
+    VertexState, VertexStepMode, Viewport,
 };
 
 use crate::{
@@ -22,9 +23,13 @@ use super::{VulkanIconImage, VulkanIconTexture, create_rgba_image};
 const SVG_IMAGE: ResourceId = ResourceId(1);
 const SVG_VERTICES: ResourceId = ResourceId(2);
 const SVG_INDICES: ResourceId = ResourceId(3);
+const SVG_MSAA_IMAGE: ResourceId = ResourceId(4);
 const SVG_UPLOAD: PassId = PassId(1);
 const SVG_RENDER: PassId = PassId(2);
 const SVG_SAMPLE: PassId = PassId(3);
+/// Match Qt's antialiased `QIcon::pixmap()` edges when cold-rasterizing SVG
+/// MIME icons and the small link/permission emblems.
+const SVG_RASTER_SAMPLES: vulkan_renderer::SampleCount = vulkan_renderer::SampleCount::Four;
 
 pub(super) fn is_svg_source(slot: &IconGpuSlot) -> bool {
     matches!(
@@ -132,7 +137,17 @@ impl SvgIconRasterizer {
                 subresource_range: image.full_subresource_range(TextureAspects::COLOR),
             })
             .map_err(|error| format!("create Vulkan SVG icon view: {error}"))?;
-        let bindings = resource_bindings(&image, &vertices, &indices);
+        let msaa_image = create_svg_msaa_image(allocator, width, height)?;
+        let msaa_view = msaa_image
+            .create_view(&ImageViewDescriptor {
+                label: Some("tensor-files-vulkan-svg-icon-msaa-view".into()),
+                dimension: ImageViewDimension::D2,
+                format: msaa_image.format(),
+                components: ComponentMapping::IDENTITY,
+                subresource_range: msaa_image.full_subresource_range(TextureAspects::COLOR),
+            })
+            .map_err(|error| format!("create Vulkan SVG icon MSAA view: {error}"))?;
+        let bindings = resource_bindings(&image, &msaa_image, &vertices, &indices);
         unsafe {
             uploads
                 .write_buffer(&vertices, 0, vertex_bytes)
@@ -150,6 +165,7 @@ impl SvgIconRasterizer {
             uploads,
             &self.pipeline,
             &view,
+            &msaa_view,
             &vertices,
             &indices,
             geometry.indices.len(),
@@ -163,6 +179,27 @@ impl SvgIconRasterizer {
         unsafe { uploads.encoder_mut().pipeline_barrier(&before_sample) };
         Ok(Some((image, view)))
     }
+}
+
+fn create_svg_msaa_image(
+    allocator: &MemoryAllocator,
+    width: u32,
+    height: u32,
+) -> Result<Image, String> {
+    allocator
+        .create_image(&ImageDescriptor {
+            label: Some("tensor-files-vulkan-svg-icon-msaa".into()),
+            dimension: ImageDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            extent: Extent3D::new(width.max(1), height.max(1), 1),
+            mip_levels: 1,
+            array_layers: 1,
+            samples: SVG_RASTER_SAMPLES,
+            tiling: ImageTiling::Optimal,
+            usage: TextureUsages::COLOR_ATTACHMENT,
+            memory: MemoryLocation::Device,
+        })
+        .map_err(|error| format!("create Vulkan SVG icon MSAA image: {error}"))
 }
 
 fn create_geometry_buffer(
@@ -184,11 +221,16 @@ fn create_geometry_buffer(
 
 fn resource_bindings(
     image: &vulkan_renderer::Image,
+    msaa_image: &vulkan_renderer::Image,
     vertices: &vulkan_renderer::Buffer,
     indices: &vulkan_renderer::Buffer,
 ) -> BTreeMap<ResourceId, ResourceBinding> {
     BTreeMap::from([
         (SVG_IMAGE, ResourceBinding::whole_color_image(image)),
+        (
+            SVG_MSAA_IMAGE,
+            ResourceBinding::whole_color_image(msaa_image),
+        ),
         (SVG_VERTICES, ResourceBinding::whole_buffer(vertices)),
         (SVG_INDICES, ResourceBinding::whole_buffer(indices)),
     ])
@@ -199,6 +241,7 @@ fn record_svg_draw(
     uploads: &mut UploadBatch<'_>,
     pipeline: &GraphicsPipeline,
     view: &vulkan_renderer::ImageView,
+    msaa_view: &vulkan_renderer::ImageView,
     vertices: &vulkan_renderer::Buffer,
     indices: &vulkan_renderer::Buffer,
     index_count: usize,
@@ -206,13 +249,13 @@ fn record_svg_draw(
     height: u32,
 ) -> Result<(), String> {
     let color_attachments = [Some(ColorAttachment {
-        view: view.as_attachment(),
+        view: msaa_view.as_attachment(),
         layout: TextureLayout::ColorAttachment,
-        resolve_target: None,
-        resolve_layout: TextureLayout::Undefined,
-        resolve_mode: ResolveMode::None,
+        resolve_target: Some(view.as_attachment()),
+        resolve_layout: TextureLayout::ColorAttachment,
+        resolve_mode: ResolveMode::Average,
         load_op: LoadOp::Clear([0.0; 4]),
-        store_op: StoreOp::Store,
+        store_op: StoreOp::Discard,
     })];
     let descriptor = RenderingDescriptor {
         label: Some("tensor-files-vulkan-svg-icon-render"),
@@ -243,6 +286,7 @@ fn record_svg_draw(
         .bind_pipeline(pipeline)
         .map_err(|error| format!("bind Vulkan SVG icon pipeline: {error}"))?;
     rendering.retain_resource(view);
+    rendering.retain_resource(msaa_view);
     unsafe {
         rendering
             .set_vertex_buffer(0, vertices, 0)
@@ -313,7 +357,10 @@ fn create_pipeline(device: &Device, cache: &PipelineCache) -> Result<GraphicsPip
             },
             primitive: PrimitiveState::default(),
             depth_stencil: None,
-            multisample: MultisampleState::default(),
+            multisample: MultisampleState {
+                count: SVG_RASTER_SAMPLES,
+                ..MultisampleState::default()
+            },
             fragment: FragmentState {
                 stage: ProgrammableStage {
                     module: &fragment_shader,
@@ -333,6 +380,11 @@ fn compile_graph(queue_family: u32) -> Result<CompiledGraph, String> {
     let mut graph = RenderGraph::default();
     graph.set_initial_state(
         SVG_IMAGE,
+        ResourceKind::Image,
+        ResourceState::image(RenderGraphImageState::Undefined, queue_family),
+    );
+    graph.set_initial_state(
+        SVG_MSAA_IMAGE,
         ResourceKind::Image,
         ResourceState::image(RenderGraphImageState::Undefined, queue_family),
     );
@@ -362,6 +414,12 @@ fn compile_graph(queue_family: u32) -> Result<CompiledGraph, String> {
         resources: vec![
             ResourceUse {
                 resource: SVG_IMAGE,
+                kind: ResourceKind::Image,
+                access: AccessKind::Write,
+                state: ResourceState::color_attachment_write(queue_family),
+            },
+            ResourceUse {
+                resource: SVG_MSAA_IMAGE,
                 kind: ResourceKind::Image,
                 access: AccessKind::Write,
                 state: ResourceState::color_attachment_write(queue_family),
@@ -401,6 +459,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn svg_raster_uses_four_coverage_samples() {
+        assert_eq!(SVG_RASTER_SAMPLES, vulkan_renderer::SampleCount::Four);
+    }
+
+    #[test]
     fn svg_vertex_layout_matches_shader_contract() {
         assert_eq!(std::mem::size_of::<SvgVertex>(), 24);
     }
@@ -415,7 +478,12 @@ mod tests {
                 .iter()
                 .filter(|barrier| barrier.after == SVG_RENDER)
                 .count(),
-            3
+            4
+        );
+        assert!(
+            graph.barriers.iter().any(|barrier| {
+                barrier.after == SVG_RENDER && barrier.resource == SVG_MSAA_IMAGE
+            })
         );
         assert!(graph.barriers.iter().any(|barrier| {
             barrier.after == SVG_SAMPLE

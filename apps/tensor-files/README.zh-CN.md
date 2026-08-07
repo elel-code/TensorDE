@@ -66,6 +66,13 @@ scripts/check-rust-file-lines.sh
 cargo run -p tensor-files -- /etc
 ```
 
+## 配置
+
+Tensor Files 读取并原子更新 `$XDG_CONFIG_HOME/tensor/files.kdl` 这一 typed KDL
+文档；可通过 `TENSOR_FILES_CONFIG` 覆盖路径。完整 schema 见
+[CONFIGURATION.md](../../docs/tensor-files/CONFIGURATION.md) 和
+[示例配置](examples/config.kdl)。
+
 ## 架构要点
 
 - Pane state 按稳定 pane identity 路由，并通过可复用 pane container 存储；

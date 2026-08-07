@@ -317,7 +317,7 @@ impl PresentationTransaction {
                 label: self
                     .label
                     .as_deref()
-                    .map(|label| format!("{label}-surface-frame-{frame_slot}")),
+                    .map(|label| format!("{label}-surface-frame-{frame_slot}").into()),
             },
         ) {
             Ok(encoder) => encoder,

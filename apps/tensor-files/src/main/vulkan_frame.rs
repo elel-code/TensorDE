@@ -1,7 +1,5 @@
-use std::collections::BTreeMap;
-
 use vulkan_renderer::{
-    AccessKind, BarrierBatch, Buffer, Extent2D, FrameTargetPreference, PassId,
+    AccessKind, BarrierBatch, Buffer, CompiledGraph, Extent2D, FrameTargetPreference, PassId,
     PresentationPathDescriptor, PresentationPathPlan, PresentationRequirements, RenderGraph,
     RenderGraphImageState, RenderPass, ResourceBinding, ResourceId, ResourceKind, ResourceState,
     ResourceUse, SurfaceAcquireStrategy, TerminalAlphaMode, TerminalCompositeDescriptor,
@@ -14,14 +12,84 @@ const SURFACE_IMAGE: ResourceId = ResourceId(1);
 const FIRST_VERTEX_BUFFER: u64 = 2;
 const FIRST_UPLOAD_PASS: u32 = 10;
 
-pub(crate) struct FrameBarriers {
-    pub(crate) before_render: BarrierBatch,
-    pub(crate) before_present: BarrierBatch,
-}
+pub(crate) const FRAME_VERTEX_STREAM_COUNT: usize = 5;
+const FRAME_GRAPH_VARIANTS: usize = 1 << (FRAME_VERTEX_STREAM_COUNT + 1);
 
+#[derive(Clone, Copy)]
 pub(crate) struct FrameVertexBuffer<'a> {
     pub(crate) buffer: &'a Buffer,
     pub(crate) uploaded: bool,
+}
+
+pub(crate) type FrameVertexBuffers<'a> = [FrameVertexBuffer<'a>; FRAME_VERTEX_STREAM_COUNT];
+
+fn frame_graph_cache_key(image_initialized: bool, upload_mask: u8) -> usize {
+    usize::from(upload_mask & ((1 << FRAME_VERTEX_STREAM_COUNT) - 1))
+        | (usize::from(image_initialized) << FRAME_VERTEX_STREAM_COUNT)
+}
+
+fn frame_vertex_upload_mask(vertex_buffers: &FrameVertexBuffers<'_>) -> u8 {
+    vertex_buffers
+        .iter()
+        .enumerate()
+        .fold(0, |mask, (index, buffer)| {
+            mask | (u8::from(buffer.uploaded) << index)
+        })
+}
+
+/// Precompiled synchronization variants for one fixed set of retained streams.
+///
+/// The image initialization bit and five upload bits are the only frame facts
+/// that affect this graph. Keeping all variants resident moves graph parsing,
+/// dependency ordering, and barrier allocation out of the present path.
+pub(crate) struct FrameBarrierCache {
+    graphs: Vec<CompiledGraph>,
+    before_render: BarrierBatch,
+    before_present: BarrierBatch,
+}
+
+impl FrameBarrierCache {
+    pub(crate) fn new(queue_family: u32) -> Result<Self, String> {
+        let graphs = (0..FRAME_GRAPH_VARIANTS)
+            .map(|key| {
+                compile_frame_graph(
+                    key & ((1 << FRAME_VERTEX_STREAM_COUNT) - 1),
+                    key & (1 << FRAME_VERTEX_STREAM_COUNT) != 0,
+                    queue_family,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            graphs,
+            before_render: BarrierBatch::with_capacity(FRAME_VERTEX_STREAM_COUNT, 1),
+            before_present: BarrierBatch::with_capacity(0, 1),
+        })
+    }
+
+    pub(crate) fn resolve(
+        &mut self,
+        surface_binding: ResourceBinding,
+        image_initialized: bool,
+        vertex_buffers: &FrameVertexBuffers<'_>,
+    ) -> Result<(&BarrierBatch, &BarrierBatch), String> {
+        let upload_mask = frame_vertex_upload_mask(vertex_buffers);
+        let key = frame_graph_cache_key(image_initialized, upload_mask);
+        let graph = &self.graphs[key];
+        let mut bindings = [(SURFACE_IMAGE, surface_binding); FRAME_VERTEX_STREAM_COUNT + 1];
+        for (index, vertex_buffer) in vertex_buffers.iter().enumerate() {
+            bindings[index + 1] = (
+                ResourceId(FIRST_VERTEX_BUFFER + index as u64),
+                ResourceBinding::whole_buffer(vertex_buffer.buffer),
+            );
+        }
+        graph
+            .fill_barrier_batch_before_from_slice(RENDER_PASS, &bindings, &mut self.before_render)
+            .map_err(|error| format!("resolve Vulkan render barriers: {error}"))?;
+        graph
+            .fill_barrier_batch_before_from_slice(PRESENT_PASS, &bindings, &mut self.before_present)
+            .map_err(|error| format!("resolve Vulkan present barrier: {error}"))?;
+        Ok((&self.before_render, &self.before_present))
+    }
 }
 
 /// Product-level frame facts. These are semantics, not a requested topology.
@@ -50,6 +118,43 @@ impl TensorFilesFrameSemantics {
             uses_async_compute: false,
             requires_terminal_transform: false,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DirectFramePlanKey {
+    extent: Extent2D,
+    format: TextureFormat,
+    surface_usage: TextureUsages,
+    semantics: TensorFilesFrameSemantics,
+}
+
+/// Retains the successful direct-surface validation for stable frame facts.
+#[derive(Default)]
+pub(crate) struct DirectFramePlanCache {
+    validated: Option<DirectFramePlanKey>,
+}
+
+impl DirectFramePlanCache {
+    pub(crate) fn require(
+        &mut self,
+        extent: Extent2D,
+        format: TextureFormat,
+        surface_usage: TextureUsages,
+        semantics: TensorFilesFrameSemantics,
+    ) -> Result<bool, String> {
+        let key = DirectFramePlanKey {
+            extent,
+            format,
+            surface_usage,
+            semantics,
+        };
+        if self.validated == Some(key) {
+            return Ok(false);
+        }
+        require_direct_frame_plan(extent, format, surface_usage, semantics)?;
+        self.validated = Some(key);
+        Ok(true)
     }
 }
 
@@ -158,12 +263,11 @@ pub(crate) fn require_direct_frame_plan(
     ))
 }
 
-pub(crate) fn compile_frame_barriers(
-    surface_binding: ResourceBinding,
+fn compile_frame_graph(
+    upload_mask: usize,
     image_initialized: bool,
-    vertex_buffers: &[FrameVertexBuffer<'_>],
     queue_family: u32,
-) -> Result<FrameBarriers, String> {
+) -> Result<CompiledGraph, String> {
     let mut graph = RenderGraph::default();
     graph.set_initial_state(
         SURFACE_IMAGE,
@@ -177,14 +281,14 @@ pub(crate) fn compile_frame_barriers(
             queue_family,
         ),
     );
-    let mut render_dependencies = Vec::with_capacity(vertex_buffers.len());
+    let mut render_dependencies = Vec::with_capacity(FRAME_VERTEX_STREAM_COUNT);
     let mut render_resources = vec![ResourceUse {
         resource: SURFACE_IMAGE,
         kind: ResourceKind::Image,
         access: AccessKind::Write,
         state: ResourceState::color_attachment_write(queue_family),
     }];
-    for (index, vertex_buffer) in vertex_buffers.iter().enumerate() {
+    for index in 0..FRAME_VERTEX_STREAM_COUNT {
         let index = u32::try_from(index)
             .map_err(|_| "Vulkan frame has too many vertex buffer streams".to_string())?;
         let resource = ResourceId(FIRST_VERTEX_BUFFER + u64::from(index));
@@ -197,7 +301,7 @@ pub(crate) fn compile_frame_barriers(
             ResourceKind::Buffer,
             ResourceState::vertex_buffer(queue_family),
         );
-        if vertex_buffer.uploaded {
+        if upload_mask & (1 << index) != 0 {
             let upload_pass = PassId(
                 FIRST_UPLOAD_PASS
                     .checked_add(index)
@@ -240,29 +344,9 @@ pub(crate) fn compile_frame_barriers(
             state: ResourceState::present(queue_family),
         }],
     });
-    let graph = graph
+    graph
         .compile()
-        .map_err(|error| format!("compile Vulkan frame graph: {error}"))?;
-    let mut bindings = BTreeMap::from([(SURFACE_IMAGE, surface_binding)]);
-    for (index, vertex_buffer) in vertex_buffers.iter().enumerate() {
-        let resource = ResourceId(
-            FIRST_VERTEX_BUFFER
-                + u64::try_from(index)
-                    .map_err(|_| "Vulkan frame vertex resource ID overflows".to_string())?,
-        );
-        bindings.insert(
-            resource,
-            ResourceBinding::whole_buffer(vertex_buffer.buffer),
-        );
-    }
-    Ok(FrameBarriers {
-        before_render: graph
-            .barrier_batch_before(RENDER_PASS, &bindings)
-            .map_err(|error| format!("resolve Vulkan render barriers: {error}"))?,
-        before_present: graph
-            .barrier_batch_before(PRESENT_PASS, &bindings)
-            .map_err(|error| format!("resolve Vulkan present barrier: {error}"))?,
-    })
+        .map_err(|error| format!("compile Vulkan frame graph: {error}"))
 }
 
 #[cfg(test)]
@@ -271,6 +355,42 @@ mod tests {
     use vulkan_renderer::{DirectSurfaceBlocker, PresentationTarget};
 
     const EXTENT: Extent2D = Extent2D::new(1920, 1080);
+
+    #[test]
+    fn frame_barrier_cache_precompiles_the_bounded_state_space() {
+        let cache = FrameBarrierCache::new(3).unwrap();
+        assert_eq!(cache.graphs.len(), FRAME_GRAPH_VARIANTS);
+        assert_eq!(frame_graph_cache_key(false, 0), 0);
+        assert_eq!(
+            frame_graph_cache_key(true, u8::MAX),
+            FRAME_GRAPH_VARIANTS - 1
+        );
+
+        let warm = &cache.graphs[frame_graph_cache_key(true, 0)];
+        assert_eq!(
+            warm.barriers
+                .iter()
+                .filter(|barrier| barrier.after == RENDER_PASS)
+                .count(),
+            1
+        );
+        let all_uploaded = &cache.graphs[frame_graph_cache_key(true, 0b11111)];
+        assert_eq!(
+            all_uploaded
+                .barriers
+                .iter()
+                .filter(|barrier| barrier.after == RENDER_PASS)
+                .count(),
+            FRAME_VERTEX_STREAM_COUNT + 1
+        );
+    }
+
+    #[test]
+    fn frame_upload_mask_keeps_stream_order_in_the_cache_key() {
+        assert_eq!(frame_graph_cache_key(false, 0b00001), 1);
+        assert_eq!(frame_graph_cache_key(false, 0b10000), 16);
+        assert_eq!(frame_graph_cache_key(true, 0b00101), 37);
+    }
 
     #[test]
     fn ordinary_ui_semantics_compile_to_direct_single_pass() {
@@ -287,6 +407,44 @@ mod tests {
             TensorFilesCompositionPath::DirectSinglePass
         );
         assert!(plan.presentation.direct_surface_blockers.is_empty());
+    }
+
+    #[test]
+    fn direct_frame_plan_cache_revalidates_only_changed_facts() {
+        let mut cache = DirectFramePlanCache::default();
+        assert!(
+            cache
+                .require(
+                    EXTENT,
+                    TextureFormat::Bgra8Srgb,
+                    TextureUsages::COLOR_ATTACHMENT,
+                    TensorFilesFrameSemantics::direct_ui(),
+                )
+                .unwrap()
+        );
+        assert!(
+            !cache
+                .require(
+                    EXTENT,
+                    TextureFormat::Bgra8Srgb,
+                    TextureUsages::COLOR_ATTACHMENT,
+                    TensorFilesFrameSemantics::direct_ui(),
+                )
+                .unwrap()
+        );
+        assert!(
+            cache
+                .require(
+                    EXTENT,
+                    TextureFormat::Bgra8Srgb,
+                    TextureUsages::COLOR_ATTACHMENT,
+                    TensorFilesFrameSemantics {
+                        has_external_consumer: true,
+                        ..TensorFilesFrameSemantics::direct_ui()
+                    },
+                )
+                .is_err()
+        );
     }
 
     #[test]

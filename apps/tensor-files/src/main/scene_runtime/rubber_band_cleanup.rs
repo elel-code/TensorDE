@@ -2,16 +2,19 @@ impl ShellScene {
 
     fn update_rubber_band(&mut self, point: ViewPoint, size: PhysicalSize<u32>) -> bool {
         let pane_id = self.active_pane();
-        let Some(projection) = self.pane_projection(pane_id, size) else {
+        let Some(view) = self.pane_view(pane_id) else {
+            return self.refresh_hover(size);
+        };
+        let Some(geometry) = self.pane_geometry(pane_id, size) else {
             return self.refresh_hover(size);
         };
         let current = clamped_screen_to_content_point(
             point,
             ViewPoint {
-                x: projection.view.scroll_x,
-                y: projection.view.scroll_y,
+                x: view.scroll_x,
+                y: view.scroll_y,
             },
-            projection.geometry.content,
+            geometry.content,
         );
         let Some((active_rect, mode, base_selection, rect_changed)) = ({
             let Some(band) = self.rubber_band.as_mut() else {
@@ -37,10 +40,19 @@ impl ShellScene {
             return hover_changed || rect_changed;
         };
 
-        let indexes = self.rubber_band_indexes_for_pane(pane_id, rect, size);
+        let mut indexes = self
+            .rubber_band
+            .as_mut()
+            .map(|band| std::mem::take(&mut band.index_staging))
+            .unwrap_or_default();
+        self.fill_rubber_band_indexes_for_pane(pane_id, rect, size, &mut indexes);
         let selection_changed = self
             .pane_selection_mut(pane_id)
             .is_some_and(|selection| selection.apply_rubber_band(&base_selection, &indexes, mode));
+        indexes.clear();
+        if let Some(band) = self.rubber_band.as_mut() {
+            band.index_staging = indexes;
+        }
         if selection_changed {
             self.selection_changes += 1;
         }
@@ -48,32 +60,26 @@ impl ShellScene {
         hover_changed || rect_changed || selection_changed
     }
 
-    fn rubber_band_indexes_for_pane(
+    fn fill_rubber_band_indexes_for_pane(
         &self,
         pane_id: ShellPaneId,
         rect: ViewRect,
         size: PhysicalSize<u32>,
-    ) -> Vec<usize> {
-        let Some(projection) = self.pane_projection(pane_id, size) else {
-            return Vec::new();
+        indexes: &mut Vec<usize>,
+    ) {
+        indexes.clear();
+        let Some((view, _geometry, layout)) = self.pane_layout_context(pane_id, size) else {
+            return;
         };
-        let layout = self.pane_layout_for_pane(
-            pane_id,
-            projection.view,
-            projection.geometry.content.width,
-            projection.geometry.content.height,
-        );
-        layout
-            .indexes_intersecting(rect)
-            .iter()
-            .filter_map(|layout_index| {
-                layout
-                    .item(*layout_index)
-                    .is_some_and(|item| item.visual_rect.intersects(rect))
-                    .then(|| projection.view.filtered_indexes.get(*layout_index).copied())
-                    .flatten()
-            })
-            .collect()
+        layout.for_each_index_intersecting(rect, |layout_index| {
+            if layout
+                .item(layout_index)
+                .is_some_and(|item| item.visual_rect.intersects(rect))
+                && let Some(entry_index) = view.filtered_indexes.get(layout_index).copied()
+            {
+                indexes.push(entry_index);
+            }
+        });
     }
 
     fn navigate(
@@ -83,43 +89,42 @@ impl ShellScene {
         size: PhysicalSize<u32>,
     ) -> bool {
         let pane_id = self.active_pane();
-        let Some(projection) = self.pane_projection(pane_id, size) else {
-            return false;
-        };
-        if projection.view.filtered_entry_count() == 0 {
-            return false;
-        }
-
         let old_scroll = self.pane_scroll_offset(pane_id).unwrap_or((0.0, 0.0));
         let old_hovered = self.hovered_item;
         let old_hovered_place = self.hovered_place;
-        let current = projection
-            .view
-            .selection
-            .focus_or_first_selected()
-            .and_then(|index| projection.view.filtered_indexes.binary_search(&index).ok())
-            .unwrap_or(0);
-        let layout = self.pane_layout_for_pane(
-            pane_id,
-            projection.view,
-            projection.geometry.content.width,
-            projection.geometry.content.height,
-        );
-        let Some(target_layout_index) = navigation_target(
-            action,
-            current,
-            projection.view.filtered_entry_count(),
-            &layout,
-        ) else {
-            return false;
-        };
-        let Some(target) = projection
-            .view
-            .filtered_indexes
-            .get(target_layout_index)
-            .copied()
-        else {
-            return false;
+        let (target, target_item, view_mode, scroll, content) = {
+            let Some((view, geometry, layout)) = self.pane_layout_context(pane_id, size) else {
+                return false;
+            };
+            if view.filtered_entry_count() == 0 {
+                return false;
+            }
+            let current = view
+                .selection
+                .focus_or_first_selected()
+                .and_then(|index| view.filtered_indexes.binary_search(&index).ok())
+                .unwrap_or(0);
+            let Some(target_layout_index) =
+                navigation_target(action, current, view.filtered_entry_count(), &layout)
+            else {
+                return false;
+            };
+            let Some(target) = view.filtered_indexes.get(target_layout_index).copied() else {
+                return false;
+            };
+            let Some(target_item) = layout.item(target_layout_index) else {
+                return false;
+            };
+            (
+                target,
+                target_item,
+                view.view_mode,
+                ViewPoint {
+                    x: view.scroll_x,
+                    y: view.scroll_y,
+                },
+                geometry.content,
+            )
         };
 
         let selection_changed = self
@@ -129,7 +134,14 @@ impl ShellScene {
             self.selection_changes += 1;
         }
         self.keyboard_navigation += 1;
-        self.ensure_index_visible_in_pane(pane_id, target, size);
+        self.ensure_item_visible_in_pane(
+            pane_id,
+            view_mode,
+            scroll,
+            content,
+            target_item,
+            size,
+        );
         let next_hovered_place = self
             .pointer
             .and_then(|point| self.place_index_at_screen_point(point, size));
@@ -317,43 +329,56 @@ impl ShellScene {
         index: usize,
         size: PhysicalSize<u32>,
     ) {
-        let Some(projection) = self.pane_projection(pane_id, size) else {
+        let context = self
+            .pane_layout_context(pane_id, size)
+            .and_then(|(view, geometry, layout)| {
+                let layout_index = view.filtered_indexes.binary_search(&index).ok()?;
+                let item = layout.item(layout_index)?;
+                Some((
+                    view.view_mode,
+                    ViewPoint {
+                        x: view.scroll_x,
+                        y: view.scroll_y,
+                    },
+                    geometry.content,
+                    item,
+                ))
+            });
+        let Some((view_mode, scroll, content, item)) = context else {
             return;
         };
-        let Some(layout_index) = projection.view.filtered_indexes.binary_search(&index).ok() else {
-            return;
-        };
-        let layout = self.pane_layout_for_pane(
-            pane_id,
-            projection.view,
-            projection.geometry.content.width,
-            projection.geometry.content.height,
-        );
-        let Some(item) = layout.item(layout_index) else {
-            return;
-        };
+        self.ensure_item_visible_in_pane(pane_id, view_mode, scroll, content, item, size);
+    }
+
+    fn ensure_item_visible_in_pane(
+        &mut self,
+        pane_id: ShellPaneId,
+        view_mode: ShellViewMode,
+        scroll: ViewPoint,
+        content: ViewRect,
+        item: ItemLayout,
+        size: PhysicalSize<u32>,
+    ) {
         let padding = 8.0;
-        let mut next_scroll = self.pane_scroll_offset(pane_id).unwrap_or((0.0, 0.0));
-        match projection.view.view_mode {
+        let mut next_scroll = (scroll.x, scroll.y);
+        match view_mode {
             ShellViewMode::Compact => {
-                if item.visual_rect.x < projection.view.scroll_x + padding {
+                if item.visual_rect.x < scroll.x + padding {
                     next_scroll.0 = (item.visual_rect.x - padding).max(0.0);
                 } else if item.visual_rect.right()
-                    > projection.view.scroll_x + projection.geometry.content.width - padding
+                    > scroll.x + content.width - padding
                 {
-                    next_scroll.0 =
-                        item.visual_rect.right() - projection.geometry.content.width + padding;
+                    next_scroll.0 = item.visual_rect.right() - content.width + padding;
                 }
                 next_scroll.1 = 0.0;
             }
             ShellViewMode::Icons | ShellViewMode::Details => {
-                if item.visual_rect.y < projection.view.scroll_y + padding {
+                if item.visual_rect.y < scroll.y + padding {
                     next_scroll.1 = (item.visual_rect.y - padding).max(0.0);
                 } else if item.visual_rect.bottom()
-                    > projection.view.scroll_y + projection.geometry.content.height - padding
+                    > scroll.y + content.height - padding
                 {
-                    next_scroll.1 =
-                        item.visual_rect.bottom() - projection.geometry.content.height + padding;
+                    next_scroll.1 = item.visual_rect.bottom() - content.height + padding;
                 }
                 next_scroll.0 = 0.0;
             }

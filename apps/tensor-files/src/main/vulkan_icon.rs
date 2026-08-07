@@ -22,6 +22,17 @@ use crate::{
     IconGpuUploadKey, IconSlotBatch, IconVertex, LoadedIconSource, is_svg_path,
 };
 
+pub(crate) fn stage_icon_vertex_stream(
+    staging: &mut Vec<IconVertex>,
+    content: &[IconVertex],
+    overlay: &[IconVertex],
+) {
+    staging.clear();
+    staging.reserve(content.len().saturating_add(overlay.len()));
+    staging.extend_from_slice(content);
+    staging.extend_from_slice(overlay);
+}
+
 use super::vulkan_icon_spirv;
 
 #[path = "vulkan_icon/bitmap.rs"]
@@ -69,6 +80,17 @@ struct VulkanIconTexture {
     last_used_frame: u64,
 }
 
+fn resident_entry(texture: &VulkanIconTexture) -> IconGpuResidentEntry {
+    IconGpuResidentEntry {
+        width: texture.width,
+        height: texture.height,
+        content_width: texture.content_width,
+        content_height: texture.content_height,
+        content_hash: texture.content_hash,
+        rounding: texture.rounding,
+    }
+}
+
 /// Native sampled-image renderer for the shared retained [`IconFrame`].
 ///
 /// Resident textures use one image descriptor each and share one immutable
@@ -93,6 +115,7 @@ pub(crate) struct VulkanIconRenderer {
     frame_slot_keys: Vec<IconGpuUploadKey>,
     content_batches: Vec<IconSlotBatch>,
     overlay_batches: Vec<IconSlotBatch>,
+    vertex_staging: Vec<IconVertex>,
     content_vertex_count: usize,
     overlay_vertex_start: usize,
     overlay_vertex_count: usize,
@@ -164,6 +187,7 @@ impl VulkanIconRenderer {
             frame_slot_keys: Vec::new(),
             content_batches: Vec::new(),
             overlay_batches: Vec::new(),
+            vertex_staging: Vec::with_capacity(64 * 6),
             content_vertex_count: 0,
             overlay_vertex_start: 0,
             overlay_vertex_count: 0,
@@ -191,19 +215,7 @@ impl VulkanIconRenderer {
         let entries = self
             .textures
             .iter()
-            .map(|(key, texture)| {
-                (
-                    key.clone(),
-                    IconGpuResidentEntry {
-                        width: texture.width,
-                        height: texture.height,
-                        content_width: texture.content_width,
-                        content_height: texture.content_height,
-                        content_hash: texture.content_hash,
-                        rounding: texture.rounding,
-                    },
-                )
-            })
+            .map(|(key, texture)| (key.clone(), resident_entry(texture)))
             .collect();
         IconGpuResidentIndex { entries }
     }
@@ -276,20 +288,22 @@ impl VulkanIconRenderer {
         frame.stats.atlas_uploads = uploaded_textures;
         frame.stats.atlas_upload_skips = upload_skips;
 
-        self.content_batches = std::mem::take(&mut frame.content_batches);
-        self.overlay_batches = std::mem::take(&mut frame.overlay_batches);
+        // The renderer needs the current batches through draw submission.
+        // Swap instead of take so the previous allocations travel back with
+        // the frame and can be recycled by `IconEngine` after presentation.
+        std::mem::swap(&mut self.content_batches, &mut frame.content_batches);
+        std::mem::swap(&mut self.overlay_batches, &mut frame.overlay_batches);
         self.content_vertex_count = frame.content_vertices.len();
         self.overlay_vertex_start = self.content_vertex_count;
         self.overlay_vertex_count = frame.overlay_vertices.len();
-        let mut vertices = Vec::with_capacity(
-            self.content_vertex_count
-                .saturating_add(self.overlay_vertex_count),
+        stage_icon_vertex_stream(
+            &mut self.vertex_staging,
+            &frame.content_vertices,
+            &frame.overlay_vertices,
         );
-        vertices.extend_from_slice(&frame.content_vertices);
-        vertices.extend_from_slice(&frame.overlay_vertices);
         let vertex_upload = self
             .vertices
-            .upload(uploads, bytemuck::cast_slice(&vertices))
+            .upload(uploads, bytemuck::cast_slice(&self.vertex_staging))
             .map_err(|error| format!("upload Vulkan icon vertices: {error}"))?;
         self.evict_unused(last_submission)?;
         if self.unsupported_sources.len() > MAX_RESIDENT_TEXTURES * 4 {
@@ -298,8 +312,8 @@ impl VulkanIconRenderer {
         Ok(vertex_upload.bytes_written != 0)
     }
 
-    pub(crate) fn vertex_buffer(&self) -> Option<&Buffer> {
-        (!self.vertices.is_empty()).then_some(self.vertices.buffer())
+    pub(crate) fn buffer(&self) -> &Buffer {
+        self.vertices.buffer()
     }
 
     pub(crate) fn draw_content(&self, rendering: &mut RenderingEncoder<'_>) -> Result<(), String> {
@@ -761,5 +775,11 @@ impl VulkanIconRenderer {
             None => texture.binding.release(&self.resource_heap),
         }
         .map_err(|error| format!("retire Vulkan resident icon descriptor: {error}"))
+    }
+}
+
+impl crate::IconGpuResidentLookup for VulkanIconRenderer {
+    fn get(&self, key: &IconGpuUploadKey) -> Option<IconGpuResidentEntry> {
+        self.textures.get(key).map(resident_entry)
     }
 }

@@ -1,21 +1,17 @@
+#![allow(unexpected_cfgs)] // `tensor-kdl` derive emits optional downstream DOM impls.
+
 use std::env;
-use std::fs;
-use std::io;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::pane::ViewMode;
+use tensor_kdl::{Decode, Encode};
 
-const SETTINGS_FILE_NAME: &str = "settings.tsv";
-const PLACES_SIDEBAR_WIDTH_KEY: &str = "places.sidebar.width";
-const PLACES_SIDEBAR_VISIBLE_KEY: &str = "places.sidebar.visible";
-const VIEW_MODE_KEY: &str = "view.mode";
-const VIEW_SHOW_HIDDEN_KEY: &str = "view.show_hidden";
-const VIEW_ICONS_PREVIEW_SIZE_KEY: &str = "view.icons.preview_size";
-const VIEW_COMPACT_PREVIEW_SIZE_KEY: &str = "view.compact.preview_size";
-const VIEW_DETAILS_PREVIEW_SIZE_KEY: &str = "view.details.preview_size";
-const APPEARANCE_DARK_MODE_KEY: &str = "appearance.dark_mode";
-const APPEARANCE_BACKGROUND_BLUR_KEY: &str = "appearance.background_blur";
-const APPEARANCE_BACKGROUND_OPACITY_KEY: &str = "appearance.background_opacity";
+use super::pane::{MAX_ZOOM_LEVEL, MIN_ZOOM_LEVEL, ViewMode, icon_size_for_zoom_level};
+
+const SETTINGS_FILE_NAME: &str = "files.kdl";
+static NEXT_SETTINGS_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AppSettings {
@@ -47,165 +43,272 @@ pub struct AppearanceSettings {
 }
 
 pub fn default_app_settings_path() -> PathBuf {
-    let config_home = env::var_os("XDG_CONFIG_HOME")
+    env::var_os("TENSOR_FILES_CONFIG")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    app_settings_path_for_config_home(config_home)
+        .or_else(|| {
+            let config_home = env::var_os("XDG_CONFIG_HOME")
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+                .or_else(|| {
+                    env::var_os("HOME")
+                        .filter(|path| !path.is_empty())
+                        .map(|home| PathBuf::from(home).join(".config"))
+                })?;
+            Some(app_settings_path_for_config_home(config_home))
+        })
+        .unwrap_or_else(|| PathBuf::from("/etc/tensor").join(SETTINGS_FILE_NAME))
 }
 
 fn app_settings_path_for_config_home(config_home: PathBuf) -> PathBuf {
-    config_home.join("tensor-files").join(SETTINGS_FILE_NAME)
+    config_home.join("tensor").join(SETTINGS_FILE_NAME)
 }
 
 pub fn load_app_settings(path: &Path) -> io::Result<AppSettings> {
     match fs::read_to_string(path) {
-        Ok(contents) => Ok(parse_app_settings(&contents)),
+        Ok(contents) => parse_app_settings(&contents),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(AppSettings::default()),
         Err(err) => Err(err),
     }
 }
 
 pub fn save_app_settings(path: &Path, settings: &AppSettings) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let contents = app_settings_tsv(settings);
-    let tmp_path = path.with_extension("tsv.tmp");
-    fs::write(&tmp_path, contents)?;
-    fs::rename(&tmp_path, path).or_else(|_| {
-        fs::write(path, app_settings_tsv(settings))?;
-        let _ = fs::remove_file(&tmp_path);
-        Ok(())
+    let contents = app_settings_kdl(settings)?;
+    atomic_replace_app_settings(path, contents.as_bytes())
+}
+
+pub fn parse_app_settings(contents: &str) -> io::Result<AppSettings> {
+    let file: SettingsFile = tensor_kdl::read(contents).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            tensor_kdl::format_error(&error, contents),
+        )
+    })?;
+    file.resolve()
+}
+
+pub fn app_settings_kdl(settings: &AppSettings) -> io::Result<String> {
+    validate_app_settings(settings)?;
+    tensor_kdl::to_string(&SettingsFile::from(settings)).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("encode Tensor Files KDL settings: {error}"),
+        )
     })
 }
 
-pub fn parse_app_settings(contents: &str) -> AppSettings {
-    let mut settings = AppSettings::default();
-    for line in contents.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('\t') else {
-            continue;
+#[derive(Debug, Default, Decode, Encode)]
+struct SettingsFile {
+    #[kdl(child)]
+    places: Option<PlacesFile>,
+    #[kdl(child)]
+    view: Option<ViewFile>,
+    #[kdl(child)]
+    appearance: Option<AppearanceFile>,
+}
+
+#[derive(Debug, Default, Decode, Encode)]
+struct PlacesFile {
+    #[kdl(child)]
+    sidebar: Option<PlacesSidebarFile>,
+}
+
+#[derive(Debug, Default, Decode, Encode)]
+struct PlacesSidebarFile {
+    #[kdl(child, unwrap(argument))]
+    width: Option<f32>,
+    #[kdl(child, unwrap(argument))]
+    visible: Option<bool>,
+}
+
+#[derive(Debug, Default, Decode, Encode)]
+struct ViewFile {
+    #[kdl(child, unwrap(argument))]
+    mode: Option<String>,
+    #[kdl(child(name = "show-hidden"), unwrap(argument))]
+    show_hidden: Option<bool>,
+    #[kdl(child(name = "icons-preview-size"), unwrap(argument))]
+    icons_preview_size: Option<u16>,
+    #[kdl(child(name = "compact-preview-size"), unwrap(argument))]
+    compact_preview_size: Option<u16>,
+    #[kdl(child(name = "details-preview-size"), unwrap(argument))]
+    details_preview_size: Option<u16>,
+}
+
+#[derive(Debug, Default, Decode, Encode)]
+struct AppearanceFile {
+    #[kdl(child(name = "dark-mode"), unwrap(argument))]
+    dark_mode: Option<bool>,
+    #[kdl(child(name = "background-blur"), unwrap(argument))]
+    background_blur: Option<bool>,
+    #[kdl(child(name = "background-opacity"), unwrap(argument))]
+    background_opacity: Option<f32>,
+}
+
+impl SettingsFile {
+    fn resolve(self) -> io::Result<AppSettings> {
+        let sidebar = self
+            .places
+            .and_then(|places| places.sidebar)
+            .unwrap_or_default();
+        let view = self.view.unwrap_or_default();
+        let mode = view
+            .mode
+            .as_deref()
+            .map(ViewMode::parse)
+            .transpose()
+            .map_err(invalid_setting)?;
+        let appearance = self.appearance.unwrap_or_default();
+        let settings = AppSettings {
+            places_sidebar: PlacesSidebarSettings {
+                width: sidebar.width,
+                visible: sidebar.visible,
+            },
+            view: ViewSettings {
+                mode,
+                show_hidden: view.show_hidden,
+                icons_preview_size: view.icons_preview_size,
+                compact_preview_size: view.compact_preview_size,
+                details_preview_size: view.details_preview_size,
+            },
+            appearance: AppearanceSettings {
+                dark_mode: appearance.dark_mode,
+                background_blur: appearance.background_blur,
+                background_opacity: appearance.background_opacity,
+            },
         };
-        match key.trim() {
-            PLACES_SIDEBAR_WIDTH_KEY => {
-                if let Some(width) = parse_finite_f32(value) {
-                    settings.places_sidebar.width = Some(width);
-                }
-            }
-            PLACES_SIDEBAR_VISIBLE_KEY => {
-                if let Some(visible) = parse_bool(value) {
-                    settings.places_sidebar.visible = Some(visible);
-                }
-            }
-            VIEW_MODE_KEY => {
-                if let Ok(mode) = ViewMode::parse(value.trim()) {
-                    settings.view.mode = Some(mode);
-                }
-            }
-            VIEW_SHOW_HIDDEN_KEY => {
-                if let Some(show_hidden) = parse_bool(value) {
-                    settings.view.show_hidden = Some(show_hidden);
-                }
-            }
-            VIEW_ICONS_PREVIEW_SIZE_KEY => {
-                if let Some(size) = parse_u16(value) {
-                    settings.view.icons_preview_size = Some(size);
-                }
-            }
-            VIEW_COMPACT_PREVIEW_SIZE_KEY => {
-                if let Some(size) = parse_u16(value) {
-                    settings.view.compact_preview_size = Some(size);
-                }
-            }
-            VIEW_DETAILS_PREVIEW_SIZE_KEY => {
-                if let Some(size) = parse_u16(value) {
-                    settings.view.details_preview_size = Some(size);
-                }
-            }
-            APPEARANCE_DARK_MODE_KEY => {
-                if let Some(dark_mode) = parse_bool(value) {
-                    settings.appearance.dark_mode = Some(dark_mode);
-                }
-            }
-            APPEARANCE_BACKGROUND_BLUR_KEY => {
-                if let Some(background_blur) = parse_bool(value) {
-                    settings.appearance.background_blur = Some(background_blur);
-                }
-            }
-            APPEARANCE_BACKGROUND_OPACITY_KEY => {
-                if let Some(background_opacity) = parse_finite_f32(value) {
-                    settings.appearance.background_opacity = Some(background_opacity);
-                }
-            }
-            _ => {}
+        validate_app_settings(&settings)?;
+        Ok(settings)
+    }
+}
+
+impl From<&AppSettings> for SettingsFile {
+    fn from(settings: &AppSettings) -> Self {
+        let sidebar = settings.places_sidebar;
+        let view = settings.view;
+        let appearance = settings.appearance;
+        Self {
+            places: (sidebar != PlacesSidebarSettings::default()).then_some(PlacesFile {
+                sidebar: Some(PlacesSidebarFile {
+                    width: sidebar.width,
+                    visible: sidebar.visible,
+                }),
+            }),
+            view: (view != ViewSettings::default()).then_some(ViewFile {
+                mode: view.mode.map(|mode| mode.as_str().to_string()),
+                show_hidden: view.show_hidden,
+                icons_preview_size: view.icons_preview_size,
+                compact_preview_size: view.compact_preview_size,
+                details_preview_size: view.details_preview_size,
+            }),
+            appearance: (appearance != AppearanceSettings::default()).then_some(AppearanceFile {
+                dark_mode: appearance.dark_mode,
+                background_blur: appearance.background_blur,
+                background_opacity: appearance.background_opacity,
+            }),
         }
     }
-    settings
 }
 
-pub fn app_settings_tsv(settings: &AppSettings) -> String {
-    let mut lines = Vec::new();
-    if let Some(width) = settings.places_sidebar.width {
-        lines.push(format!("{PLACES_SIDEBAR_WIDTH_KEY}\t{width:.3}"));
+fn atomic_replace_app_settings(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let temporary = settings_temporary_path(path);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    let result = (|| {
+        copy_settings_permissions(path, &file)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, path)?;
+        File::open(parent)?.sync_all()
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
     }
-    if let Some(visible) = settings.places_sidebar.visible {
-        lines.push(format!("{PLACES_SIDEBAR_VISIBLE_KEY}\t{visible}"));
-    }
-    if let Some(mode) = settings.view.mode {
-        lines.push(format!("{VIEW_MODE_KEY}\t{}", mode.as_str()));
-    }
-    if let Some(show_hidden) = settings.view.show_hidden {
-        lines.push(format!("{VIEW_SHOW_HIDDEN_KEY}\t{show_hidden}"));
-    }
-    if let Some(size) = settings.view.icons_preview_size {
-        lines.push(format!("{VIEW_ICONS_PREVIEW_SIZE_KEY}\t{size}"));
-    }
-    if let Some(size) = settings.view.compact_preview_size {
-        lines.push(format!("{VIEW_COMPACT_PREVIEW_SIZE_KEY}\t{size}"));
-    }
-    if let Some(size) = settings.view.details_preview_size {
-        lines.push(format!("{VIEW_DETAILS_PREVIEW_SIZE_KEY}\t{size}"));
-    }
-    if let Some(dark_mode) = settings.appearance.dark_mode {
-        lines.push(format!("{APPEARANCE_DARK_MODE_KEY}\t{dark_mode}"));
-    }
-    if let Some(background_blur) = settings.appearance.background_blur {
-        lines.push(format!(
-            "{APPEARANCE_BACKGROUND_BLUR_KEY}\t{background_blur}"
-        ));
-    }
-    if let Some(background_opacity) = settings.appearance.background_opacity {
-        lines.push(format!(
-            "{APPEARANCE_BACKGROUND_OPACITY_KEY}\t{background_opacity:.3}"
-        ));
-    }
-    if lines.is_empty() {
-        String::new()
-    } else {
-        format!("{}\n", lines.join("\n"))
-    }
+    result
 }
 
-fn parse_finite_f32(value: &str) -> Option<f32> {
-    let value = value.trim().parse::<f32>().ok()?;
-    value.is_finite().then_some(value)
+fn settings_temporary_path(path: &Path) -> PathBuf {
+    let id = NEXT_SETTINGS_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("config");
+    path.with_extension(format!(
+        "{extension}.tensor-files-{}-{id}.tmp",
+        std::process::id()
+    ))
 }
 
-fn parse_bool(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
+#[cfg(unix)]
+fn copy_settings_permissions(path: &Path, temporary: &File) -> io::Result<()> {
+    match fs::metadata(path) {
+        Ok(metadata) => temporary.set_permissions(metadata.permissions()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
-fn parse_u16(value: &str) -> Option<u16> {
-    value.trim().parse().ok()
+#[cfg(not(unix))]
+fn copy_settings_permissions(_path: &Path, _temporary: &File) -> io::Result<()> {
+    Ok(())
+}
+
+fn validate_app_settings(settings: &AppSettings) -> io::Result<()> {
+    validate_positive_finite("places.sidebar.width", settings.places_sidebar.width)?;
+    validate_preview_size("view.icons-preview-size", settings.view.icons_preview_size)?;
+    validate_preview_size(
+        "view.compact-preview-size",
+        settings.view.compact_preview_size,
+    )?;
+    validate_preview_size(
+        "view.details-preview-size",
+        settings.view.details_preview_size,
+    )?;
+    validate_unit_interval(
+        "appearance.background-opacity",
+        settings.appearance.background_opacity,
+    )
+}
+
+fn validate_positive_finite(field: &str, value: Option<f32>) -> io::Result<()> {
+    if value.is_some_and(|value| !value.is_finite() || value <= 0.0) {
+        return Err(invalid_setting(format!(
+            "{field} must be finite and greater than zero"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_unit_interval(field: &str, value: Option<f32>) -> io::Result<()> {
+    if value.is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value)) {
+        return Err(invalid_setting(format!(
+            "{field} must be finite and in 0.0..=1.0"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_preview_size(field: &str, value: Option<u16>) -> io::Result<()> {
+    let minimum = icon_size_for_zoom_level(MIN_ZOOM_LEVEL) as u16;
+    let maximum = icon_size_for_zoom_level(MAX_ZOOM_LEVEL) as u16;
+    if value.is_some_and(|value| !(minimum..=maximum).contains(&value)) {
+        return Err(invalid_setting(format!(
+            "{field} must be in {minimum}..={maximum}"
+        )));
+    }
+    Ok(())
+}
+
+fn invalid_setting(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
 #[cfg(test)]
@@ -217,37 +320,35 @@ mod tests {
     fn default_app_settings_path_is_tensor_files_scoped() {
         assert_eq!(
             app_settings_path_for_config_home(PathBuf::from("/xdg/config")),
-            PathBuf::from("/xdg/config/tensor-files/settings.tsv")
+            PathBuf::from("/xdg/config/tensor/files.kdl")
         );
     }
 
     #[test]
-    fn parse_app_settings_accepts_known_places_sidebar_keys() {
+    fn parse_app_settings_accepts_typed_kdl_sections() {
         let settings = parse_app_settings(
-            "\
-places.sidebar.width\t276.5
-places.sidebar.visible\tfalse
-view.mode\tdetails
-view.show_hidden\ttrue
-view.icons.preview_size\t80
-view.compact.preview_size\t64
-view.details.preview_size\t32
-appearance.dark_mode\ttrue
-appearance.background_blur\ttrue
-appearance.background_opacity\t0.825
-ignored.key\tvalue
-places.sidebar.width\tnan
-places.sidebar.visible\tmaybe
-view.mode\tunknown
-view.show_hidden\tmaybe
-view.icons.preview_size\t-1
-view.compact.preview_size\tnot-a-number
-view.details.preview_size\t999999
-appearance.dark_mode\tmaybe
-appearance.background_blur\tmaybe
-appearance.background_opacity\tnan
-",
-        );
+            r#"
+places {
+    sidebar {
+        width 276.5
+        visible #false
+    }
+}
+view {
+    mode "details"
+    show-hidden #true
+    icons-preview-size 80
+    compact-preview-size 64
+    details-preview-size 32
+}
+appearance {
+    dark-mode #true
+    background-blur #true
+    background-opacity 0.825
+}
+"#,
+        )
+        .unwrap();
 
         assert_eq!(settings.places_sidebar.width, Some(276.5));
         assert_eq!(settings.places_sidebar.visible, Some(false));
@@ -262,11 +363,15 @@ appearance.background_opacity\tnan
     }
 
     #[test]
-    fn legacy_window_opacity_is_not_migrated() {
-        let settings = parse_app_settings("appearance.window_opacity\t0.7\n");
-
-        assert_eq!(settings.appearance.background_opacity, None);
-        assert!(!app_settings_tsv(&settings).contains("window_opacity"));
+    fn invalid_kdl_and_values_are_reported() {
+        assert!(parse_app_settings("view {").is_err());
+        assert!(parse_app_settings("ignored \"value\"").is_err());
+        assert!(parse_app_settings("view { mode \"unknown\" }").is_err());
+        assert!(parse_app_settings("places { sidebar { width 0.0 } }").is_err());
+        assert!(parse_app_settings("view { icons-preview-size 8 }").is_err());
+        assert!(parse_app_settings("view { details-preview-size 512 }").is_err());
+        assert!(parse_app_settings("appearance { background-opacity #nan }").is_err());
+        assert!(parse_app_settings("appearance { background-opacity 1.01 }").is_err());
     }
 
     #[test]
@@ -278,7 +383,7 @@ appearance.background_opacity\tnan
                 .unwrap()
                 .as_nanos()
         ));
-        let path = root.join("nested/settings.tsv");
+        let path = root.join("nested/files.kdl");
         let settings = AppSettings {
             places_sidebar: PlacesSidebarSettings {
                 width: Some(311.25),
@@ -300,6 +405,38 @@ appearance.background_opacity\tnan
 
         save_app_settings(&path, &settings).unwrap();
         assert_eq!(load_app_settings(&path).unwrap(), settings);
+        let encoded = fs::read_to_string(&path).unwrap();
+        assert!(encoded.contains("places"));
+        assert!(encoded.contains("show-hidden #true"));
+        assert!(encoded.contains("background-opacity 0.8"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn invalid_typed_settings_do_not_replace_existing_kdl() {
+        let root = env::temp_dir().join(format!(
+            "tensor-files-invalid-settings-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = root.join("files.kdl");
+        let settings = AppSettings {
+            view: ViewSettings {
+                mode: Some(ViewMode::Icons),
+                ..ViewSettings::default()
+            },
+            ..AppSettings::default()
+        };
+        save_app_settings(&path, &settings).unwrap();
+
+        let mut invalid = settings.clone();
+        invalid.appearance.background_opacity = Some(1.5);
+        let error = save_app_settings(&path, &invalid).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(load_app_settings(&path).unwrap(), settings);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
         let _ = fs::remove_dir_all(root);
     }
 }

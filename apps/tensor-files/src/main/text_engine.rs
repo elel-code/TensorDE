@@ -6,10 +6,13 @@ pub(crate) struct TextEngine {
     pub(crate) font_system: FontSystem,
     pub(crate) swash_cache: SwashCache,
     pub(crate) text_buffer: Buffer,
+    pub(crate) details_texts: DetailsTextCache,
+    pub(crate) pane_status_texts: PaneStatusTextCache,
+    pub(crate) label_texts: LabelTextInterner,
     pub(crate) label_cache: LabelRasterCache,
     pub(crate) metrics_cache: LabelMetricsCache,
     pub(crate) atlas_cache: TextAtlasFrameCache,
-    pub(crate) staging_pixels: Vec<u8>,
+    pub(crate) staging: TextFrameStaging,
 }
 
 impl TextEngine {
@@ -24,10 +27,13 @@ impl TextEngine {
             font_system,
             swash_cache: SwashCache::new(),
             text_buffer,
+            details_texts: DetailsTextCache::new(TEXT_LABEL_METRICS_CACHE_MAX_ENTRIES),
+            pane_status_texts: PaneStatusTextCache::new(),
+            label_texts: LabelTextInterner::new(TEXT_LABEL_METRICS_CACHE_MAX_ENTRIES),
             label_cache: LabelRasterCache::new(TEXT_LABEL_CACHE_MAX_BYTES),
             metrics_cache: LabelMetricsCache::new(TEXT_LABEL_METRICS_CACHE_MAX_ENTRIES),
             atlas_cache: TextAtlasFrameCache::default(),
-            staging_pixels: Vec::new(),
+            staging: TextFrameStaging::default(),
         }
     }
 
@@ -47,7 +53,19 @@ impl TextEngine {
         (image_entries, outline_entries, reset)
     }
 
-    pub(crate) fn take_staging_pixels(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.staging_pixels)
+    pub(crate) fn take_frame_staging(&mut self) -> TextFrameStaging {
+        std::mem::take(&mut self.staging)
+    }
+
+    pub(crate) fn recycle_frame(&mut self, frame: &mut TextFrame) {
+        let mut staging = std::mem::take(&mut self.staging);
+        std::mem::swap(&mut staging.pending_draws, &mut frame.pending_draws);
+        std::mem::swap(&mut staging.drawable_indices, &mut frame.drawable_indices);
+        std::mem::swap(&mut staging.atlases, &mut frame.atlases);
+        std::mem::swap(&mut staging.vertices, &mut frame.vertices);
+        std::mem::swap(&mut staging.pixels, &mut frame.pixels);
+        std::mem::swap(&mut staging.uploads, &mut frame.uploads);
+        staging.clear();
+        self.staging = staging;
     }
 }

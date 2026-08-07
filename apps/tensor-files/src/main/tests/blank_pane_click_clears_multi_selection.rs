@@ -151,6 +151,7 @@
             active: true,
             mode: RubberBandMode::Replace,
             base_selection: scene.panes[ShellPaneId::SLOT_0].selection.clone(),
+            index_staging: Vec::new(),
         });
         let content = scene
             .pane_geometry(ShellPaneId::SLOT_0, size)

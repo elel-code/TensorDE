@@ -258,36 +258,26 @@ impl ShellExternalDrag {
         })
     }
 }
-pub(crate) struct ShellPreparedPaneVisibleItem {
-    pub(crate) layout: ItemLayout,
-    pub(crate) path: Option<PathBuf>,
-    pub(crate) slot_id: u64,
-}
-impl ShellVisibleSlotItem for ShellPreparedPaneVisibleItem {
-    fn visible_slot_path(&self) -> Option<&Path> {
-        self.path.as_deref()
-    }
-
-    fn visible_slot_id(&self) -> u64 {
-        self.slot_id
-    }
-
-    fn set_visible_slot_id(&mut self, slot_id: u64) {
-        self.slot_id = slot_id;
-    }
-
-    fn release_visible_slot_path(&mut self) {
-        self.path = None;
-    }
-}
 pub(crate) struct ShellPreparedPaneProjection {
     pub(crate) geometry: ShellPaneGeometry,
-    pub(crate) visible_items: Vec<ShellPreparedPaneVisibleItem>,
+    pub(crate) visible_items: Vec<ShellPaneVisibleItem>,
     pub(crate) scroll_metrics: ShellPaneScrollMetrics,
 }
 pub(crate) struct ShellPreparedFrameProjectionLayouts {
     pub(crate) layouts: Vec<ShellPreparedPaneProjection>,
-    pub(crate) layout_us: u128,
+    pub(crate) recycled_visible_items: [Vec<ShellPaneVisibleItem>; 2],
+}
+pub(crate) struct ShellFrameProjectionStaging {
+    pub(crate) layouts: Vec<ShellPreparedPaneProjection>,
+    pub(crate) visible_items: [Vec<ShellPaneVisibleItem>; 2],
+}
+impl Default for ShellFrameProjectionStaging {
+    fn default() -> Self {
+        Self {
+            layouts: Vec::with_capacity(ShellPaneId::ALL.len()),
+            visible_items: std::array::from_fn(|_| Vec::new()),
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ShellPlacePress {

@@ -232,6 +232,8 @@
         assert!(!resolver.ready.contains_key(&first));
         assert!(resolver.ready.contains_key(&second));
         assert!(resolver.ready.contains_key(&third));
+        assert!(!resolver.ready_sizes.contains_key(first.path.as_ref()));
+        assert!(resolver.take_closest_ready(&first.path, 1, 8).is_none());
 
         // Resolve must keep the ready entry (FileManager-style cache hit) so the
         // next frame does not re-queue I/O or flash a MIME fallback.

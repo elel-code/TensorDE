@@ -80,6 +80,7 @@ fn native_frame_layers_keep_structural_and_interaction_chrome_analytic() {
         active: true,
         mode: RubberBandMode::Replace,
         base_selection: ShellSelection::default(),
+        index_staging: Vec::new(),
     });
     let with_rubber_band = native_frame_layers(&mut scene, size);
     assert!(with_rubber_band.base_rects.len() > selected.base_rects.len());

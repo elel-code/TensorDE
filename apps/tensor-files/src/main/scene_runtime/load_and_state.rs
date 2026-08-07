@@ -93,6 +93,7 @@ impl ShellScene {
             visible_slot_stats: ShellVisibleItemSlotStats::default(),
             metadata_roles: ShellMetadataRoleRuntime::new(),
             folder_preview_roles: RefCell::new(ShellFolderPreviewRoleRuntime::new()),
+            folder_preview_request_staging: RefCell::new(Vec::new()),
             icon_role_read_ahead: RefCell::new(ShellIconRoleReadAheadQueue::new()),
             internal_drag: None,
             external_drag: None,
@@ -223,7 +224,7 @@ impl ShellScene {
         };
         let view_mode = current.view_mode;
         let path = current.path.clone();
-        let previous_visible_rects = self.visible_item_rects_by_path_for_pane(pane, size);
+        let previous_visible_rects = self.visible_item_reflow_rects_for_pane(pane, size);
         let load_start = Instant::now();
         let entries = read_shell_entries_sync(&path)?;
         let elapsed = load_start.elapsed();
@@ -269,19 +270,19 @@ impl ShellScene {
         Ok(true)
     }
 
-    fn visible_item_rects_by_path_for_pane(
+    fn visible_item_reflow_rects_for_pane(
         &self,
         pane: ShellPaneId,
         size: PhysicalSize<u32>,
-    ) -> HashMap<PathBuf, ViewRect> {
-        ui::item_reflow::visible_item_rects_by_path_for_pane(self, pane, size)
+    ) -> ui::animation::ShellItemReflowRects {
+        ui::item_reflow::visible_item_reflow_rects_for_pane(self, pane, size)
     }
 
-    fn visible_item_rects_by_path_for_open_panes(
+    fn visible_item_reflow_rects_for_open_panes(
         &self,
         size: PhysicalSize<u32>,
-    ) -> Vec<(ShellPaneId, HashMap<PathBuf, ViewRect>)> {
-        ui::item_reflow::visible_item_rects_by_path_for_open_panes(self, size)
+    ) -> Vec<(ShellPaneId, ui::animation::ShellItemReflowRects)> {
+        ui::item_reflow::visible_item_reflow_rects_for_open_panes(self, size)
     }
 
     pub(crate) fn reflow_pane_items_after_window_resize(
@@ -295,7 +296,7 @@ impl ShellScene {
     fn start_item_reflow_transitions(
         &mut self,
         pane: ShellPaneId,
-        previous_rects: HashMap<PathBuf, ViewRect>,
+        previous_rects: ui::animation::ShellItemReflowRects,
         size: PhysicalSize<u32>,
     ) -> bool {
         ui::item_reflow::start_item_reflow_transitions(self, pane, previous_rects, size)
@@ -303,18 +304,73 @@ impl ShellScene {
 
     fn start_item_reflow_transitions_for_panes(
         &mut self,
-        previous_rects_by_pane: Vec<(ShellPaneId, HashMap<PathBuf, ViewRect>)>,
+        previous_rects_by_pane: Vec<(ShellPaneId, ui::animation::ShellItemReflowRects)>,
         size: PhysicalSize<u32>,
     ) -> bool {
-        ui::item_reflow::start_item_reflow_transitions_for_panes(
-            self,
-            previous_rects_by_pane,
-            size,
-        )
+        ui::item_reflow::start_item_reflow_transitions_for_panes(self, previous_rects_by_pane, size)
     }
 
-    fn item_reflow_offset_for_path(&self, pane: ShellPaneId, path: &Path) -> Option<(f32, f32)> {
-        ui::item_reflow::item_reflow_offset_for_path(self, pane, path)
+    fn clear_item_reflow_for_pane(&mut self, pane: ShellPaneId) {
+        ui::item_reflow::clear_item_reflow_for_pane(self, pane);
+    }
+
+    fn item_reflow_active_for_pane_at(&self, pane: ShellPaneId, now: Instant) -> bool {
+        ui::item_reflow::item_reflow_active_for_pane_at(self, pane, now)
+    }
+
+    fn has_item_reflow_for_pane(&self, pane: ShellPaneId) -> bool {
+        ui::item_reflow::has_item_reflow_for_pane(self, pane)
+    }
+
+    fn item_reflow_entity_path_for_entry<'a>(
+        &'a self,
+        pane: ShellPaneId,
+        view: ShellPaneView<'a>,
+        entry_index: usize,
+    ) -> Option<(Option<bevy_ecs::entity::Entity>, std::borrow::Cow<'a, Path>)> {
+        let entry = view.entries.get(entry_index)?;
+        if let Some((entity, path)) = self
+            .visible_slots
+            .get(pane)
+            .retained_entity_path_for_entry(entry)
+        {
+            return Some((Some(entity), std::borrow::Cow::Borrowed(path)));
+        }
+        if let Some(path) = entry.target_path.as_deref() {
+            return Some((None, std::borrow::Cow::Borrowed(path)));
+        }
+        Some((
+            None,
+            std::borrow::Cow::Owned(view.path.join(entry.name.as_ref())),
+        ))
+    }
+
+    #[cfg(test)]
+    fn item_reflow_path_for_entry<'a>(
+        &'a self,
+        pane: ShellPaneId,
+        view: ShellPaneView<'a>,
+        entry_index: usize,
+    ) -> Option<std::borrow::Cow<'a, Path>> {
+        self.item_reflow_entity_path_for_entry(pane, view, entry_index)
+            .map(|(_, path)| path)
+    }
+
+    fn item_reflow_offset_for_entry_at(
+        &self,
+        pane: ShellPaneId,
+        view: ShellPaneView<'_>,
+        entry_index: usize,
+        now: Instant,
+    ) -> Option<(f32, f32)> {
+        let (entity, path) = self.item_reflow_entity_path_for_entry(pane, view, entry_index)?;
+        ui::item_reflow::item_reflow_offset_for_entity_or_path_at(
+            self,
+            pane,
+            entity,
+            path.as_ref(),
+            now,
+        )
     }
 
     fn animation_active(&self) -> bool {
@@ -336,9 +392,7 @@ impl ShellScene {
         let item_reflow_started =
             ui::item_reflow::start_due_item_reflow_transitions(self, Instant::now());
         let context_menu_hover_due = self.apply_due_context_menu_hover(Instant::now());
-        self.animations.prune_finished()
-            || item_reflow_started
-            || context_menu_hover_due
+        self.animations.prune_finished() || item_reflow_started || context_menu_hover_due
     }
 
     fn start_hover_animation(&mut self) {

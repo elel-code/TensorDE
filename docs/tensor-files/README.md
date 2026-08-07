@@ -14,6 +14,7 @@ Tensor Files behavior is derived from the relevant Dolphin source call chain und
 
 ## Engineering records
 
+- [Configuration](CONFIGURATION.md)
 - [ECS architecture](ecs-architecture.md)
 - [Performance alignment](PERFORMANCE_ALIGNMENT.md)
   ([中文](PERFORMANCE_ALIGNMENT.zh-CN.md))

@@ -39,6 +39,7 @@ struct ThumbnailReadyEntry {
 
 struct ThumbnailSourceResolver {
     ready: HashMap<ThumbnailSourceKey, ThumbnailReadyEntry>,
+    ready_sizes: HashMap<Arc<Path>, HashMap<u64, BTreeSet<u16>>>,
     failed: HashSet<ThumbnailProbeCacheKey>,
     pending: HashMap<ThumbnailSourceKey, ThumbnailRequestPriority>,
     ready_frame: u64,

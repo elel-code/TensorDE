@@ -10,10 +10,7 @@ use crate::ui::pane::ShellPaneId;
 pub(crate) enum ShellActionOutcome {
     None,
     Redraw,
-    Queue {
-        reason: &'static str,
-        redraw_frames: u8,
-    },
+    Queue { reason: &'static str },
     Present(&'static str),
 }
 
@@ -35,11 +32,10 @@ impl ShellActionOutcome {
         let presentation = kind.presentation();
         Self::Queue {
             reason: presentation.reason,
-            redraw_frames: presentation.redraw_frames,
         }
     }
 
-    /// When `started` is true, merge this outcome with the animation's Queue budget.
+    /// When `started` is true, merge this outcome with the animation's first paint.
     pub(crate) fn with_animation_if(self, started: bool, kind: ShellAnimationKind) -> Self {
         if started {
             self.merge(Self::queue_animation(kind))
@@ -52,19 +48,7 @@ impl ShellActionOutcome {
         match (self, supplemental) {
             (Self::None, outcome) | (outcome, Self::None) => outcome,
             (Self::Present(reason), _) | (_, Self::Present(reason)) => Self::Present(reason),
-            (
-                Self::Queue {
-                    reason,
-                    redraw_frames,
-                },
-                Self::Queue {
-                    redraw_frames: supplemental_frames,
-                    ..
-                },
-            ) => Self::Queue {
-                reason,
-                redraw_frames: redraw_frames.max(supplemental_frames),
-            },
+            (Self::Queue { reason }, Self::Queue { .. }) => Self::Queue { reason },
             (queue @ Self::Queue { .. }, _) | (_, queue @ Self::Queue { .. }) => queue,
             (Self::Redraw, Self::Redraw) => Self::Redraw,
         }
@@ -104,21 +88,10 @@ impl TensorFilesApp {
         effect: ShellActionEffect,
     ) {
         match effect {
-            ShellActionEffect::Outcome(outcome) => self.apply_action_outcome(event_loop, outcome),
+            ShellActionEffect::Outcome(outcome) => self.apply_window_action_outcome(outcome),
             ShellActionEffect::LoadPath { pane, path, reason } => {
                 self.load_path_into_pane(event_loop, pane, path, reason);
             }
-        }
-    }
-
-    pub(crate) fn apply_action_outcome(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        outcome: ShellActionOutcome,
-    ) {
-        match outcome {
-            ShellActionOutcome::Present(reason) => self.present_scene_change(event_loop, reason),
-            outcome => self.apply_window_action_outcome(outcome),
         }
     }
 
@@ -126,16 +99,8 @@ impl TensorFilesApp {
         match outcome {
             ShellActionOutcome::None => {}
             ShellActionOutcome::Redraw => self.request_main_redraw(),
-            ShellActionOutcome::Queue {
-                reason,
-                redraw_frames,
-            } => self.queue_scene_change(reason, redraw_frames),
-            ShellActionOutcome::Present(reason) => {
-                tensor_files_log!(
-                    "[tensor-files] action-outcome-present-without-event-loop reason={reason}"
-                );
-                self.request_main_redraw();
-            }
+            ShellActionOutcome::Queue { reason } => self.queue_scene_change(reason),
+            ShellActionOutcome::Present(reason) => self.present_scene_change(reason),
         }
     }
 }
@@ -151,21 +116,12 @@ mod tests {
             ShellActionOutcome::Redraw
         );
         assert_eq!(
-            ShellActionOutcome::Redraw.merge(ShellActionOutcome::Queue {
-                reason: "scroll",
-                redraw_frames: 2,
-            }),
-            ShellActionOutcome::Queue {
-                reason: "scroll",
-                redraw_frames: 2,
-            }
+            ShellActionOutcome::Redraw.merge(ShellActionOutcome::Queue { reason: "scroll" }),
+            ShellActionOutcome::Queue { reason: "scroll" }
         );
         assert_eq!(
-            ShellActionOutcome::Queue {
-                reason: "scroll",
-                redraw_frames: 2,
-            }
-            .merge(ShellActionOutcome::Present("view-mode")),
+            ShellActionOutcome::Queue { reason: "scroll" }
+                .merge(ShellActionOutcome::Present("view-mode")),
             ShellActionOutcome::Present("view-mode")
         );
     }
@@ -177,7 +133,6 @@ mod tests {
             ShellActionOutcome::queue_animation(ShellAnimationKind::Hover),
             ShellActionOutcome::Queue {
                 reason: hover.reason,
-                redraw_frames: hover.redraw_frames,
             }
         );
         assert_eq!(
@@ -191,20 +146,12 @@ mod tests {
     }
 
     #[test]
-    fn outcome_merge_coalesces_queue_frames_without_losing_primary_reason() {
+    fn outcome_merge_coalesces_queue_reasons_without_losing_primary_reason() {
         assert_eq!(
-            ShellActionOutcome::Queue {
-                reason: "primary",
-                redraw_frames: 2,
-            }
-            .merge(ShellActionOutcome::Queue {
+            ShellActionOutcome::Queue { reason: "primary" }.merge(ShellActionOutcome::Queue {
                 reason: "supplemental",
-                redraw_frames: 5,
             }),
-            ShellActionOutcome::Queue {
-                reason: "primary",
-                redraw_frames: 5,
-            }
+            ShellActionOutcome::Queue { reason: "primary" }
         );
     }
 
@@ -219,15 +166,8 @@ mod tests {
             ShellActionOutcome::Present("present")
         );
         assert_eq!(
-            ShellActionOutcome::Queue {
-                reason: "queue",
-                redraw_frames: 3,
-            }
-            .with_redraw_if(false),
-            ShellActionOutcome::Queue {
-                reason: "queue",
-                redraw_frames: 3,
-            }
+            ShellActionOutcome::Queue { reason: "queue" }.with_redraw_if(false),
+            ShellActionOutcome::Queue { reason: "queue" }
         );
     }
 

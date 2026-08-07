@@ -123,15 +123,6 @@ fn view_point_from_physical_position(position: PhysicalPosition<f64>) -> ViewPoi
 fn point_distance(left: ViewPoint, right: ViewPoint) -> f32 {
     ((left.x - right.x).powi(2) + (left.y - right.y).powi(2)).sqrt()
 }
-fn details_size_label(entry: &Entry) -> String {
-    if entry.is_dir {
-        "Folder".to_string()
-    } else if !entry.metadata_complete && entry.size_bytes == 0 && entry.modified_secs.is_none() {
-        "-".to_string()
-    } else {
-        format_size(entry.size_bytes)
-    }
-}
 fn pane_item_text_color(
     view_mode: ShellViewMode,
     entry: &Entry,

@@ -36,6 +36,7 @@ struct ShellScene {
     visible_slot_stats: ShellVisibleItemSlotStats,
     metadata_roles: ShellMetadataRoleRuntime,
     folder_preview_roles: RefCell<ShellFolderPreviewRoleRuntime>,
+    folder_preview_request_staging: RefCell<Vec<FolderPreviewRoleRequest>>,
     icon_role_read_ahead: RefCell<ShellIconRoleReadAheadQueue>,
     internal_drag: Option<ShellInternalDrag>,
     external_drag: Option<ShellExternalDrag>,
@@ -128,21 +129,17 @@ impl ShellRenderOutcome {
     fn presented(self) -> bool {
         matches!(self, Self::Presented)
     }
-
-    fn consumed_redraw_request(self) -> bool {
-        matches!(self, Self::Presented)
-    }
 }
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct ThumbnailSourceKey {
-    path: PathBuf,
+    path: Arc<Path>,
     size_px: u16,
     stamp: Option<u64>,
 }
 impl ThumbnailSourceKey {
-    fn thumbnail(path: PathBuf, size_px: u16, modified_secs: u64) -> Self {
+    fn thumbnail(path: impl Into<Arc<Path>>, size_px: u16, modified_secs: u64) -> Self {
         Self {
-            path,
+            path: path.into(),
             size_px,
             stamp: Some(modified_secs),
         }
@@ -150,18 +147,18 @@ impl ThumbnailSourceKey {
 }
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct ThumbnailProbeCacheKey {
-    path: PathBuf,
+    path: Arc<Path>,
     modified_secs: u64,
 }
 impl ThumbnailProbeCacheKey {
-    fn new(path: PathBuf, modified_secs: u64) -> Self {
+    fn new(path: impl Into<Arc<Path>>, modified_secs: u64) -> Self {
         Self {
-            path,
+            path: path.into(),
             modified_secs,
         }
     }
 
     fn from_source_key(key: &ThumbnailSourceKey) -> Option<Self> {
-        Some(Self::new(key.path.clone(), key.stamp?))
+        Some(Self::new(Arc::clone(&key.path), key.stamp?))
     }
 }

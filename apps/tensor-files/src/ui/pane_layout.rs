@@ -315,11 +315,11 @@ impl ShellLayout {
         }
     }
 
-    pub(crate) fn indexes_intersecting(&self, rect: ViewRect) -> Vec<usize> {
+    pub(crate) fn for_each_index_intersecting(&self, rect: ViewRect, visit: impl FnMut(usize)) {
         match self {
-            Self::Icons(layout) => layout.indexes_intersecting(rect).indexes().to_vec(),
-            Self::Compact(layout) => layout.indexes_intersecting(rect),
-            Self::Details(layout) => layout.indexes_intersecting(rect),
+            Self::Icons(layout) => layout.for_each_index_intersecting(rect, visit),
+            Self::Compact(layout) => layout.for_each_index_intersecting(rect, visit),
+            Self::Details(layout) => layout.for_each_index_intersecting(rect, visit),
         }
     }
 }
@@ -369,8 +369,8 @@ impl ShellCompactLayout {
         self.layout.hit_test_content_point(point)
     }
 
-    fn indexes_intersecting(&self, rect: ViewRect) -> Vec<usize> {
-        self.layout.indexes_intersecting(rect).indexes().to_vec()
+    fn for_each_index_intersecting(&self, rect: ViewRect, visit: impl FnMut(usize)) {
+        self.layout.for_each_index_intersecting(rect, visit);
     }
 }
 
@@ -479,13 +479,15 @@ impl DetailsLayout {
         (index < self.item_count).then_some(index)
     }
 
-    fn indexes_intersecting(&self, rect: ViewRect) -> Vec<usize> {
+    fn for_each_index_intersecting(&self, rect: ViewRect, mut visit: impl FnMut(usize)) {
         if self.item_count == 0 || rect.right() <= 0.0 || rect.x >= self.content_width {
-            return Vec::new();
+            return;
         }
         let start = (rect.y / self.row_height).floor().max(0.0) as usize;
         let end = (rect.bottom() / self.row_height).ceil().max(0.0) as usize;
-        (start..end.min(self.item_count)).collect()
+        for index in start..end.min(self.item_count) {
+            visit(index);
+        }
     }
 
     fn visible_row_range(&self) -> std::ops::Range<usize> {

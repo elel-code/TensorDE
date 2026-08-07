@@ -159,10 +159,9 @@ impl TensorFilesApp {
             }
         }
         if changed {
-            self.apply_action_outcome(
-                event_loop,
-                crate::app_actions::ShellActionOutcome::Present("async-task"),
-            );
+            self.apply_window_action_outcome(crate::app_actions::ShellActionOutcome::Present(
+                "async-task",
+            ));
         }
     }
 

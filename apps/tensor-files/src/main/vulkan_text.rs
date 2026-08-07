@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use vulkan_renderer::{
     AccessKind, BarrierBatch, BlendState, Buffer, BufferUsages, ColorTargetState, CompiledGraph,
@@ -15,7 +15,7 @@ use vulkan_renderer::{
 };
 
 use crate::ui::render::texture::TextVertex;
-use crate::{TextAtlasUploadKey, TextFrame, text_atlas_upload_should_skip};
+use crate::{TextAtlasUpload, TextAtlasUploadKey, TextFrame, text_atlas_upload_should_skip};
 
 use super::vulkan_text_spirv;
 
@@ -26,6 +26,28 @@ const TEXT_SAMPLE: PassId = PassId(2);
 const IMAGE_PUSH_OFFSET: u32 = 0;
 const INITIAL_VERTEX_CAPACITY: u64 = std::mem::size_of::<TextVertex>() as u64 * 6;
 const DESCRIPTOR_RING_SLOTS: u64 = 4;
+
+fn prepare_text_upload_indices(
+    uploads: &[TextAtlasUpload],
+    enabled: bool,
+    last_upload_keys: &HashSet<TextAtlasUploadKey>,
+    current_upload_keys: &mut HashSet<TextAtlasUploadKey>,
+    pending_upload_indices: &mut Vec<usize>,
+) -> usize {
+    current_upload_keys.clear();
+    pending_upload_indices.clear();
+    let mut skipped = 0;
+    if enabled {
+        for (index, upload) in uploads.iter().enumerate() {
+            let skip = text_atlas_upload_should_skip(upload, last_upload_keys, current_upload_keys);
+            skipped += usize::from(skip);
+            if !skip {
+                pending_upload_indices.push(index);
+            }
+        }
+    }
+    skipped
+}
 
 struct VulkanTextAtlas {
     image: Image,
@@ -46,10 +68,17 @@ pub(crate) struct VulkanTextRenderer {
     pipeline: GraphicsPipeline,
     vertices: DynamicBuffer,
     vertex_count: usize,
+    content_vertex_count: usize,
     resource_heap: DescriptorHeap,
     sampler_heap: DescriptorHeap,
     atlas: Option<VulkanTextAtlas>,
+    fresh_atlas_graph: CompiledGraph,
+    initialized_atlas_graph: CompiledGraph,
+    atlas_before_upload: BarrierBatch,
+    atlas_before_sample: BarrierBatch,
     last_upload_keys: HashSet<TextAtlasUploadKey>,
+    current_upload_keys: HashSet<TextAtlasUploadKey>,
+    pending_upload_indices: Vec<usize>,
 }
 
 impl VulkanTextRenderer {
@@ -92,14 +121,22 @@ impl VulkanTextRenderer {
         )
         .map_err(|error| format!("create Vulkan text vertex buffer: {error}"))?;
         let pipeline = create_pipeline(device, pipeline_cache, format)?;
+        let queue_family = device.device_info().queues.graphics;
         Ok(Self {
             pipeline,
             vertices,
             vertex_count: 0,
+            content_vertex_count: 0,
             resource_heap,
             sampler_heap,
             atlas: None,
-            last_upload_keys: HashSet::new(),
+            fresh_atlas_graph: compile_atlas_graph(false, queue_family)?,
+            initialized_atlas_graph: compile_atlas_graph(true, queue_family)?,
+            atlas_before_upload: BarrierBatch::with_capacity(0, 1),
+            atlas_before_sample: BarrierBatch::with_capacity(0, 1),
+            last_upload_keys: HashSet::with_capacity(64),
+            current_upload_keys: HashSet::with_capacity(64),
+            pending_upload_indices: Vec::with_capacity(64),
         })
     }
 
@@ -126,45 +163,57 @@ impl VulkanTextRenderer {
         uploads: &mut UploadBatch<'_>,
         frame: &mut TextFrame,
         last_submission: Option<FrameToken>,
-        queue_family: u32,
     ) -> Result<bool, String> {
         self.ensure_atlas(allocator, frame.width, frame.height, last_submission)?;
 
         self.vertex_count = frame.vertices.len();
+        self.content_vertex_count = frame.content_vertex_count.min(self.vertex_count);
         let vertex_upload = self
             .vertices
             .upload(uploads, bytemuck::cast_slice(&frame.vertices))
             .map_err(|error| format!("upload Vulkan text vertices: {error}"))?;
 
-        let mut current_upload_keys = HashSet::with_capacity(frame.uploads.len());
-        let mut skipped_uploads = 0usize;
-        let pending_uploads = if frame.vertices.is_empty() {
-            Vec::new()
-        } else {
-            frame
-                .uploads
-                .iter()
-                .filter(|upload| {
-                    let skip = text_atlas_upload_should_skip(
-                        upload,
-                        &self.last_upload_keys,
-                        &mut current_upload_keys,
-                    );
-                    skipped_uploads += usize::from(skip);
-                    !skip
-                })
-                .collect::<Vec<_>>()
-        };
-        self.last_upload_keys = current_upload_keys;
-        frame.stats.atlas_uploads = pending_uploads.len();
+        let skipped_uploads = prepare_text_upload_indices(
+            &frame.uploads,
+            !frame.vertices.is_empty(),
+            &self.last_upload_keys,
+            &mut self.current_upload_keys,
+            &mut self.pending_upload_indices,
+        );
+        let pending_upload_count = self.pending_upload_indices.len();
+        frame.stats.atlas_uploads = pending_upload_count;
         frame.stats.atlas_upload_skips = skipped_uploads;
 
-        let atlas = self.atlas.as_mut().expect("text atlas created above");
-        if !pending_uploads.is_empty() {
-            let (before_upload, before_sample) =
-                compile_atlas_barriers(&atlas.image, atlas.initialized, queue_family)?;
-            unsafe { uploads.encoder_mut().pipeline_barrier(&before_upload) };
-            for upload in pending_uploads {
+        if pending_upload_count != 0 {
+            let atlas = self.atlas.as_ref().expect("text atlas created above");
+            let bindings = [(TEXT_IMAGE, ResourceBinding::whole_color_image(&atlas.image))];
+            let graph = if atlas.initialized {
+                &self.initialized_atlas_graph
+            } else {
+                &self.fresh_atlas_graph
+            };
+            graph
+                .fill_barrier_batch_before_from_slice(
+                    TEXT_UPLOAD,
+                    &bindings,
+                    &mut self.atlas_before_upload,
+                )
+                .map_err(|error| format!("resolve Vulkan text upload barrier: {error}"))?;
+            graph
+                .fill_barrier_batch_before_from_slice(
+                    TEXT_SAMPLE,
+                    &bindings,
+                    &mut self.atlas_before_sample,
+                )
+                .map_err(|error| format!("resolve Vulkan text sample barrier: {error}"))?;
+            let atlas = self.atlas.as_mut().expect("text atlas created above");
+            unsafe {
+                uploads
+                    .encoder_mut()
+                    .pipeline_barrier(&self.atlas_before_upload)
+            };
+            for &index in &self.pending_upload_indices {
+                let upload = &frame.uploads[index];
                 let extent = Extent3D::new(upload.width, upload.height, 1);
                 let image_upload = ImageUpload {
                     data_layout: ImageDataLayout::tightly_packed(extent, TexelBlockLayout::R8)
@@ -185,18 +234,40 @@ impl VulkanTextRenderer {
                         .map_err(|error| format!("upload Vulkan R8 text atlas: {error}"))?;
                 }
             }
-            unsafe { uploads.encoder_mut().pipeline_barrier(&before_sample) };
+            unsafe {
+                uploads
+                    .encoder_mut()
+                    .pipeline_barrier(&self.atlas_before_sample)
+            };
             atlas.initialized = true;
         }
+        std::mem::swap(&mut self.current_upload_keys, &mut self.last_upload_keys);
         Ok(vertex_upload.bytes_written != 0)
     }
 
-    pub(crate) fn vertex_buffer(&self) -> Option<&Buffer> {
-        (self.vertex_count != 0).then_some(self.vertices.buffer())
+    pub(crate) fn buffer(&self) -> &Buffer {
+        self.vertices.buffer()
     }
 
     pub(crate) fn draw(&self, rendering: &mut RenderingEncoder<'_>) -> Result<(), String> {
-        if self.vertex_count == 0 {
+        self.draw_range(rendering, 0, self.vertex_count)
+    }
+
+    pub(crate) fn draw_content(&self, rendering: &mut RenderingEncoder<'_>) -> Result<(), String> {
+        self.draw_range(rendering, 0, self.content_vertex_count)
+    }
+
+    pub(crate) fn draw_overlay(&self, rendering: &mut RenderingEncoder<'_>) -> Result<(), String> {
+        self.draw_range(rendering, self.content_vertex_count, self.vertex_count)
+    }
+
+    fn draw_range(
+        &self,
+        rendering: &mut RenderingEncoder<'_>,
+        start: usize,
+        end: usize,
+    ) -> Result<(), String> {
+        if start >= end {
             return Ok(());
         }
         let atlas = self
@@ -231,7 +302,7 @@ impl VulkanTextRenderer {
                 .set_vertex_buffer(0, self.vertices.buffer(), 0)
                 .map_err(|error| format!("bind Vulkan text vertex buffer: {error}"))?;
             rendering
-                .draw(0..self.vertex_count as u32, 0..1)
+                .draw(start as u32..end as u32, 0..1)
                 .map_err(|error| format!("draw Vulkan text: {error}"))?;
         }
         Ok(())
@@ -414,23 +485,6 @@ fn create_pipeline(
         .map_err(|error| format!("create Vulkan text pipeline: {error}"))
 }
 
-fn compile_atlas_barriers(
-    image: &Image,
-    initialized: bool,
-    queue_family: u32,
-) -> Result<(BarrierBatch, BarrierBatch), String> {
-    let graph = compile_atlas_graph(initialized, queue_family)?;
-    let bindings = BTreeMap::from([(TEXT_IMAGE, ResourceBinding::whole_color_image(image))]);
-    Ok((
-        graph
-            .barrier_batch_before(TEXT_UPLOAD, &bindings)
-            .map_err(|error| format!("resolve Vulkan text upload barrier: {error}"))?,
-        graph
-            .barrier_batch_before(TEXT_SAMPLE, &bindings)
-            .map_err(|error| format!("resolve Vulkan text sample barrier: {error}"))?,
-    ))
-}
-
 fn compile_atlas_graph(initialized: bool, queue_family: u32) -> Result<CompiledGraph, String> {
     let mut graph = RenderGraph::default();
     graph.set_initial_state(
@@ -475,6 +529,9 @@ fn compile_atlas_graph(initialized: bool, queue_family: u32) -> Result<CompiledG
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use crate::AtlasRect;
 
     #[test]
     fn text_vertex_layout_matches_the_native_shader_contract() {
@@ -486,6 +543,56 @@ mod tests {
     fn descriptor_ring_keeps_three_in_flight_atlases_and_one_replacement() {
         assert_eq!(descriptor_ring_capacity(48, 32).unwrap(), 256);
         assert!(descriptor_ring_capacity(32, 0).is_err());
+    }
+
+    #[test]
+    fn text_upload_staging_reuses_capacity_and_preserves_skip_state() {
+        let uploads = vec![
+            TextAtlasUpload {
+                atlas: AtlasRect {
+                    x: 1.0,
+                    y: 2.0,
+                    width: 2.0,
+                    height: 1.0,
+                },
+                pixels: Arc::from([1_u8, 2]),
+                width: 2,
+                height: 1,
+            },
+            TextAtlasUpload {
+                atlas: AtlasRect {
+                    x: 4.0,
+                    y: 2.0,
+                    width: 1.0,
+                    height: 1.0,
+                },
+                pixels: Arc::from([3_u8]),
+                width: 1,
+                height: 1,
+            },
+        ];
+        let mut current = HashSet::with_capacity(8);
+        let mut pending = Vec::with_capacity(8);
+        assert_eq!(
+            prepare_text_upload_indices(
+                &uploads,
+                true,
+                &HashSet::new(),
+                &mut current,
+                &mut pending
+            ),
+            0
+        );
+        assert_eq!(pending, [0, 1]);
+        let capacities = (current.capacity(), pending.capacity());
+        let last = current.clone();
+
+        assert_eq!(
+            prepare_text_upload_indices(&uploads, true, &last, &mut current, &mut pending),
+            2
+        );
+        assert!(pending.is_empty());
+        assert_eq!((current.capacity(), pending.capacity()), capacities);
     }
 
     #[test]

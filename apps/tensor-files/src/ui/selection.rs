@@ -30,6 +30,7 @@ pub(crate) struct RubberBand {
     pub(crate) active: bool,
     pub(crate) mode: RubberBandMode,
     pub(crate) base_selection: ShellSelection,
+    pub(crate) index_staging: Vec<usize>,
 }
 
 impl RubberBand {
@@ -44,6 +45,7 @@ impl RubberBand {
             active: false,
             mode,
             base_selection,
+            index_staging: Vec::new(),
         }
     }
 

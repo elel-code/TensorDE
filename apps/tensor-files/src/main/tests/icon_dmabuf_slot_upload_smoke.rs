@@ -1,5 +1,6 @@
 #[test]
 fn icon_slot_imports_udmabuf_into_native_vulkan_resident_cache() {
+    use std::collections::HashMap;
     use crate::ui::render::dmabuf::{DmabufImportPlane, try_allocate_udmabuf_argb8888};
     use vulkan_renderer::{
         CommandEncoderDescriptor, DeviceDescriptor, Features, Instance, InstanceDescriptor,
@@ -110,6 +111,11 @@ fn icon_slot_imports_udmabuf_into_native_vulkan_resident_cache() {
         overlay_batches: Vec::new(),
         content_vertices: Vec::new(),
         overlay_vertices: Vec::new(),
+        slot_by_identity: HashMap::new(),
+        draws: Vec::new(),
+        overlay_draws: Vec::new(),
+        batch_draw_indices: Vec::new(),
+        batch_slot_order: Vec::new(),
         stats: IconFrameStats::default(),
     };
     let mut uploads = belt

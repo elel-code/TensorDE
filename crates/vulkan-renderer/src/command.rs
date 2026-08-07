@@ -31,8 +31,8 @@ pub use transfer::{
 /// Describes one primary command encoder.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CommandEncoderDescriptor {
-    /// Diagnostic label retained for object inspection.
-    pub label: Option<String>,
+    /// Shared diagnostic label retained for object inspection.
+    pub label: Option<Arc<str>>,
 }
 
 /// A recording primary command buffer.
@@ -42,7 +42,7 @@ pub struct CommandEncoderDescriptor {
 pub struct CommandEncoder {
     owner: Arc<DeviceOwner>,
     handle: Option<vk::CommandBuffer>,
-    label: Option<String>,
+    label: Option<Arc<str>>,
     submission_leases: Vec<SubmissionLease>,
 }
 
@@ -557,7 +557,7 @@ impl Drop for CommandEncoder {
 pub struct CommandBuffer {
     owner: Arc<DeviceOwner>,
     handle: Option<vk::CommandBuffer>,
-    label: Option<String>,
+    label: Option<Arc<str>>,
     submission_leases: Vec<SubmissionLease>,
 }
 
@@ -602,7 +602,21 @@ impl Drop for CommandBuffer {
 mod tests {
     use super::{TextureState, validate_push_data};
     use crate::{TextureLayout, TextureUsages};
+    use std::sync::Arc;
     use vulkanalia::vk;
+
+    #[test]
+    fn command_encoder_descriptor_clone_shares_label_storage() {
+        let descriptor = super::CommandEncoderDescriptor {
+            label: Some(Arc::from("retained-frame-label")),
+        };
+        let cloned = descriptor.clone();
+
+        assert!(Arc::ptr_eq(
+            descriptor.label.as_ref().unwrap(),
+            cloned.label.as_ref().unwrap()
+        ));
+    }
 
     #[test]
     fn push_data_range_obeys_alignment_and_device_limit() {

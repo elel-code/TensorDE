@@ -13,6 +13,7 @@ impl ShellFolderPreviewRoleRuntime {
             .map(|_| request_tx);
         Self {
             ready: HashMap::new(),
+            ready_sizes: HashMap::new(),
             failed: HashSet::new(),
             pending: HashMap::new(),
             finished: HashSet::new(),
@@ -26,10 +27,17 @@ impl ShellFolderPreviewRoleRuntime {
     }
 
     fn touch_ready_key(&mut self, key: &FolderPreviewRoleKey) {
-        if let Some(entry) = self.ready.get_mut(key) {
-            self.frame = self.frame.wrapping_add(1);
-            entry.last_used_frame = self.frame;
-        }
+        let _ = self.touch_ready_preview(key);
+    }
+
+    fn touch_ready_preview(
+        &mut self,
+        key: &FolderPreviewRoleKey,
+    ) -> Option<&FolderPreviewReady> {
+        let entry = self.ready.get_mut(key)?;
+        self.frame = self.frame.wrapping_add(1);
+        entry.last_used_frame = self.frame;
+        Some(&entry.preview)
     }
 
     /// Paint-path hit: refresh LRU so scrolled-away previews evict first.
@@ -39,21 +47,25 @@ impl ShellFolderPreviewRoleRuntime {
         directory_modified_secs: u64,
         size_px: u16,
     ) -> Option<&FolderPreviewReady> {
-        let exact = FolderPreviewRoleKey::new(path.to_path_buf(), directory_modified_secs, size_px);
-        if self.ready.contains_key(&exact) {
-            self.touch_ready_key(&exact);
-            return self.ready.get(&exact).map(|entry| &entry.preview);
-        }
-        let closest_key = self
-            .ready
-            .iter()
-            .filter(|(key, _)| {
-                key.path == path && key.directory_modified_secs == directory_modified_secs
-            })
-            .min_by_key(|(key, _)| key.size_px.abs_diff(size_px))
-            .map(|(key, _)| key.clone())?;
-        self.touch_ready_key(&closest_key);
-        self.ready.get(&closest_key).map(|entry| &entry.preview)
+        let (indexed_path, stamps) = self.ready_sizes.get_key_value(path)?;
+        let sizes = stamps.get(&directory_modified_secs)?;
+        let lower = sizes.range(..=size_px).next_back().copied();
+        let upper = sizes.range(size_px..).next().copied();
+        let selected_size = match (lower, upper) {
+            (Some(lower), Some(upper)) if size_px.abs_diff(lower) <= upper.abs_diff(size_px) => {
+                lower
+            }
+            (Some(_), Some(upper)) => upper,
+            (Some(lower), None) => lower,
+            (None, Some(upper)) => upper,
+            (None, None) => return None,
+        };
+        let key = FolderPreviewRoleKey::new(
+            Arc::clone(indexed_path),
+            directory_modified_secs,
+            selected_size,
+        );
+        self.touch_ready_preview(&key)
     }
 
     fn queue_candidates(
@@ -61,7 +73,8 @@ impl ShellFolderPreviewRoleRuntime {
         candidates: impl IntoIterator<Item = FolderPreviewRoleRequest>,
     ) -> FolderPreviewRoleUpdateStats {
         let mut stats = FolderPreviewRoleUpdateStats::default();
-        let mut keep = HashSet::new();
+        let mut keep = std::mem::take(&mut self.active);
+        keep.clear();
         for candidate in candidates {
             keep.insert(candidate.key.clone());
             if self.ready.contains_key(&candidate.key) {
@@ -144,6 +157,9 @@ impl ShellFolderPreviewRoleRuntime {
                         self.ready_bytes = self.ready_bytes.saturating_sub(entry.bytes);
                         entry.preview
                     });
+                    if previous.is_some() {
+                        self.remove_ready_size_index(&result.key);
+                    }
                     let had_ready = previous.is_some();
                     let was_not_failed = self.failed.insert(result.key.clone());
                     stats.applied += usize::from(had_ready || was_not_failed);
@@ -178,6 +194,12 @@ impl ShellFolderPreviewRoleRuntime {
         } else {
             None
         };
+        self.ready_sizes
+            .entry(Arc::clone(&key.path))
+            .or_default()
+            .entry(key.directory_modified_secs)
+            .or_default()
+            .insert(key.size_px);
         self.ready_bytes += bytes;
         self.evict_ready_if_needed(&key);
         previous_preview
@@ -196,22 +218,15 @@ impl ShellFolderPreviewRoleRuntime {
             };
             if let Some(entry) = self.ready.remove(&victim) {
                 self.ready_bytes = self.ready_bytes.saturating_sub(entry.bytes);
+                self.remove_ready_size_index(&victim);
             }
         }
     }
 
     fn prune_inactive_deferred(&mut self, keep: &HashSet<FolderPreviewRoleKey>) {
-        let stale = self
-            .pending
-            .iter()
-            .filter(|(key, priority)| {
-                **priority == ThumbnailRequestPriority::Deferred && !keep.contains(*key)
-            })
-            .map(|(key, _)| key.clone())
-            .collect::<Vec<_>>();
-        for key in stale {
-            self.pending.remove(&key);
-        }
+        self.pending.retain(|key, priority| {
+            *priority != ThumbnailRequestPriority::Deferred || keep.contains(key)
+        });
     }
 
     fn clear_request_lifecycle(&mut self) {
@@ -230,6 +245,7 @@ impl ShellFolderPreviewRoleRuntime {
             }
             keep
         });
+        self.rebuild_ready_size_index();
         self.failed.retain(|key| !key.path.starts_with(path));
         self.finished.retain(|key| !key.path.starts_with(path));
         self.active.retain(|key| !key.path.starts_with(path));
@@ -265,6 +281,37 @@ impl ShellFolderPreviewRoleRuntime {
         }
         if self.active.capacity() > self.active.len().saturating_mul(2).max(64) {
             self.active.shrink_to_fit();
+        }
+        if self.ready_sizes.capacity() > self.ready_sizes.len().saturating_mul(2).max(64) {
+            self.ready_sizes.shrink_to_fit();
+        }
+    }
+
+    fn remove_ready_size_index(&mut self, key: &FolderPreviewRoleKey) {
+        let Some(stamps) = self.ready_sizes.get_mut(key.path.as_ref()) else {
+            return;
+        };
+        if let Some(sizes) = stamps.get_mut(&key.directory_modified_secs) {
+            sizes.remove(&key.size_px);
+            if sizes.is_empty() {
+                stamps.remove(&key.directory_modified_secs);
+            }
+        }
+        if stamps.is_empty() {
+            self.ready_sizes.remove(key.path.as_ref());
+        }
+    }
+
+    fn rebuild_ready_size_index(&mut self) {
+        self.ready_sizes.clear();
+        let keys = self.ready.keys().cloned().collect::<Vec<_>>();
+        for key in keys {
+            self.ready_sizes
+                .entry(key.path)
+                .or_default()
+                .entry(key.directory_modified_secs)
+                .or_default()
+                .insert(key.size_px);
         }
     }
 

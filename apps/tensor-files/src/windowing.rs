@@ -112,6 +112,18 @@ struct WindowState {
     scale_factor: f64,
     configured: bool,
     redraw_requested: bool,
+    destroy_requested: bool,
+}
+
+impl WindowState {
+    fn mark_destroy_requested(&mut self) -> bool {
+        if self.destroy_requested {
+            false
+        } else {
+            self.destroy_requested = true;
+            true
+        }
+    }
 }
 
 enum RuntimeCommand {
@@ -292,11 +304,28 @@ impl Window {
         self.shared
             .push(RuntimeCommand::RequestUserAttention(self.id));
     }
+
+    /// Queue destruction of the native surface exactly once.
+    ///
+    /// Explicit shutdown paths and `Window::drop` converge here. Callers must
+    /// release renderer-owned Vulkan surfaces before requesting native surface
+    /// destruction.
+    pub fn destroy_surface(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("Wayland window state mutex poisoned");
+        if !state.mark_destroy_requested() {
+            return;
+        }
+        drop(state);
+        self.shared.push(RuntimeCommand::Destroy(self.id));
+    }
 }
 
 impl Drop for Window {
     fn drop(&mut self) {
-        self.shared.push(RuntimeCommand::Destroy(self.id));
+        self.destroy_surface();
     }
 }
 
@@ -515,6 +544,7 @@ impl ActiveEventLoop {
                 scale_factor,
                 configured: false,
                 redraw_requested: true,
+                destroy_requested: false,
             }),
             shared: self.shared.clone(),
         });

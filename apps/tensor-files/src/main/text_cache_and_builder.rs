@@ -110,7 +110,7 @@ impl LabelWrap {
 }
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct LabelCacheKey {
-    text: String,
+    text: Arc<str>,
     width: u32,
     height: u32,
     alignment: LabelAlignment,
@@ -221,7 +221,7 @@ impl LabelRasterCache {
 }
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct LabelMetricsCacheKey {
-    text: String,
+    text: Arc<str>,
     label_height: u32,
 }
 #[derive(Clone, Debug)]
@@ -280,9 +280,11 @@ impl LabelMetricsCache {
         }
     }
 }
+
 struct TextHitTestRuntime {
     font_system: FontSystem,
     text_buffer: Buffer,
+    measure_cache: TextMeasureCache,
 }
 impl TextHitTestRuntime {
     fn new() -> Self {
@@ -294,6 +296,7 @@ impl TextHitTestRuntime {
         Self {
             font_system,
             text_buffer,
+            measure_cache: TextMeasureCache::new(TEXT_LABEL_METRICS_CACHE_MAX_ENTRIES),
         }
     }
 
@@ -352,7 +355,87 @@ impl TextHitTestRuntime {
         font_size: f32,
         line_height: f32,
     ) -> usize {
-        file_manager_icons_filename_line_count(
+        if let Some(lines) = self.measure_cache.icons_line_count(
+            label,
+            available_width,
+            max_lines,
+            font_size,
+            line_height,
+        ) {
+            return lines;
+        }
+        let lines = file_manager_icons_filename_line_count(
+            &mut self.font_system,
+            &mut self.text_buffer,
+            label,
+            available_width,
+            max_lines,
+            font_size,
+            line_height,
+        );
+        self.measure_cache.insert_icons_line_count(
+            label,
+            available_width,
+            max_lines,
+            font_size,
+            line_height,
+            lines,
+        );
+        lines
+    }
+
+    fn details_filename_display(
+        &mut self,
+        label: &str,
+        available_width: f32,
+        font_size: f32,
+        line_height: f32,
+    ) -> Arc<str> {
+        if let Some(display) = self.measure_cache.details_filename_display(
+            label,
+            available_width,
+            font_size,
+            line_height,
+        ) {
+            return display;
+        }
+        let display = file_manager_elide_filename_to_width_shaped(
+            &mut self.font_system,
+            &mut self.text_buffer,
+            label,
+            available_width,
+            font_size,
+            line_height,
+        );
+        let display = Arc::<str>::from(display.as_ref());
+        self.measure_cache.insert_details_filename_display(
+            label,
+            available_width,
+            font_size,
+            line_height,
+            Arc::clone(&display),
+        );
+        display
+    }
+
+    fn icons_filename_display(
+        &mut self,
+        label: &str,
+        available_width: f32,
+        max_lines: usize,
+        font_size: f32,
+        line_height: f32,
+    ) -> Arc<str> {
+        if let Some(display) = self.measure_cache.icons_filename_display(
+            label,
+            available_width,
+            max_lines,
+            font_size,
+            line_height,
+        ) {
+            return display;
+        }
+        let display = file_manager_layout_icons_filename(
             &mut self.font_system,
             &mut self.text_buffer,
             label,
@@ -361,24 +444,44 @@ impl TextHitTestRuntime {
             font_size,
             line_height,
         )
+        .display;
+        let display = Arc::<str>::from(display.as_ref());
+        self.measure_cache.insert_icons_filename_display(
+            label,
+            available_width,
+            max_lines,
+            font_size,
+            line_height,
+            Arc::clone(&display),
+        );
+        display
     }
 
     fn no_wrap_width(&mut self, label: &str, font_size: f32, line_height: f32) -> f32 {
-        file_manager_text_width_no_wrap(
+        if let Some(width) = self
+            .measure_cache
+            .no_wrap_width(label, font_size, line_height)
+        {
+            return width;
+        }
+        let width = file_manager_text_width_no_wrap(
             &mut self.font_system,
             &mut self.text_buffer,
             label,
             font_size,
             line_height,
-        )
+        );
+        self.measure_cache
+            .insert_no_wrap_width(label, font_size, line_height, width);
+        width
     }
 
-    fn cursor_x(
-        &mut self,
-        label: &str,
-        cursor: usize,
-        layout: TextCursorLayout,
-    ) -> f32 {
+    #[cfg(test)]
+    fn measure_cache_stats(&self) -> TextMeasureCacheStats {
+        self.measure_cache.stats()
+    }
+
+    fn cursor_x(&mut self, label: &str, cursor: usize, layout: TextCursorLayout) -> f32 {
         let TextCursorLayout {
             rect,
             alignment,
@@ -436,6 +539,9 @@ struct TextFrameBuilder<'a> {
     font_system: &'a mut FontSystem,
     swash_cache: &'a mut SwashCache,
     text_buffer: &'a mut Buffer,
+    details_texts: Option<&'a mut DetailsTextCache>,
+    pane_status_texts: Option<&'a mut PaneStatusTextCache>,
+    label_texts: Option<&'a mut LabelTextInterner>,
     label_cache: &'a mut LabelRasterCache,
     metrics_cache: &'a mut LabelMetricsCache,
     atlas_cache: &'a mut TextAtlasFrameCache,
@@ -443,13 +549,17 @@ struct TextFrameBuilder<'a> {
     max_font_size: f32,
     max_line_height: f32,
     pending_draws: Vec<PendingTextDraw>,
+    drawable_indices: Vec<usize>,
+    atlases: Vec<AtlasRect>,
+    vertices: Vec<TextVertex>,
+    uploads: Vec<TextAtlasUpload>,
     width: u32,
     labels: usize,
     cache_hits: usize,
     cache_misses: usize,
     deferred: usize,
     raster_miss_budget: usize,
-    raster_us: u128,
+    raster_timing: FrameTiming,
     atlas_pixels: Vec<u8>,
     text_midline_shift: f32,
 }

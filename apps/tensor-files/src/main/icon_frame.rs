@@ -1,13 +1,16 @@
 //! Retained icon frame data shared by native Vulkan and the legacy renderer.
 
-#[cfg(test)]
+use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::{FileIconKind, ViewRect};
 
-#[derive(Clone, Copy, Debug, Default)]
+#[path = "icon_frame/icon.rs"]
+mod icon;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct IconFrameStats {
     pub(crate) icons: usize,
     pub(crate) quads: usize,
@@ -53,7 +56,60 @@ pub(crate) struct IconFrame {
     pub(crate) content_vertices: Vec<IconVertex>,
     /// Packed vertex data for all overlay batches.
     pub(crate) overlay_vertices: Vec<IconVertex>,
+    /// Builder-only containers carried through presentation for reuse.
+    pub(crate) slot_by_identity: HashMap<IconGpuUploadKey, u32>,
+    pub(crate) draws: Vec<IconDraw>,
+    pub(crate) overlay_draws: Vec<IconDraw>,
+    pub(crate) batch_draw_indices: Vec<Vec<usize>>,
+    pub(crate) batch_slot_order: Vec<u32>,
     pub(crate) stats: IconFrameStats,
+}
+
+pub(crate) struct IconFrameStaging {
+    pub(crate) slot_by_identity: HashMap<IconGpuUploadKey, u32>,
+    pub(crate) slots: Vec<IconGpuSlot>,
+    pub(crate) draws: Vec<IconDraw>,
+    pub(crate) overlay_draws: Vec<IconDraw>,
+    pub(crate) content_batches: Vec<IconSlotBatch>,
+    pub(crate) overlay_batches: Vec<IconSlotBatch>,
+    pub(crate) content_vertices: Vec<IconVertex>,
+    pub(crate) overlay_vertices: Vec<IconVertex>,
+    pub(crate) batch_draw_indices: Vec<Vec<usize>>,
+    pub(crate) batch_slot_order: Vec<u32>,
+}
+
+impl Default for IconFrameStaging {
+    fn default() -> Self {
+        Self {
+            slot_by_identity: HashMap::with_capacity(64),
+            slots: Vec::with_capacity(64),
+            draws: Vec::with_capacity(64),
+            overlay_draws: Vec::with_capacity(16),
+            content_batches: Vec::with_capacity(64),
+            overlay_batches: Vec::with_capacity(16),
+            content_vertices: Vec::with_capacity(64 * 6),
+            overlay_vertices: Vec::with_capacity(16 * 6),
+            batch_draw_indices: Vec::with_capacity(64),
+            batch_slot_order: Vec::with_capacity(64),
+        }
+    }
+}
+
+impl IconFrameStaging {
+    pub(crate) fn clear(&mut self) {
+        self.slot_by_identity.clear();
+        self.slots.clear();
+        self.draws.clear();
+        self.overlay_draws.clear();
+        self.content_batches.clear();
+        self.overlay_batches.clear();
+        self.content_vertices.clear();
+        self.overlay_vertices.clear();
+        for indices in &mut self.batch_draw_indices {
+            indices.clear();
+        }
+        self.batch_slot_order.clear();
+    }
 }
 
 /// Optional single-plane dmabuf consumed when a cold GPU slot is populated.
@@ -70,7 +126,7 @@ pub(crate) struct IconDmabufSource {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum IconGpuSource {
     File {
-        path: PathBuf,
+        path: Arc<Path>,
         size_px: u16,
     },
     FolderPreview {
@@ -81,8 +137,11 @@ pub(crate) enum IconGpuSource {
 }
 
 impl IconGpuSource {
-    pub(crate) fn file(path: PathBuf, size_px: u16) -> Self {
-        Self::File { path, size_px }
+    pub(crate) fn file(path: impl Into<Arc<Path>>, size_px: u16) -> Self {
+        Self::File {
+            path: path.into(),
+            size_px,
+        }
     }
 
     pub(crate) fn size_px(&self) -> u16 {
@@ -94,7 +153,7 @@ impl IconGpuSource {
     #[cfg(test)]
     pub(crate) fn file_path(&self) -> Option<&Path> {
         match self {
-            Self::File { path, .. } => Some(path),
+            Self::File { path, .. } => Some(path.as_ref()),
             Self::FolderPreview { .. } => None,
         }
     }
@@ -115,6 +174,14 @@ impl IconGpuSource {
             }
         }
         .saturating_add(std::mem::size_of::<Self>())
+    }
+
+    pub(crate) fn content_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
     }
 }
 
@@ -162,9 +229,9 @@ pub(crate) struct IconSlotBatch {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum IconGpuIdentity {
     Role { kind: FileIconKind, size_px: u16 },
-    NamedAsset { name: String, size_px: u16 },
-    ThemeAsset { path: PathBuf, size_px: u16 },
-    Content { path: PathBuf, stamp: u64 },
+    NamedAsset { name: Arc<str>, size_px: u16 },
+    ThemeAsset { path: Arc<Path>, size_px: u16 },
+    Content { path: Arc<Path>, stamp: u64 },
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -179,21 +246,30 @@ impl IconGpuUploadKey {
         }
     }
 
-    pub(crate) fn theme_asset(path: PathBuf, size_px: u16) -> Self {
+    pub(crate) fn theme_asset(path: impl Into<Arc<Path>>, size_px: u16) -> Self {
         Self {
-            identity: IconGpuIdentity::ThemeAsset { path, size_px },
+            identity: IconGpuIdentity::ThemeAsset {
+                path: path.into(),
+                size_px,
+            },
         }
     }
 
-    pub(crate) fn named_asset(name: String, size_px: u16) -> Self {
+    pub(crate) fn named_asset(name: impl Into<Arc<str>>, size_px: u16) -> Self {
         Self {
-            identity: IconGpuIdentity::NamedAsset { name, size_px },
+            identity: IconGpuIdentity::NamedAsset {
+                name: name.into(),
+                size_px,
+            },
         }
     }
 
-    pub(crate) fn content(path: PathBuf, stamp: u64) -> Self {
+    pub(crate) fn content(path: impl Into<Arc<Path>>, stamp: u64) -> Self {
         Self {
-            identity: IconGpuIdentity::Content { path, stamp },
+            identity: IconGpuIdentity::Content {
+                path: path.into(),
+                stamp,
+            },
         }
     }
 

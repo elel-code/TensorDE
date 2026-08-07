@@ -95,10 +95,9 @@ impl TensorFilesApp {
                         "Current view updated",
                         false,
                     ));
-                    self.apply_action_outcome(
-                        event_loop,
-                        ShellActionOutcome::Present("context-toggle-hidden"),
-                    );
+                    self.apply_window_action_outcome(ShellActionOutcome::Present(
+                        "context-toggle-hidden",
+                    ));
                 }
             }
             ContextMenuActionDispatch::OpenContextTargetInSplitPane => {

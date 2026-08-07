@@ -2,12 +2,16 @@ struct TextFrameResources<'a> {
     font_system: &'a mut FontSystem,
     swash_cache: &'a mut SwashCache,
     text_buffer: &'a mut Buffer,
+    details_texts: Option<&'a mut DetailsTextCache>,
+    pane_status_texts: Option<&'a mut PaneStatusTextCache>,
+    label_texts: Option<&'a mut LabelTextInterner>,
     label_cache: &'a mut LabelRasterCache,
     metrics_cache: &'a mut LabelMetricsCache,
     atlas_cache: &'a mut TextAtlasFrameCache,
 }
 
 impl<'a> TextFrameResources<'a> {
+    #[cfg(test)]
     fn new(
         font_system: &'a mut FontSystem,
         swash_cache: &'a mut SwashCache,
@@ -20,6 +24,9 @@ impl<'a> TextFrameResources<'a> {
             font_system,
             swash_cache,
             text_buffer,
+            details_texts: None,
+            pane_status_texts: None,
+            label_texts: None,
             label_cache,
             metrics_cache,
             atlas_cache,
@@ -27,14 +34,29 @@ impl<'a> TextFrameResources<'a> {
     }
 
     fn from_engine(engine: &'a mut TextEngine) -> Self {
-        Self::new(
-            &mut engine.font_system,
-            &mut engine.swash_cache,
-            &mut engine.text_buffer,
-            &mut engine.label_cache,
-            &mut engine.metrics_cache,
-            &mut engine.atlas_cache,
-        )
+        let TextEngine {
+            font_system,
+            swash_cache,
+            text_buffer,
+            details_texts,
+            pane_status_texts,
+            label_texts,
+            label_cache,
+            metrics_cache,
+            atlas_cache,
+            ..
+        } = engine;
+        Self {
+            font_system,
+            swash_cache,
+            text_buffer,
+            details_texts: Some(details_texts),
+            pane_status_texts: Some(pane_status_texts),
+            label_texts: Some(label_texts),
+            label_cache,
+            metrics_cache,
+            atlas_cache,
+        }
     }
 }
 
@@ -53,20 +75,50 @@ struct TextLabelStyle {
 }
 
 impl<'a> TextFrameBuilder<'a> {
+    #[cfg(test)]
     fn new(
         resources: TextFrameResources<'a>,
         surface_size: PhysicalSize<u32>,
         text_scale_factor: f32,
         atlas_pixels: Vec<u8>,
     ) -> Self {
+        Self::new_with_staging(
+            resources,
+            surface_size,
+            text_scale_factor,
+            TextFrameStaging {
+                pixels: atlas_pixels,
+                ..TextFrameStaging::default()
+            },
+        )
+    }
+
+    fn new_with_staging(
+        resources: TextFrameResources<'a>,
+        surface_size: PhysicalSize<u32>,
+        text_scale_factor: f32,
+        mut staging: TextFrameStaging,
+    ) -> Self {
         let TextFrameResources {
             font_system,
             swash_cache,
             text_buffer,
+            details_texts,
+            pane_status_texts,
+            label_texts,
             label_cache,
             metrics_cache,
             atlas_cache,
         } = resources;
+        staging.clear();
+        let TextFrameStaging {
+            pending_draws,
+            drawable_indices,
+            atlases,
+            vertices,
+            pixels,
+            uploads,
+        } = staging;
         let atlas_width = atlas_cache.width;
         let max_line_height = (TEXT_LINE_HEIGHT * text_scale_factor).round().max(1.0);
         let max_font_size = (TEXT_FONT_SIZE * max_line_height / TEXT_LINE_HEIGHT).max(1.0);
@@ -78,21 +130,28 @@ impl<'a> TextFrameBuilder<'a> {
             font_system,
             swash_cache,
             text_buffer,
+            details_texts,
+            pane_status_texts,
+            label_texts,
             label_cache,
             metrics_cache,
             atlas_cache,
             surface_size,
             max_font_size,
             max_line_height,
-            pending_draws: Vec::with_capacity(64),
+            pending_draws,
+            drawable_indices,
+            atlases,
+            vertices,
+            uploads,
             width: atlas_width,
             labels: 0,
             cache_hits: 0,
             cache_misses: 0,
             deferred: 0,
             raster_miss_budget: default_text_raster_miss_budget(),
-            raster_us: 0,
-            atlas_pixels,
+            raster_timing: FrameTiming::new(tensor_files_log_enabled()),
+            atlas_pixels: pixels,
             text_midline_shift,
         }
     }
@@ -117,9 +176,33 @@ impl<'a> TextFrameBuilder<'a> {
             label,
             rect,
             clip,
-            color,
-            alignment,
-            LabelWrap::WordOrGlyph,
+            TextLabelStyle {
+                color,
+                alignment,
+                wrap: LabelWrap::WordOrGlyph,
+            },
+            TextDrawLayer::Content,
+        );
+    }
+
+    pub(crate) fn push_overlay_label_aligned(
+        &mut self,
+        label: &str,
+        rect: ViewRect,
+        clip: ViewRect,
+        color: TextColor,
+        alignment: LabelAlignment,
+    ) {
+        self.push_label_aligned_wrapped(
+            label,
+            rect,
+            clip,
+            TextLabelStyle {
+                color,
+                alignment,
+                wrap: LabelWrap::WordOrGlyph,
+            },
+            TextDrawLayer::Overlay,
         );
     }
 
@@ -131,41 +214,84 @@ impl<'a> TextFrameBuilder<'a> {
         color: TextColor,
         alignment: LabelAlignment,
     ) {
-        self.push_label_aligned_wrapped(label, rect, clip, color, alignment, LabelWrap::None);
-    }
-
-    fn push_filename_label_aligned_no_wrap_with_layout(
-        &mut self,
-        label: &str,
-        draw_rect: ViewRect,
-        layout_rect: ViewRect,
-        clip: ViewRect,
-        color: TextColor,
-        alignment: LabelAlignment,
-    ) {
-        let display = file_manager_elide_filename_to_width_shaped(
-            self.font_system,
-            self.text_buffer,
+        self.push_label_aligned_wrapped(
             label,
-            layout_rect.width,
-            self.max_font_size,
-            self.max_line_height,
-        );
-        self.push_label_aligned_wrapped_with_layout(
-            &display,
-            TextLabelLayout {
-                draw: draw_rect,
-                layout: layout_rect,
-                clip,
-            },
+            rect,
+            clip,
             TextLabelStyle {
                 color,
                 alignment,
                 wrap: LabelWrap::None,
             },
+            TextDrawLayer::Content,
         );
     }
 
+    fn details_size_label_text(&mut self, entry: &Entry) -> Arc<str> {
+        self.details_texts.as_deref_mut().map_or_else(
+            || {
+                if entry.is_dir {
+                    Arc::from("Folder")
+                } else if !entry.metadata_complete
+                    && entry.size_bytes == 0
+                    && entry.modified_secs.is_none()
+                {
+                    Arc::from("-")
+                } else {
+                    Arc::from(format_size(entry.size_bytes))
+                }
+            },
+            |cache| {
+                cache.size_label(
+                    entry.is_dir,
+                    entry.metadata_complete,
+                    entry.size_bytes,
+                    entry.modified_secs,
+                )
+            },
+        )
+    }
+
+    fn details_modified_label_text(&mut self, modified_secs: Option<u64>) -> Arc<str> {
+        self.details_texts.as_deref_mut().map_or_else(
+            || Arc::from(format_modified_secs(modified_secs)),
+            |cache| cache.modified_label(modified_secs),
+        )
+    }
+
+    fn pane_status_text(
+        &mut self,
+        pane_index: usize,
+        pane: ShellPaneView<'_>,
+        visible: usize,
+        show_hidden: bool,
+        filter_active: bool,
+        zoom_percent: i32,
+    ) -> PaneStatusText {
+        self.pane_status_texts.as_deref_mut().map_or_else(
+            || {
+                PaneStatusTextCache::build_labels(
+                    pane,
+                    visible,
+                    show_hidden,
+                    filter_active,
+                    zoom_percent,
+                )
+            },
+            |cache| {
+                cache.labels(
+                    pane_index,
+                    pane,
+                    visible,
+                    show_hidden,
+                    filter_active,
+                    zoom_percent,
+                )
+            },
+        )
+    }
+
+    #[cfg(test)]
     fn push_filename_label_wrapped_with_layout(
         &mut self,
         label: &str,
@@ -196,6 +322,7 @@ impl<'a> TextFrameBuilder<'a> {
                 alignment: LabelAlignment::Center,
                 wrap: LabelWrap::WordOrGlyph,
             },
+            TextDrawLayer::Content,
         );
     }
 
@@ -204,9 +331,8 @@ impl<'a> TextFrameBuilder<'a> {
         label: &str,
         rect: ViewRect,
         clip: ViewRect,
-        color: TextColor,
-        alignment: LabelAlignment,
-        wrap: LabelWrap,
+        style: TextLabelStyle,
+        layer: TextDrawLayer,
     ) {
         self.push_label_aligned_wrapped_with_layout(
             label,
@@ -215,11 +341,8 @@ impl<'a> TextFrameBuilder<'a> {
                 layout: rect,
                 clip,
             },
-            TextLabelStyle {
-                color,
-                alignment,
-                wrap,
-            },
+            style,
+            layer,
         );
     }
 
@@ -228,6 +351,7 @@ impl<'a> TextFrameBuilder<'a> {
         label: &str,
         layout: TextLabelLayout,
         style: TextLabelStyle,
+        layer: TextDrawLayer,
     ) {
         let TextLabelLayout {
             draw: draw_rect,
@@ -264,6 +388,7 @@ impl<'a> TextFrameBuilder<'a> {
             label_width,
             label_height,
             color,
+            layer,
         });
         self.labels += 1;
     }
@@ -278,11 +403,12 @@ impl<'a> TextFrameBuilder<'a> {
         if label.is_empty() || rect.width <= 0.0 || rect.height <= 0.0 {
             return None;
         }
+        let text = self.intern_label(label);
         let max_label_width = text_atlas_max_label_width(self.width);
         let label_height = rect.height.ceil().max(1.0) as u32;
         let label_width = if alignment == LabelAlignment::Start && wrap == LabelWrap::None {
             let natural_width =
-                self.cached_no_wrap_label_width(label, label_height, max_label_width);
+                self.cached_no_wrap_label_width(&text, label_height, max_label_width);
             let width = natural_width
                 .min(rect.width.ceil().max(1.0) as u32)
                 .min(max_label_width)
@@ -294,7 +420,7 @@ impl<'a> TextFrameBuilder<'a> {
         };
         Some((
             LabelCacheKey {
-                text: label.to_string(),
+                text,
                 width: label_width,
                 height: label_height,
                 alignment,
@@ -306,14 +432,20 @@ impl<'a> TextFrameBuilder<'a> {
         ))
     }
 
+    fn intern_label(&mut self, label: &str) -> Arc<str> {
+        self.label_texts
+            .as_deref_mut()
+            .map_or_else(|| Arc::from(label), |texts| texts.intern(label))
+    }
+
     fn cached_no_wrap_label_width(
         &mut self,
-        label: &str,
+        label: &Arc<str>,
         label_height: u32,
         max_label_width: u32,
     ) -> u32 {
         let key = LabelMetricsCacheKey {
-            text: label.to_string(),
+            text: Arc::clone(label),
             label_height,
         };
         if let Some(width) = self.metrics_cache.get(&key) {
@@ -323,12 +455,12 @@ impl<'a> TextFrameBuilder<'a> {
         let shaped_width = file_manager_text_width_no_wrap(
             self.font_system,
             self.text_buffer,
-            label,
+            label.as_ref(),
             self.max_font_size,
             self.max_line_height,
         );
-        let width = (shaped_width.ceil().max(1.0) as u32)
-            .saturating_add(TEXT_PADDING.saturating_mul(2));
+        let width =
+            (shaped_width.ceil().max(1.0) as u32).saturating_add(TEXT_PADDING.saturating_mul(2));
         self.metrics_cache.insert(key, width);
         width.min(max_label_width).max(1)
     }
@@ -353,9 +485,9 @@ impl<'a> TextFrameBuilder<'a> {
             return None;
         }
         self.raster_miss_budget -= 1;
-        let raster_start = Instant::now();
+        let raster_start = self.raster_timing.start();
         let label_pixels = self.rasterize_label(label, label_width, label_height, alignment, wrap);
-        self.raster_us += raster_start.elapsed().as_micros();
+        self.raster_timing.record(raster_start);
         let pixels = self.label_cache.insert(key.clone(), label_pixels);
         Some((pixels, LabelCacheOutcome::Miss))
     }
@@ -407,24 +539,23 @@ impl<'a> TextFrameBuilder<'a> {
             .max(1);
 
         let mut atlas_reused: usize;
-        let mut drawable = Vec::with_capacity(pending.len());
-        let mut atlases = Vec::with_capacity(pending.len());
-        let mut uploads = Vec::new();
+        // Keep only indexes into `pending`; the retained cache key owns the
+        // interned label while the frame reuses its existing draw storage.
         let mut reset_once = false;
         'build_atlas: loop {
             atlas_reused = 0;
-            drawable.clear();
-            atlases.clear();
-            uploads.clear();
+            self.drawable_indices.clear();
+            self.atlases.clear();
+            self.uploads.clear();
 
-            for draw in pending.iter() {
+            for (draw_index, draw) in pending.iter().enumerate() {
                 if let Some(atlas) = self.atlas_cache.entries.get(&draw.key).copied() {
                     atlas_reused += 1;
                     if draw.atlas_upload_required {
-                        uploads.push(text_atlas_upload_from_draw(atlas, draw));
+                        self.uploads.push(text_atlas_upload_from_draw(atlas, draw));
                     }
-                    atlases.push(atlas);
-                    drawable.push(draw.clone());
+                    self.atlases.push(atlas);
+                    self.drawable_indices.push(draw_index);
                     continue;
                 }
 
@@ -441,9 +572,9 @@ impl<'a> TextFrameBuilder<'a> {
                     continue;
                 };
                 self.atlas_cache.entries.insert(draw.key.clone(), atlas);
-                uploads.push(text_atlas_upload_from_draw(atlas, draw));
-                atlases.push(atlas);
-                drawable.push(draw.clone());
+                self.uploads.push(text_atlas_upload_from_draw(atlas, draw));
+                self.atlases.push(atlas);
+                self.drawable_indices.push(draw_index);
             }
             // Growing the texture discards its old contents. Repack the live
             // frame so every retained slot is uploaded into the new texture,
@@ -458,8 +589,28 @@ impl<'a> TextFrameBuilder<'a> {
         let height = self.atlas_cache.height.max(1);
         let mut pixels = self.atlas_pixels;
         pixels.clear();
-        let vertices =
-            text_vertices_for_pending(&drawable, &atlases, self.width, height, self.surface_size);
+        self.vertices.clear();
+        text_vertices_for_pending_indices_into(
+            &mut self.vertices,
+            &pending,
+            &self.drawable_indices,
+            &self.atlases,
+            self.width,
+            height,
+            self.surface_size,
+        );
+        let content_vertex_count = self
+            .drawable_indices
+            .iter()
+            .take_while(|&&index| pending[index].layer == TextDrawLayer::Content)
+            .count()
+            * 6;
+        debug_assert!(
+            self.drawable_indices[content_vertex_count / 6..]
+                .iter()
+                .all(|&index| pending[index].layer == TextDrawLayer::Overlay),
+            "overlay text must be appended after content text"
+        );
         if self
             .label_cache
             .evict_to_recent_entry_limit(label_cache_entry_limit)
@@ -470,16 +621,21 @@ impl<'a> TextFrameBuilder<'a> {
         let cache_entries = self.label_cache.len();
         let cache_bytes = self.label_cache.bytes();
         let atlas_bytes = (self.width * height) as usize;
-        let atlas_uploads = uploads.len();
+        let atlas_uploads = self.uploads.len();
+        let quads = self.drawable_indices.len();
         TextFrame {
-            vertices,
+            vertices: self.vertices,
+            content_vertex_count,
             pixels,
-            uploads,
+            uploads: self.uploads,
+            pending_draws: pending,
+            drawable_indices: self.drawable_indices,
+            atlases: self.atlases,
             width: self.width,
             height,
             stats: TextFrameStats {
                 labels: self.labels,
-                quads: drawable.len(),
+                quads,
                 deferred: self.deferred,
                 atlas_reused,
                 atlas_uploads,
@@ -494,7 +650,7 @@ impl<'a> TextFrameBuilder<'a> {
                 swash_image_entries: 0,
                 swash_outline_entries: 0,
                 swash_resets: 0,
-                raster_us: self.raster_us,
+                raster_us: self.raster_timing.total_us(),
             },
         }
     }

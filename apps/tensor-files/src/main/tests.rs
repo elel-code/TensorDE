@@ -10,7 +10,10 @@ mod tests {
     include!("tests/folder_preview_role_draw_rect_keeps_aspect_inside_folder_shell_slot.rs");
     include!("tests/folder_preview_role_resolves_encoded_chinese_named_jpeg_when_video_is_present.rs");
     include!("tests/folder_preview_vulkan_composite_smoke.rs");
+    include!("tests/frame_staging_reuse.rs");
     include!("tests/icon_dmabuf_slot_upload_smoke.rs");
+    include!("tests/icon_zoom_residency.rs");
+    include!("tests/item_reflow_pending_identity.rs");
     include!("tests/location_draft_replaces_completes_and_cancels.rs");
     include!("tests/native_frame_layers_share_item_chrome.rs");
     include!("tests/open_with_chooser_builds_launch_plan_for_selected_application.rs");

@@ -1,6 +1,6 @@
 use crate::*;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct TextFrameStats {
     pub(crate) labels: usize,
     pub(crate) quads: usize,
@@ -22,11 +22,57 @@ pub(crate) struct TextFrameStats {
 }
 pub(crate) struct TextFrame {
     pub(crate) vertices: Vec<TextVertex>,
+    pub(crate) content_vertex_count: usize,
     pub(crate) pixels: Vec<u8>,
     pub(crate) uploads: Vec<TextAtlasUpload>,
+    /// Builder scratch is carried through presentation so it can be returned
+    /// to `TextEngine` without allocating another staging object.
+    pub(crate) pending_draws: Vec<PendingTextDraw>,
+    pub(crate) drawable_indices: Vec<usize>,
+    pub(crate) atlases: Vec<AtlasRect>,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) stats: TextFrameStats,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum TextDrawLayer {
+    #[default]
+    Content,
+    Overlay,
+}
+
+pub(crate) struct TextFrameStaging {
+    pub(crate) pending_draws: Vec<PendingTextDraw>,
+    pub(crate) drawable_indices: Vec<usize>,
+    pub(crate) atlases: Vec<AtlasRect>,
+    pub(crate) vertices: Vec<TextVertex>,
+    pub(crate) pixels: Vec<u8>,
+    pub(crate) uploads: Vec<TextAtlasUpload>,
+}
+
+impl Default for TextFrameStaging {
+    fn default() -> Self {
+        Self {
+            pending_draws: Vec::with_capacity(64),
+            drawable_indices: Vec::with_capacity(64),
+            atlases: Vec::with_capacity(64),
+            vertices: Vec::with_capacity(64 * 6),
+            pixels: Vec::new(),
+            uploads: Vec::with_capacity(64),
+        }
+    }
+}
+
+impl TextFrameStaging {
+    pub(crate) fn clear(&mut self) {
+        self.pending_draws.clear();
+        self.drawable_indices.clear();
+        self.atlases.clear();
+        self.vertices.clear();
+        self.pixels.clear();
+        self.uploads.clear();
+    }
 }
 pub(crate) const TEXT_ATLAS_GUARD_TEXELS: u32 = 1;
 #[derive(Clone, Debug)]
@@ -39,6 +85,7 @@ pub(crate) struct PendingTextDraw {
     pub(crate) label_width: u32,
     pub(crate) label_height: u32,
     pub(crate) color: TextColor,
+    pub(crate) layer: TextDrawLayer,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct TextAtlasUpload {

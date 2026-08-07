@@ -186,6 +186,9 @@ pub struct SemaphoreWait {
     pub(crate) stages: vk::PipelineStageFlags2,
 }
 
+/// Cloneable logical-device handle. Clones share the same Vulkan device,
+/// command pool, timeline, and submission-retirement state.
+#[derive(Clone)]
 pub struct Backend {
     config: BackendConfig,
     info: DeviceInfo,

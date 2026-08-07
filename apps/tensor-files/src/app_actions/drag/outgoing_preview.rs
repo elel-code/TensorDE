@@ -62,6 +62,7 @@ fn outgoing_dnd_preview_gpu_draws(
     metrics: OutgoingDndPreviewMetrics,
     scale: f32,
 ) -> Vec<GpuDragPreviewDraw> {
+    let _ = renderer.icon_engine.resolver.drain_results();
     let mut draws = Vec::new();
     for (index, path) in paths.iter().take(metrics.visible_icon_count()).enumerate() {
         let Some(icon_rect) = metrics.icon_rect_at(index) else {
@@ -168,7 +169,7 @@ fn outgoing_dnd_gpu_sources_for_path(
             },
             text_midline_shift: 0.0,
         };
-        let draw = folder_preview_gpu_draw_rect(layout, preview.size_px());
+        let draw = folder_preview_gpu_draw_rect(layout);
         draws.push((
             preview,
             PixelRect::new(
@@ -248,21 +249,7 @@ fn ready_drag_thumbnail_source(
         return None;
     }
     thumbnails.drain_results();
-    let exact = ThumbnailSourceKey::thumbnail(path.clone(), size_px, modified_secs);
-    let key = if thumbnails.ready.contains_key(&exact) {
-        exact
-    } else {
-        thumbnails
-            .ready
-            .keys()
-            .filter(|key| key.stamp == Some(modified_secs) && key.path == path)
-            .min_by_key(|key| key.size_px.abs_diff(size_px))
-            .cloned()?
-    };
-    let entry = thumbnails.ready.get_mut(&key)?;
-    thumbnails.ready_frame = thumbnails.ready_frame.wrapping_add(1);
-    entry.last_used_frame = thumbnails.ready_frame;
-    Some(entry.source.clone())
+    thumbnails.cached_or_closest_ready(&path, modified_secs, size_px)
 }
 
 fn outgoing_dnd_gpu_drag_icon(
@@ -303,12 +290,12 @@ fn outgoing_dnd_gpu_drag_icon(
     }
     let resident = renderer.gpu_icon_resident_index();
     renderer.text_engine.begin_frame();
-    let text_pixels = renderer.text_engine.take_staging_pixels();
-    let mut text_builder = TextFrameBuilder::new(
+    let text_staging = renderer.text_engine.take_frame_staging();
+    let mut text_builder = TextFrameBuilder::new_with_staging(
         TextFrameResources::from_engine(&mut renderer.text_engine),
         size,
         metrics.buffer_scale as f32,
-        text_pixels,
+        text_staging,
     );
     if let Some(rect) = metrics.label_rect
         && !label.is_empty()
@@ -330,7 +317,8 @@ fn outgoing_dnd_gpu_drag_icon(
             ),
         );
     }
-    let mut icon_builder = IconFrameBuilder::new(
+    let icon_staging = renderer.icon_engine.take_frame_staging();
+    let mut icon_builder = IconFrameBuilder::new_with_staging(
         IconFrameResources::from_engine(&mut renderer.icon_engine, resident),
         IconFrameConfig {
             surface_size: size,
@@ -340,6 +328,7 @@ fn outgoing_dnd_gpu_drag_icon(
             icon_size_update_pending: false,
             folder_preview_cache: FolderPreviewCacheStats::default(),
         },
+        icon_staging,
     );
     for draw in draws {
         icon_builder.push_encoded_source(draw.source, draw.rect, draw.layer);

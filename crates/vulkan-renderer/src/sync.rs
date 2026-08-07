@@ -202,10 +202,55 @@ impl CompiledGraph {
         bindings: &BTreeMap<ResourceId, ResourceBinding>,
     ) -> Result<BarrierBatch, RenderGraphSyncError> {
         let mut batch = BarrierBatch::default();
+        self.fill_barrier_batch_before(pass, bindings, &mut batch)?;
+        Ok(batch)
+    }
+
+    /// Rebuilds a caller-owned barrier batch while retaining its allocations.
+    pub fn fill_barrier_batch_before(
+        &self,
+        pass: PassId,
+        bindings: &BTreeMap<ResourceId, ResourceBinding>,
+        batch: &mut BarrierBatch,
+    ) -> Result<(), RenderGraphSyncError> {
+        self.fill_barrier_batch_before_with(
+            pass,
+            |resource| bindings.get(&resource).copied(),
+            batch,
+        )
+    }
+
+    /// Rebuilds a caller-owned batch from a small, bounded binding table.
+    ///
+    /// This avoids constructing an ordered map on retained frame paths whose
+    /// resource set is fixed and small. Duplicate IDs resolve to the first
+    /// entry, matching a left-to-right product binding declaration.
+    pub fn fill_barrier_batch_before_from_slice(
+        &self,
+        pass: PassId,
+        bindings: &[(ResourceId, ResourceBinding)],
+        batch: &mut BarrierBatch,
+    ) -> Result<(), RenderGraphSyncError> {
+        self.fill_barrier_batch_before_with(
+            pass,
+            |resource| {
+                bindings
+                    .iter()
+                    .find_map(|(candidate, binding)| (*candidate == resource).then_some(*binding))
+            },
+            batch,
+        )
+    }
+
+    fn fill_barrier_batch_before_with(
+        &self,
+        pass: PassId,
+        mut resolve: impl FnMut(ResourceId) -> Option<ResourceBinding>,
+        batch: &mut BarrierBatch,
+    ) -> Result<(), RenderGraphSyncError> {
+        batch.clear();
         for barrier in self.barriers.iter().filter(|barrier| barrier.after == pass) {
-            let binding = bindings
-                .get(&barrier.resource)
-                .copied()
+            let binding = resolve(barrier.resource)
                 .ok_or(RenderGraphSyncError::MissingBinding(barrier.resource))?;
             if binding.kind() != barrier.kind {
                 return Err(RenderGraphSyncError::KindMismatch {
@@ -250,7 +295,7 @@ impl CompiledGraph {
                 )?),
             }
         }
-        Ok(batch)
+        Ok(())
     }
 }
 
@@ -347,6 +392,64 @@ mod tests {
         );
         assert_eq!(barrier.src_queue_family_index, 2);
         assert_eq!(barrier.dst_queue_family_index, 3);
+    }
+
+    #[test]
+    fn slice_bindings_refill_a_retained_barrier_batch() {
+        let resource = ResourceId(6);
+        let pass = PassId(2);
+        let mut graph = RenderGraph::default();
+        graph.set_initial_state(
+            resource,
+            ResourceKind::Image,
+            ResourceState::image(RenderGraphImageState::Undefined, 4),
+        );
+        graph.add_pass(RenderPass {
+            id: pass,
+            label: "color".into(),
+            depends_on: vec![],
+            resources: vec![ResourceUse {
+                resource,
+                kind: ResourceKind::Image,
+                access: AccessKind::Write,
+                state: ResourceState::image(RenderGraphImageState::ColorAttachmentWrite, 4),
+            }],
+        });
+        let compiled = graph.compile().unwrap();
+        let bindings = [(
+            resource,
+            ResourceBinding::raw_image(
+                vk::Image::from_raw(9),
+                vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+            ),
+        )];
+        let mut batch = BarrierBatch::with_capacity(0, 4);
+        let capacities = (
+            batch.buffer_barriers.capacity(),
+            batch.image_barriers.capacity(),
+        );
+
+        compiled
+            .fill_barrier_batch_before_from_slice(pass, &bindings, &mut batch)
+            .unwrap();
+        assert_eq!(batch.image_barriers.len(), 1);
+        compiled
+            .fill_barrier_batch_before_from_slice(PassId(99), &bindings, &mut batch)
+            .unwrap();
+        assert!(batch.is_empty());
+        assert_eq!(
+            (
+                batch.buffer_barriers.capacity(),
+                batch.image_barriers.capacity()
+            ),
+            capacities
+        );
     }
 
     #[test]

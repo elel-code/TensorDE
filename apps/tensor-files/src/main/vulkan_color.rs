@@ -96,8 +96,8 @@ impl VulkanColorStream {
             .map_err(|error| format!("upload Vulkan color vertices: {error}"))
     }
 
-    pub(crate) fn vertex_buffer(&self) -> Option<&Buffer> {
-        (self.vertex_count != 0).then_some(self.vertex_buffer.buffer())
+    pub(crate) fn buffer(&self) -> &Buffer {
+        self.vertex_buffer.buffer()
     }
 }
 

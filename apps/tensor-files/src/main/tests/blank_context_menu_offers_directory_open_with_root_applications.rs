@@ -132,7 +132,7 @@ fn service_menu_named_icon_request_supplies_service_fallback_icon() {
 fn named_service_icon_candidates_prefer_service_icon() {
     let profile = file_icon_profile(
         &FileIconKind::Named {
-            icon_name: "tools-checksum".to_string(),
+            icon_name: Arc::from("tools-checksum"),
             fallback: NamedIconFallback::Service,
         },
         tensor_files_core::MimeDatabase::shared(),
@@ -326,13 +326,18 @@ fn scrolling_icon_miss_uses_preliminary_icon_and_queues_exact_role() {
         kind: FileIconKind::PreliminaryFile { extension: None },
     };
     let fallback_path = PathBuf::from("/theme/mimetypes/text-x-generic.svg");
-    harness.complete(
-        crate::ui::icon_roles::FileIconPathCacheKey {
-            role: preliminary_role.clone(),
-            size_px: 32,
-        },
-        Some(fallback_path.clone()),
+    let preliminary_key = crate::ui::icon_roles::FileIconPathCacheKey {
+        role: preliminary_role.clone(),
+        size_px: 32,
+    };
+    assert_eq!(
+        harness
+            .resolver
+            .resolve_path_cache_key(preliminary_key.clone()),
+        None
     );
+    assert_eq!(harness.next_request_key(), Some(preliminary_key.clone()));
+    harness.complete(preliminary_key, Some(fallback_path.clone()));
     let entry = test_unchecked_generic_entry("cold.zzz", 1, 17);
 
     let frame = {
@@ -345,8 +350,9 @@ fn scrolling_icon_miss_uses_preliminary_icon_and_queues_exact_role() {
             IconFrameConfig::new(PhysicalSize::new(128, 96), 1.0, 0),
         );
         assert!(builder.push_icon(
-            Path::new("/tmp"),
+            Path::new("/tmp/cold.zzz"),
             &entry,
+            None,
             ViewRect {
                 x: 4.0,
                 y: 4.0,
@@ -382,7 +388,7 @@ fn scrolling_icon_miss_uses_preliminary_icon_and_queues_exact_role() {
     assert_eq!(
         exact.role.kind,
         FileIconKind::PreliminaryFile {
-            extension: Some("zzz".to_string())
+            extension: Some(Arc::from("zzz"))
         }
     );
 }
@@ -416,7 +422,7 @@ fn gpu_resident_thumbnail_does_not_requeue_encoded_source_work() {
     );
 
     assert!(builder.push_thumbnail(
-        &directory,
+        &path,
         &entry,
         ViewRect {
             x: 4.0,
@@ -444,17 +450,30 @@ fn active_zoom_rasterizes_known_mime_at_target_size_without_preliminary_replacem
     let old_gpu_key = IconGpuUploadKey::role(role.clone(), 48);
     let target_gpu_key = IconGpuUploadKey::role(role, 128);
     let resident = IconGpuResidentIndex {
-        entries: HashMap::from([(
-            old_gpu_key,
-            IconGpuResidentEntry {
-                width: 48,
-                height: 48,
-                content_width: 48,
-                content_height: 48,
-                content_hash: 0x1234,
-                rounding: None,
-            },
-        )]),
+        entries: HashMap::from([
+            (
+                old_gpu_key,
+                IconGpuResidentEntry {
+                    width: 48,
+                    height: 48,
+                    content_width: 48,
+                    content_height: 48,
+                    content_hash: 0x1234,
+                    rounding: None,
+                },
+            ),
+            (
+                target_gpu_key.clone(),
+                IconGpuResidentEntry {
+                    width: 128,
+                    height: 128,
+                    content_width: 128,
+                    content_height: 128,
+                    content_hash: 0xdead,
+                    rounding: None,
+                },
+            ),
+        ]),
     };
     let mut resolver = FileIconResolver::new();
     let mut thumbnails = ThumbnailSourceResolver::new();
@@ -467,8 +486,9 @@ fn active_zoom_rasterizes_known_mime_at_target_size_without_preliminary_replacem
     );
 
     assert!(builder.push_icon(
-        Path::new("/tmp"),
+        Path::new("/tmp/document.txt"),
         &entry,
+        None,
         ViewRect {
             x: 8.0,
             y: 8.0,
@@ -488,6 +508,7 @@ fn active_zoom_rasterizes_known_mime_at_target_size_without_preliminary_replacem
     assert_eq!(frame.slots.len(), 1);
     assert_eq!(frame.slots[0].identity, target_gpu_key);
     assert_eq!(frame.slots[0].content_width, 128);
+    assert_ne!(frame.slots[0].content_hash, 0xdead);
     assert_eq!(frame.slots[0].source.as_ref().map(IconGpuSource::size_px), Some(128));
     assert_eq!(frame.stats.cache_hits, 0);
     assert_eq!(frame.stats.cache_misses, 1);
@@ -526,7 +547,7 @@ fn active_zoom_scales_small_resident_thumbnail_without_requesting_an_upgrade() {
     );
 
     assert!(builder.push_thumbnail(
-        &directory,
+        Path::new("/tmp/resident.png"),
         &entry,
         ViewRect {
             x: 8.0,
@@ -579,7 +600,7 @@ fn active_zoom_restores_completed_thumbnail_after_gpu_eviction_without_new_reque
     );
 
     assert!(builder.push_thumbnail(
-        &directory,
+        Path::new("/tmp/ready.png"),
         &entry,
         ViewRect {
             x: 8.0,

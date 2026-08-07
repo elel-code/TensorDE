@@ -13,6 +13,7 @@ impl ThumbnailSourceResolver {
             .map(|_| request_tx);
         Self {
             ready: HashMap::new(),
+            ready_sizes: HashMap::new(),
             failed: HashSet::new(),
             pending: HashMap::new(),
             ready_frame: 0,
@@ -31,17 +32,25 @@ impl ThumbnailSourceResolver {
         size_px: u16,
     ) -> ThumbnailResolveState {
         self.drain_results();
-        let key = ThumbnailSourceKey::thumbnail(path.to_path_buf(), size_px, modified_secs);
-        let failure_key = ThumbnailProbeCacheKey::new(path.to_path_buf(), modified_secs);
         // Keep the ready entry (FileManager-style cache hit). Removing here forced a
         // re-queue every frame and thrashed GPU uploads / flash of MIME icons.
-        if let Some(entry) = self.ready.get_mut(&key) {
-            self.ready_frame = self.ready_frame.wrapping_add(1);
-            entry.last_used_frame = self.ready_frame;
-            return ThumbnailResolveState::Ready(entry.source.clone());
+        if let Some(source) = self.take_exact_ready(path, modified_secs, size_px) {
+            return ThumbnailResolveState::Ready(source);
         }
         // Zoom / first-frame: paint a nearby size while the exact bucket loads.
-        if let Some(source) = self.take_closest_ready(path, modified_secs, size_px) {
+        let closest = self.take_closest_ready(path, modified_secs, size_px);
+        let shared_path = self
+            .ready_sizes
+            .get_key_value(path)
+            .map(|(indexed_path, _)| Arc::clone(indexed_path))
+            .unwrap_or_else(|| Arc::from(path));
+        let key = ThumbnailSourceKey::thumbnail(
+            Arc::clone(&shared_path),
+            size_px,
+            modified_secs,
+        );
+        let failure_key = ThumbnailProbeCacheKey::new(shared_path, modified_secs);
+        if let Some(source) = closest {
             // Still ensure the exact size is queued as visible work.
             if !self.pending.contains_key(&key) && !self.failed.contains(&failure_key) {
                 let _ = self.send_request(
@@ -72,22 +81,54 @@ impl ThumbnailSourceResolver {
         }
     }
 
+    fn take_exact_ready(
+        &mut self,
+        path: &Path,
+        modified_secs: u64,
+        size_px: u16,
+    ) -> Option<IconGpuSource> {
+        let (indexed_path, stamps) = self.ready_sizes.get_key_value(path)?;
+        let sizes = stamps.get(&modified_secs)?;
+        if !sizes.contains(&size_px) {
+            return None;
+        }
+        let key = ThumbnailSourceKey::thumbnail(
+            Arc::clone(indexed_path),
+            size_px,
+            modified_secs,
+        );
+        self.touch_ready_source(&key)
+    }
+
     fn take_closest_ready(
         &mut self,
         path: &Path,
         modified_secs: u64,
         size_px: u16,
     ) -> Option<IconGpuSource> {
-        let key = self
-            .ready
-            .keys()
-            .filter(|key| {
-                key.path.as_path() == path
-                    && key.stamp == Some(modified_secs)
-            })
-            .min_by_key(|key| key.size_px.abs_diff(size_px))
-            .cloned()?;
-        let entry = self.ready.get_mut(&key)?;
+        let (indexed_path, stamps) = self.ready_sizes.get_key_value(path)?;
+        let sizes = stamps.get(&modified_secs)?;
+        let lower = sizes.range(..=size_px).next_back().copied();
+        let upper = sizes.range(size_px..).next().copied();
+        let selected_size = match (lower, upper) {
+            (Some(lower), Some(upper)) if size_px.abs_diff(lower) <= upper.abs_diff(size_px) => {
+                lower
+            }
+            (Some(_), Some(upper)) => upper,
+            (Some(lower), None) => lower,
+            (None, Some(upper)) => upper,
+            (None, None) => return None,
+        };
+        let key = ThumbnailSourceKey::thumbnail(
+            Arc::clone(indexed_path),
+            selected_size,
+            modified_secs,
+        );
+        self.touch_ready_source(&key)
+    }
+
+    fn touch_ready_source(&mut self, key: &ThumbnailSourceKey) -> Option<IconGpuSource> {
+        let entry = self.ready.get_mut(key)?;
         self.ready_frame = self.ready_frame.wrapping_add(1);
         entry.last_used_frame = self.ready_frame;
         Some(entry.source.clone())
@@ -103,11 +144,8 @@ impl ThumbnailSourceResolver {
         modified_secs: u64,
         size_px: u16,
     ) -> Option<IconGpuSource> {
-        let key = ThumbnailSourceKey::thumbnail(path.to_path_buf(), size_px, modified_secs);
-        if let Some(entry) = self.ready.get_mut(&key) {
-            self.ready_frame = self.ready_frame.wrapping_add(1);
-            entry.last_used_frame = self.ready_frame;
-            return Some(entry.source.clone());
+        if let Some(source) = self.take_exact_ready(path, modified_secs, size_px) {
+            return Some(source);
         }
         self.take_closest_ready(path, modified_secs, size_px)
     }
@@ -120,12 +158,26 @@ impl ThumbnailSourceResolver {
         size_px: u16,
     ) -> bool {
         self.drain_results();
-        let key = ThumbnailSourceKey::thumbnail(path.to_path_buf(), size_px, modified_secs);
-        let failure_key = ThumbnailProbeCacheKey::new(path.to_path_buf(), modified_secs);
-        if self.ready.contains_key(&key)
-            || self.failed.contains(&failure_key)
-            || self.pending.contains_key(&key)
+        if self
+            .ready_sizes
+            .get(path)
+            .and_then(|stamps| stamps.get(&modified_secs))
+            .is_some_and(|sizes| sizes.contains(&size_px))
         {
+            return false;
+        }
+        let shared_path = self
+            .ready_sizes
+            .get_key_value(path)
+            .map(|(indexed_path, _)| Arc::clone(indexed_path))
+            .unwrap_or_else(|| Arc::from(path));
+        let key = ThumbnailSourceKey::thumbnail(
+            Arc::clone(&shared_path),
+            size_px,
+            modified_secs,
+        );
+        let failure_key = ThumbnailProbeCacheKey::new(shared_path, modified_secs);
+        if self.failed.contains(&failure_key) || self.pending.contains_key(&key) {
             return false;
         }
         self.send_request(
@@ -201,6 +253,14 @@ impl ThumbnailSourceResolver {
         ) {
             self.ready_bytes = self.ready_bytes.saturating_sub(old.bytes);
         }
+        if let Some(stamp) = key.stamp {
+            self.ready_sizes
+                .entry(Arc::clone(&key.path))
+                .or_default()
+                .entry(stamp)
+                .or_default()
+                .insert(key.size_px);
+        }
         self.ready_bytes += bytes;
         self.evict_ready_if_needed(&key);
         self.trim_failed(THUMBNAIL_FAILURE_CACHE_MAX_ENTRIES);
@@ -219,6 +279,7 @@ impl ThumbnailSourceResolver {
             };
             if let Some(entry) = self.ready.remove(&victim) {
                 self.ready_bytes = self.ready_bytes.saturating_sub(entry.bytes);
+                self.remove_ready_size_index(&victim);
             }
         }
     }
@@ -239,7 +300,7 @@ impl ThumbnailSourceResolver {
     fn release_gpu_resident_content_upto(&mut self, keys: &[ThumbnailSourceKey]) {
         let targets = keys
             .iter()
-            .filter_map(|k| k.stamp.map(|stamp| (k.path.as_path(), stamp, k.size_px)))
+            .filter_map(|k| k.stamp.map(|stamp| (k.path.as_ref(), stamp, k.size_px)))
             .collect::<Vec<_>>();
         if targets.is_empty() {
             return;
@@ -250,7 +311,7 @@ impl ThumbnailSourceResolver {
             .filter(|k| {
                 k.stamp.is_some_and(|stamp| {
                     targets.iter().any(|(p, s, max_px)| {
-                        *p == k.path.as_path() && *s == stamp && k.size_px <= *max_px
+                        *p == k.path.as_ref() && *s == stamp && k.size_px <= *max_px
                     })
                 })
             })
@@ -259,6 +320,7 @@ impl ThumbnailSourceResolver {
         for key in victims {
             if let Some(entry) = self.ready.remove(&key) {
                 self.ready_bytes = self.ready_bytes.saturating_sub(entry.bytes);
+                self.remove_ready_size_index(&key);
             }
         }
         self.shrink_maps_if_sparse();
@@ -278,6 +340,7 @@ impl ThumbnailSourceResolver {
             }
             keep
         });
+        self.rebuild_ready_size_index();
         self.failed.retain(|key| !key.path.starts_with(path));
         self.pending.retain(|key, _| !key.path.starts_with(path));
         self.shrink_maps_if_sparse();
@@ -308,6 +371,44 @@ impl ThumbnailSourceResolver {
         }
         if self.pending.capacity() > self.pending.len().saturating_mul(2).max(64) {
             self.pending.shrink_to_fit();
+        }
+        if self.ready_sizes.capacity() > self.ready_sizes.len().saturating_mul(2).max(64) {
+            self.ready_sizes.shrink_to_fit();
+        }
+    }
+
+    fn remove_ready_size_index(&mut self, key: &ThumbnailSourceKey) {
+        let Some(stamp) = key.stamp else {
+            return;
+        };
+        let Some(stamps) = self.ready_sizes.get_mut(key.path.as_ref()) else {
+            return;
+        };
+        if let Some(sizes) = stamps.get_mut(&stamp) {
+            sizes.remove(&key.size_px);
+            if sizes.is_empty() {
+                stamps.remove(&stamp);
+            }
+        }
+        if stamps.is_empty() {
+            self.ready_sizes.remove(key.path.as_ref());
+        }
+    }
+
+    #[cfg(test)]
+    fn rebuild_ready_size_index(&mut self) {
+        self.ready_sizes.clear();
+        let keys = self.ready.keys().cloned().collect::<Vec<_>>();
+        for key in keys {
+            let Some(stamp) = key.stamp else {
+                continue;
+            };
+            self.ready_sizes
+                .entry(key.path)
+                .or_default()
+                .entry(stamp)
+                .or_default()
+                .insert(key.size_px);
         }
     }
 
@@ -371,14 +472,14 @@ struct FolderPreviewReadyEntry {
 }
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct FolderPreviewRoleKey {
-    path: PathBuf,
+    path: Arc<Path>,
     directory_modified_secs: u64,
     size_px: u16,
 }
 impl FolderPreviewRoleKey {
-    fn new(path: PathBuf, directory_modified_secs: u64, size_px: u16) -> Self {
+    fn new(path: impl Into<Arc<Path>>, directory_modified_secs: u64, size_px: u16) -> Self {
         Self {
-            path,
+            path: path.into(),
             directory_modified_secs,
             size_px,
         }
@@ -425,6 +526,7 @@ struct FolderPreviewRoleUpdateStats {
 }
 struct ShellFolderPreviewRoleRuntime {
     ready: HashMap<FolderPreviewRoleKey, FolderPreviewReadyEntry>,
+    ready_sizes: HashMap<Arc<Path>, HashMap<u64, BTreeSet<u16>>>,
     failed: HashSet<FolderPreviewRoleKey>,
     pending: HashMap<FolderPreviewRoleKey, ThumbnailRequestPriority>,
     finished: HashSet<FolderPreviewRoleKey>,

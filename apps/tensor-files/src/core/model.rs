@@ -2,6 +2,7 @@ use super::entries::{
     Entry, EntryMetadataRole, ItemId, ModelEntry, directory_entry_path, entry_name_cmp,
 };
 use super::mime::mime_magic_resolution_required;
+use super::network::is_network_path;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
@@ -69,6 +70,7 @@ pub struct DirectoryModel {
 #[derive(Clone, Debug, Default)]
 struct DirectoryModelData {
     directory: PathBuf,
+    is_network: bool,
     entries: Vec<ModelEntry>,
     sort: SortDescriptor,
 }
@@ -102,6 +104,7 @@ impl DirectoryModel {
         let sort = SortDescriptor::for_directory(&directory);
         Self {
             data: DirectoryModelData {
+                is_network: is_network_path(&directory),
                 directory,
                 entries: Vec::new(),
                 sort,
@@ -182,11 +185,16 @@ impl DirectoryModel {
     }
 
     pub fn index_of_path(&self, path: &Path) -> Option<usize> {
-        if let Some(index) = self
-            .data
-            .entries
-            .iter()
-            .position(|entry| entry.target_path.as_deref() == Some(path))
+        // Local listings have no target URLs. Avoid scanning every entry before
+        // consulting the already cached name index on each watcher or selection
+        // update. Network listings retain the exact target-path lookup because
+        // their display name may differ from the URI used for activation.
+        if self.data.is_network
+            && let Some(index) = self
+                .data
+                .entries
+                .iter()
+                .position(|entry| entry.target_path.as_deref() == Some(path))
         {
             return Some(index);
         }
@@ -644,6 +652,7 @@ impl DirectoryModel {
             SortDescriptor::for_directory(&directory)
         };
         self.data = DirectoryModelData {
+            is_network: is_network_path(&directory),
             directory,
             entries,
             sort,

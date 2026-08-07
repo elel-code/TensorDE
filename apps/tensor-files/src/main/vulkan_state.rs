@@ -1,17 +1,15 @@
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use vulkan_renderer::{
-    AccessKind, Adapter, BackendProfile, BinarySemaphore, BinarySemaphoreDescriptor,
-    ColorAttachment, ColorSpace, CommandEncoderDescriptor, CompositeAlphaMode, Device,
-    DeviceDescriptor, DmaBufExportDescriptor, ExportedDmaBufImage, Extent2D, Features,
-    ForeignImageState, FrameToken, Instance, InstanceDescriptor, LoadOp, MemoryAllocator,
-    MemoryAllocatorConfig, PassId, PipelineCache, PipelineCacheDescriptor, PipelineStages,
-    PowerPreference, PresentMode, PresentStatus, Queue, Rect2D, RenderGraph, RenderGraphImageState,
-    RenderPass, RenderingDescriptor, RequestAdapterOptions, ResolveMode, ResourceId, ResourceKind,
-    ResourceState, ResourceUse, StoreOp, Surface, SurfaceConfiguration,
-    SurfaceConfigurationRequest, SurfaceFormat, SurfaceTransform, Swapchain, SwapchainDescriptor,
-    TextureFormat, TextureLayout, TextureUsages, UploadBelt, UploadBeltDescriptor, Viewport,
+    AccessKind, Adapter, BackendProfile, BarrierBatch, BinarySemaphore, BinarySemaphoreDescriptor,
+    ColorAttachment, CommandEncoderDescriptor, CompiledGraph, Device, DeviceDescriptor,
+    DmaBufExportDescriptor, ExportedDmaBufImage, Extent2D, Features, ForeignImageState, FrameToken,
+    Instance, InstanceDescriptor, LoadOp, MemoryAllocator, MemoryAllocatorConfig, PassId,
+    PipelineCache, PipelineCacheDescriptor, PipelineStages, PowerPreference, PresentStatus, Queue,
+    Rect2D, RenderGraph, RenderGraphImageState, RenderPass, RenderingDescriptor,
+    RequestAdapterOptions, ResolveMode, ResourceId, ResourceKind, ResourceState, ResourceUse,
+    StoreOp, Surface, Swapchain, SwapchainDescriptor, TextureFormat, TextureLayout, TextureUsages,
+    UploadBelt, UploadBeltDescriptor, Viewport,
 };
 
 use crate::IconFrame;
@@ -19,12 +17,16 @@ use crate::TextFrame;
 use crate::ui::render::quad::QuadVertex;
 use crate::vulkan_color::{VulkanColorRenderer, VulkanColorStream};
 use crate::vulkan_frame::{
-    FrameVertexBuffer, TensorFilesFrameSemantics, compile_frame_barriers, require_direct_frame_plan,
+    DirectFramePlanCache, FrameBarrierCache, FrameVertexBuffer, TensorFilesFrameSemantics,
 };
 use crate::vulkan_icon::VulkanIconRenderer;
 use crate::vulkan_rect::{NativeFrameLayerRefs, VulkanRectRenderer, VulkanRectStream};
 use crate::vulkan_text::VulkanTextRenderer;
 use crate::windowing::{ActiveEventLoop, PhysicalSize, Window};
+
+#[path = "vulkan_state/surface.rs"]
+mod surface;
+use surface::{choose_surface_configuration, create_present_semaphores};
 
 const FRAME_SLOTS: usize = 3;
 const EXPORTED_IMAGE: ResourceId = ResourceId(1);
@@ -42,7 +44,14 @@ pub(crate) struct PresentLayers<'a> {
     pub(crate) layers: NativeFrameLayerRefs<'a>,
     pub(crate) icons: &'a mut IconFrame,
     pub(crate) text: &'a mut TextFrame,
+    pub(crate) colors_are_overlay: bool,
     pub(crate) semantics: TensorFilesFrameSemantics,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum VulkanPresentOutcome {
+    Presented,
+    RetryRequired,
 }
 
 /// Persistent native Vulkan renderer. It owns one complete logical device and
@@ -64,6 +73,12 @@ pub(crate) struct VulkanState {
     overlay_rect_stream: VulkanRectStream,
     color_stream: VulkanColorStream,
     upload_belt: UploadBelt,
+    frame_encoder: CommandEncoderDescriptor,
+    export_encoder: CommandEncoderDescriptor,
+    frame_plan: DirectFramePlanCache,
+    frame_barriers: FrameBarrierCache,
+    export_release_graph: CompiledGraph,
+    export_release_barrier: BarrierBatch,
     frame_slots: Vec<FrameSlot>,
     present_complete: Vec<BinarySemaphore>,
     initialized_images: Vec<bool>,
@@ -104,6 +119,44 @@ impl VulkanState {
                 ..DeviceDescriptor::default()
             })
             .map_err(|error| format!("request Vulkan device: {error}"))?;
+        let allocator = device
+            .create_memory_allocator(MemoryAllocatorConfig {
+                device_block_size: 8 * 1024 * 1024,
+                image_block_size: 32 * 1024 * 1024,
+                upload_block_size: 4 * 1024 * 1024,
+                readback_block_size: 4 * 1024 * 1024,
+                dedicated_threshold: 16 * 1024 * 1024,
+            })
+            .map_err(|error| format!("create Tensor Files Vulkan allocator: {error}"))?;
+        Self::from_shared_device(window, instance, adapter, surface, device, queue, allocator)
+    }
+
+    pub(crate) fn new_shared(window: Arc<Window>, shared: &Self) -> Result<Self, String> {
+        let host = window.surface_handle();
+        let instance = shared._instance.clone();
+        let surface = instance
+            .create_surface(Arc::new(host))
+            .map_err(|error| format!("create shared Vulkan Wayland surface: {error}"))?;
+        Self::from_shared_device(
+            window,
+            instance,
+            shared.adapter.clone(),
+            surface,
+            shared.device.clone(),
+            shared.queue.clone(),
+            shared.allocator.clone(),
+        )
+    }
+
+    fn from_shared_device(
+        window: Arc<Window>,
+        instance: Instance,
+        adapter: Adapter,
+        surface: Surface,
+        device: Device,
+        queue: Queue,
+        allocator: MemoryAllocator,
+    ) -> Result<Self, String> {
         let configuration = choose_surface_configuration(
             &adapter,
             &surface,
@@ -120,15 +173,6 @@ impl VulkanState {
                 },
             )
             .map_err(|error| format!("create Vulkan swapchain: {error}"))?;
-        let allocator = device
-            .create_memory_allocator(MemoryAllocatorConfig {
-                device_block_size: 8 * 1024 * 1024,
-                image_block_size: 32 * 1024 * 1024,
-                upload_block_size: 4 * 1024 * 1024,
-                readback_block_size: 4 * 1024 * 1024,
-                dedicated_threshold: 16 * 1024 * 1024,
-            })
-            .map_err(|error| format!("create Tensor Files Vulkan allocator: {error}"))?;
         let pipeline_cache = device
             .create_pipeline_cache(&PipelineCacheDescriptor {
                 label: Some("tensor-files-vulkan-pipeline-cache".into()),
@@ -157,6 +201,9 @@ impl VulkanState {
             .create_stream(&allocator, "tensor-files-vulkan-overlay-analytic-rects")?;
         let color_stream =
             color_renderer.create_stream(&allocator, "tensor-files-vulkan-color-vertices")?;
+        let queue_family = device.device_info().queues.graphics;
+        let frame_barriers = FrameBarrierCache::new(queue_family)?;
+        let export_release_graph = compile_export_release_graph(queue_family)?;
         let upload_belt = device
             .create_upload_belt(
                 &allocator,
@@ -201,6 +248,16 @@ impl VulkanState {
             overlay_rect_stream,
             color_stream,
             upload_belt,
+            frame_encoder: CommandEncoderDescriptor {
+                label: Some("tensor-files-vulkan-frame".into()),
+            },
+            export_encoder: CommandEncoderDescriptor {
+                label: Some("tensor-files-vulkan-dnd-preview".into()),
+            },
+            frame_plan: DirectFramePlanCache::default(),
+            frame_barriers,
+            export_release_graph,
+            export_release_barrier: BarrierBatch::with_capacity(0, 1),
             frame_slots,
             present_complete,
             initialized_images,
@@ -221,6 +278,10 @@ impl VulkanState {
 
     pub(crate) fn icon_resident_index(&self) -> crate::IconGpuResidentIndex {
         self.icon_renderer.resident_index()
+    }
+
+    pub(crate) fn icon_resident_lookup(&self) -> &dyn crate::IconGpuResidentLookup {
+        &self.icon_renderer
     }
 
     pub(crate) fn external_memory_dma_buf_supported(&self) -> bool {
@@ -258,15 +319,9 @@ impl VulkanState {
             })
             .map_err(|error| format!("create Vulkan drag-preview dma-buf: {error}"))?;
         self.set_render_format(format)?;
-        let queue_family = self.device.device_info().queues.graphics;
         let mut uploads = self
             .upload_belt
-            .begin(
-                &self.queue,
-                &CommandEncoderDescriptor {
-                    label: Some("tensor-files-vulkan-dnd-preview".into()),
-                },
-            )
+            .begin(&self.queue, &self.export_encoder)
             .map_err(|error| format!("begin Vulkan drag-preview uploads: {error}"))?;
         let color_vertex_uploaded = self.color_stream.upload(&mut uploads, colors)?;
         let base_rect_upload = self
@@ -275,13 +330,9 @@ impl VulkanState {
         let overlay_rect_upload = self
             .overlay_rect_stream
             .upload(&mut uploads, layers.overlay_rects)?;
-        let text_vertex_uploaded = self.text_renderer.upload(
-            &self.allocator,
-            &mut uploads,
-            text,
-            self.last_submission,
-            queue_family,
-        )?;
+        let text_vertex_uploaded =
+            self.text_renderer
+                .upload(&self.allocator, &mut uploads, text, self.last_submission)?;
         let icon_vertex_uploaded = self.icon_renderer.upload(
             &self.device,
             &self.allocator,
@@ -289,50 +340,41 @@ impl VulkanState {
             icons,
             self.last_submission,
         )?;
-        let mut vertex_buffers = Vec::with_capacity(5);
-        if let Some(buffer) = self.color_stream.vertex_buffer() {
-            vertex_buffers.push(FrameVertexBuffer {
-                buffer,
+        let vertex_buffers = [
+            FrameVertexBuffer {
+                buffer: self.color_stream.buffer(),
                 uploaded: color_vertex_uploaded,
-            });
-        }
-        if let Some(buffer) = self.base_rect_stream.vertex_buffer() {
-            vertex_buffers.push(FrameVertexBuffer {
-                buffer,
+            },
+            FrameVertexBuffer {
+                buffer: self.base_rect_stream.buffer(),
                 uploaded: base_rect_upload.bytes != 0,
-            });
-        }
-        if let Some(buffer) = self.overlay_rect_stream.vertex_buffer() {
-            vertex_buffers.push(FrameVertexBuffer {
-                buffer,
+            },
+            FrameVertexBuffer {
+                buffer: self.overlay_rect_stream.buffer(),
                 uploaded: overlay_rect_upload.bytes != 0,
-            });
-        }
-        if let Some(buffer) = self.text_renderer.vertex_buffer() {
-            vertex_buffers.push(FrameVertexBuffer {
-                buffer,
+            },
+            FrameVertexBuffer {
+                buffer: self.text_renderer.buffer(),
                 uploaded: text_vertex_uploaded,
-            });
-        }
-        if let Some(buffer) = self.icon_renderer.vertex_buffer() {
-            vertex_buffers.push(FrameVertexBuffer {
-                buffer,
+            },
+            FrameVertexBuffer {
+                buffer: self.icon_renderer.buffer(),
                 uploaded: icon_vertex_uploaded,
-            });
-        }
-        let barriers = compile_frame_barriers(
-            exported.resource_binding(),
-            false,
-            &vertex_buffers,
-            queue_family,
-        )?;
-        let release_graph = compile_export_release_graph(queue_family)?;
-        let bindings = BTreeMap::from([(EXPORTED_IMAGE, exported.resource_binding())]);
-        let release = release_graph
-            .barrier_batch_before(EXPORT_RELEASE, &bindings)
+            },
+        ];
+        let (before_render, _) =
+            self.frame_barriers
+                .resolve(exported.resource_binding(), false, &vertex_buffers)?;
+        let release_bindings = [(EXPORTED_IMAGE, exported.resource_binding())];
+        self.export_release_graph
+            .fill_barrier_batch_before_from_slice(
+                EXPORT_RELEASE,
+                &release_bindings,
+                &mut self.export_release_barrier,
+            )
             .map_err(|error| format!("resolve Vulkan drag-preview release barrier: {error}"))?;
         let encoder = uploads.encoder_mut();
-        unsafe { encoder.pipeline_barrier(&barriers.before_render) };
+        unsafe { encoder.pipeline_barrier(before_render) };
         encoder.retain_resource(&exported);
         let color_attachments = [Some(ColorAttachment {
             view: exported.as_attachment(),
@@ -380,7 +422,7 @@ impl VulkanState {
                 .draw(&mut rendering, &self.overlay_rect_stream)?;
             self.icon_renderer.draw_overlay(&mut rendering)?;
             rendering.end();
-            encoder.pipeline_barrier(&release);
+            encoder.pipeline_barrier(&self.export_release_barrier);
         }
         let frame = uploads
             .submit(&self.queue, &[])
@@ -429,17 +471,18 @@ impl VulkanState {
         event_loop: &ActiveEventLoop,
         window: &Window,
         frame: PresentLayers<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<VulkanPresentOutcome, String> {
         let PresentLayers {
             clear,
             colors,
             layers,
             icons,
             text,
+            colors_are_overlay,
             semantics,
         } = frame;
         self.set_render_format(self.swapchain.configuration().format)?;
-        let _frame_plan = require_direct_frame_plan(
+        self.frame_plan.require(
             self.swapchain.configuration().extent,
             self.swapchain.configuration().format,
             self.swapchain.configuration().usage,
@@ -480,15 +523,9 @@ impl VulkanState {
         };
         let image_index = acquired.index() as usize;
         let acquire_status = acquired.status();
-        let queue_family = self.device.device_info().queues.graphics;
         let mut uploads = self
             .upload_belt
-            .begin(
-                &self.queue,
-                &CommandEncoderDescriptor {
-                    label: Some("tensor-files-vulkan-frame".into()),
-                },
-            )
+            .begin(&self.queue, &self.frame_encoder)
             .map_err(|error| format!("begin Vulkan frame uploads: {error}"))?;
         let base_rect_upload = self
             .base_rect_stream
@@ -497,13 +534,9 @@ impl VulkanState {
             .overlay_rect_stream
             .upload(&mut uploads, layers.overlay_rects)?;
         let color_vertex_uploaded = self.color_stream.upload(&mut uploads, colors)?;
-        let text_vertex_uploaded = self.text_renderer.upload(
-            &self.allocator,
-            &mut uploads,
-            text,
-            self.last_submission,
-            queue_family,
-        )?;
+        let text_vertex_uploaded =
+            self.text_renderer
+                .upload(&self.allocator, &mut uploads, text, self.last_submission)?;
         let icon_vertex_uploaded = self.icon_renderer.upload(
             &self.device,
             &self.allocator,
@@ -511,45 +544,35 @@ impl VulkanState {
             icons,
             self.last_submission,
         )?;
-        let mut vertex_buffers = Vec::with_capacity(5);
-        if let Some(buffer) = self.color_stream.vertex_buffer() {
-            vertex_buffers.push(FrameVertexBuffer {
-                buffer,
+        let vertex_buffers = [
+            FrameVertexBuffer {
+                buffer: self.color_stream.buffer(),
                 uploaded: color_vertex_uploaded,
-            });
-        }
-        if let Some(buffer) = self.base_rect_stream.vertex_buffer() {
-            vertex_buffers.push(FrameVertexBuffer {
-                buffer,
+            },
+            FrameVertexBuffer {
+                buffer: self.base_rect_stream.buffer(),
                 uploaded: base_rect_upload.bytes != 0,
-            });
-        }
-        if let Some(buffer) = self.overlay_rect_stream.vertex_buffer() {
-            vertex_buffers.push(FrameVertexBuffer {
-                buffer,
+            },
+            FrameVertexBuffer {
+                buffer: self.overlay_rect_stream.buffer(),
                 uploaded: overlay_rect_upload.bytes != 0,
-            });
-        }
-        if let Some(buffer) = self.text_renderer.vertex_buffer() {
-            vertex_buffers.push(FrameVertexBuffer {
-                buffer,
+            },
+            FrameVertexBuffer {
+                buffer: self.text_renderer.buffer(),
                 uploaded: text_vertex_uploaded,
-            });
-        }
-        if let Some(buffer) = self.icon_renderer.vertex_buffer() {
-            vertex_buffers.push(FrameVertexBuffer {
-                buffer,
+            },
+            FrameVertexBuffer {
+                buffer: self.icon_renderer.buffer(),
                 uploaded: icon_vertex_uploaded,
-            });
-        }
-        let barriers = compile_frame_barriers(
+            },
+        ];
+        let (before_render, before_present) = self.frame_barriers.resolve(
             acquired.resource_binding(),
             self.initialized_images[image_index],
             &vertex_buffers,
-            queue_family,
         )?;
         let encoder = uploads.encoder_mut();
-        unsafe { encoder.pipeline_barrier(&barriers.before_render) };
+        unsafe { encoder.pipeline_barrier(before_render) };
         let color_attachments = [Some(ColorAttachment {
             view: acquired.as_attachment(),
             layout: TextureLayout::ColorAttachment,
@@ -593,15 +616,22 @@ impl VulkanState {
                 .map_err(|error| format!("set Vulkan scissor: {error}"))?;
             self.rect_renderer
                 .draw(&mut rendering, &self.base_rect_stream)?;
-            self.color_renderer
-                .draw(&mut rendering, &self.color_stream)?;
+            if !colors_are_overlay {
+                self.color_renderer
+                    .draw(&mut rendering, &self.color_stream)?;
+            }
             self.icon_renderer.draw_content(&mut rendering)?;
-            self.text_renderer.draw(&mut rendering)?;
+            self.text_renderer.draw_content(&mut rendering)?;
+            if colors_are_overlay {
+                self.color_renderer
+                    .draw(&mut rendering, &self.color_stream)?;
+            }
             self.rect_renderer
                 .draw(&mut rendering, &self.overlay_rect_stream)?;
+            self.text_renderer.draw_overlay(&mut rendering)?;
             self.icon_renderer.draw_overlay(&mut rendering)?;
             rendering.end();
-            encoder.pipeline_barrier(&barriers.before_present);
+            encoder.pipeline_barrier(before_present);
         }
         let acquire_wait = self.frame_slots[slot_index]
             .acquire
@@ -620,8 +650,7 @@ impl VulkanState {
             Ok(status) => status,
             Err(error) if error.is_surface_out_of_date() => {
                 self.reconfigure(window.surface_size())?;
-                window.request_redraw();
-                return Ok(());
+                return Ok(VulkanPresentOutcome::RetryRequired);
             }
             Err(error) => return Err(format!("present Vulkan frame: {error}")),
         };
@@ -632,7 +661,7 @@ impl VulkanState {
         {
             self.reconfigure(window.surface_size())?;
         }
-        Ok(())
+        Ok(VulkanPresentOutcome::Presented)
     }
 
     fn reconfigure(&mut self, size: PhysicalSize<u32>) -> Result<(), String> {
@@ -721,77 +750,4 @@ fn compile_export_release_graph(
     graph
         .compile()
         .map_err(|error| format!("compile Vulkan dma-buf export graph: {error}"))
-}
-
-fn choose_surface_configuration(
-    adapter: &Adapter,
-    surface: &Surface,
-    features: vulkan_renderer::Features,
-    size: PhysicalSize<u32>,
-) -> Result<SurfaceConfiguration, String> {
-    let capabilities = adapter
-        .surface_capabilities(surface)
-        .map_err(|error| format!("query Vulkan surface capabilities: {error}"))?;
-    let desired_image_count =
-        preferred_image_count(capabilities.min_image_count, capabilities.max_image_count);
-    let formats = [
-        SurfaceFormat::new(TextureFormat::Bgra8Unorm, ColorSpace::SrgbNonlinear),
-        SurfaceFormat::new(TextureFormat::Bgra8Srgb, ColorSpace::SrgbNonlinear),
-        SurfaceFormat::new(TextureFormat::Rgba8Unorm, ColorSpace::SrgbNonlinear),
-    ];
-    SurfaceConfiguration::choose(
-        &capabilities,
-        features,
-        SurfaceConfigurationRequest {
-            width: size.width.max(1),
-            height: size.height.max(1),
-            usage: TextureUsages::COLOR_ATTACHMENT
-                | (capabilities.supported_usage & TextureUsages::COPY_SOURCE),
-            formats: &formats,
-            present_modes: &[PresentMode::FifoLatestReady, PresentMode::Fifo],
-            composite_alpha: &[
-                CompositeAlphaMode::PreMultiplied,
-                CompositeAlphaMode::PostMultiplied,
-                CompositeAlphaMode::Opaque,
-                CompositeAlphaMode::Inherit,
-            ],
-            pre_transforms: &[SurfaceTransform::Identity],
-            desired_image_count,
-        },
-    )
-    .map_err(|error| format!("choose Vulkan surface configuration: {error}"))
-}
-
-fn create_present_semaphores(
-    device: &Device,
-    image_count: usize,
-) -> Result<Vec<BinarySemaphore>, String> {
-    (0..image_count)
-        .map(|index| {
-            device.create_binary_semaphore(&BinarySemaphoreDescriptor {
-                label: Some(format!("tensor-files-vulkan-present-{index}")),
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("create Vulkan present semaphores: {error}"))
-}
-
-fn preferred_image_count(minimum: u32, maximum: Option<u32>) -> u32 {
-    maximum.map_or_else(
-        || minimum.saturating_add(1),
-        |maximum| minimum.saturating_add(1).min(maximum),
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::preferred_image_count;
-
-    #[test]
-    fn image_count_prefers_one_image_beyond_the_surface_minimum() {
-        assert_eq!(preferred_image_count(2, None), 3);
-        assert_eq!(preferred_image_count(2, Some(4)), 3);
-        assert_eq!(preferred_image_count(2, Some(2)), 2);
-        assert_eq!(preferred_image_count(u32::MAX, None), u32::MAX);
-    }
 }

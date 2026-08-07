@@ -14,7 +14,7 @@ impl TensorFilesApp {
         self.apply_window_action_outcome(ShellActionOutcome::redraw_if(changed));
     }
 
-    pub(crate) fn add_context_target_to_places(&mut self, event_loop: &ActiveEventLoop) {
+    pub(crate) fn add_context_target_to_places(&mut self, _event_loop: &ActiveEventLoop) {
         let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
             return;
         };
@@ -22,9 +22,7 @@ impl TensorFilesApp {
             .scene
             .add_context_target_to_places(&default_user_places_path(), size)
         {
-            Ok(true) => {
-                self.apply_action_outcome(event_loop, ShellActionOutcome::Present("add-place"))
-            }
+            Ok(true) => self.apply_window_action_outcome(ShellActionOutcome::Present("add-place")),
             Ok(false) => self.apply_window_action_outcome(ShellActionOutcome::Redraw),
             Err(error) => {
                 tensor_files_log!("[tensor-files] add-place-error {error}");
@@ -38,7 +36,7 @@ impl TensorFilesApp {
         }
     }
 
-    pub(crate) fn remove_context_place(&mut self, event_loop: &ActiveEventLoop) {
+    pub(crate) fn remove_context_place(&mut self, _event_loop: &ActiveEventLoop) {
         let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
             return;
         };
@@ -47,7 +45,7 @@ impl TensorFilesApp {
             .remove_context_place(&default_user_places_path(), size)
         {
             Ok(true) => {
-                self.apply_action_outcome(event_loop, ShellActionOutcome::Present("remove-place"))
+                self.apply_window_action_outcome(ShellActionOutcome::Present("remove-place"))
             }
             Ok(false) => self.apply_window_action_outcome(ShellActionOutcome::Redraw),
             Err(error) => {

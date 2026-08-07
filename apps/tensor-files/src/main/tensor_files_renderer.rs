@@ -3,12 +3,12 @@ use std::time::Instant;
 
 use crate::ui::render::quad::QuadVertex;
 use crate::vulkan_rect::NativeFrameLayers;
-use crate::vulkan_state::{PresentLayers, VulkanState};
+use crate::vulkan_state::{PresentLayers, VulkanPresentOutcome, VulkanState};
 use crate::windowing::{ActiveEventLoop, PhysicalSize, Window, WindowId};
 use crate::{
     DetachedDialogRenderRequest, DialogRenderViewport, FolderPreviewCacheStats, IconEngine,
-    IconFrameBuilder, IconFrameConfig, IconFrameResources, ShellRenderOutcome, ShellScene,
-    TextEngine, TextFrameBuilder, TextFrameResources,
+    IconFrameBuilder, IconFrameConfig, IconFrameResources, ShellFrameProjectionStaging,
+    ShellRenderOutcome, ShellScene, TextEngine, TextFrameBuilder, TextFrameResources,
 };
 
 /// Tensor Files's product-level retained renderer state.
@@ -25,6 +25,9 @@ pub(crate) struct TensorFilesRenderer {
     pub(crate) rendered_view_switches: u64,
     pub(crate) render_work_pending: bool,
     drag_preview_dmabuf_plan: Option<crate::ui::render::dmabuf::DmabufExportPlan>,
+    projection_staging: ShellFrameProjectionStaging,
+    colors_staging: Vec<QuadVertex>,
+    native_layers_staging: NativeFrameLayers,
 }
 
 #[derive(Clone, Copy)]
@@ -37,6 +40,15 @@ pub(crate) struct VisibleRoleRenderPolicy {
 impl TensorFilesRenderer {
     pub(crate) fn new(window: Arc<Window>) -> Result<Self, String> {
         let gpu = VulkanState::new(window)?;
+        Self::from_gpu(gpu)
+    }
+
+    pub(crate) fn new_shared(window: Arc<Window>, shared: &Self) -> Result<Self, String> {
+        let gpu = VulkanState::new_shared(window, &shared.gpu)?;
+        Self::from_gpu(gpu)
+    }
+
+    fn from_gpu(gpu: VulkanState) -> Result<Self, String> {
         let size = gpu.size();
         Ok(Self {
             gpu,
@@ -47,6 +59,9 @@ impl TensorFilesRenderer {
             rendered_view_switches: 0,
             render_work_pending: false,
             drag_preview_dmabuf_plan: None,
+            projection_staging: ShellFrameProjectionStaging::default(),
+            colors_staging: Vec::with_capacity(192),
+            native_layers_staging: NativeFrameLayers::with_capacities(192, 0),
         })
     }
 
@@ -87,8 +102,8 @@ impl TensorFilesRenderer {
             icons,
             text,
         );
-        self.text_engine.staging_pixels = std::mem::take(&mut text.pixels);
-        self.text_engine.staging_pixels.clear();
+        self.text_engine.recycle_frame(text);
+        self.icon_engine.recycle_frame(icons);
         self.text_engine.trim_caches();
         result
     }
@@ -148,25 +163,31 @@ impl TensorFilesRenderer {
         visible_roles: VisibleRoleRenderPolicy,
         force_log: bool,
     ) -> ShellRenderOutcome {
-        let started_at = Instant::now();
-        let view_mode = scene.active_view_mode().as_str();
+        let log_frame = crate::tensor_files_frame_log_all_enabled()
+            || (force_log && crate::tensor_files_log_enabled());
+        let started_at = log_frame.then(Instant::now);
+        let view_mode = log_frame.then(|| scene.active_view_mode().as_str());
         match self.render_inner(window, event_loop, scene, reason, visible_roles) {
-            Ok(()) => {
-                if crate::tensor_files_frame_log_all_enabled()
-                    || (force_log && crate::tensor_files_log_enabled())
-                {
+            Ok(VulkanPresentOutcome::Presented) => {
+                if log_frame {
                     eprintln!(
                         "[tensor-files-vulkan] frame={} reason={} view={} size={}x{} work_pending={} render_us={}",
                         self.frame_count,
                         reason,
-                        view_mode,
+                        view_mode.unwrap_or("unknown"),
                         self.size.width,
                         self.size.height,
                         self.render_work_pending as u8,
-                        started_at.elapsed().as_micros(),
+                        started_at
+                            .map(|started_at| started_at.elapsed().as_micros())
+                            .unwrap_or_default(),
                     );
                 }
                 ShellRenderOutcome::Presented
+            }
+            Ok(VulkanPresentOutcome::RetryRequired) => {
+                window.request_redraw();
+                ShellRenderOutcome::NotReady
             }
             Err(error) => {
                 eprintln!("[tensor-files-vulkan] frame failed reason={reason}: {error}");
@@ -183,7 +204,7 @@ impl TensorFilesRenderer {
         scene: &mut ShellScene,
         reason: &'static str,
         visible_roles: VisibleRoleRenderPolicy,
-    ) -> Result<(), String> {
+    ) -> Result<VulkanPresentOutcome, String> {
         let role_updates_paused = visible_roles.paused;
         let icon_size_update_pending = visible_roles.icon_size_update_pending;
         let icon_work_reason =
@@ -195,17 +216,20 @@ impl TensorFilesRenderer {
         // gated by the Dolphin-compatible visible-role timers below.
         let _ = scene.drain_metadata_role_results();
         let _ = scene.drain_folder_preview_role_results();
-        let mut layouts = scene.prepare_frame_projection_layouts(self.size);
+        if !role_updates_paused {
+            let _ = self.icon_engine.resolver.drain_results();
+        }
+        let projection_staging = std::mem::take(&mut self.projection_staging);
+        let mut layouts =
+            scene.prepare_frame_projection_layouts_with_staging(self.size, projection_staging);
         scene.update_visible_slot_pools_for_projection_layouts(&mut layouts);
         let mut projections = scene.pane_projections_from_layouts(layouts);
         if resolve_visible_exact {
             let (mut stats, results) =
                 scene.resolve_visible_metadata_roles_synchronously(projections.projections());
             if !results.is_empty() {
-                drop(projections);
+                let layouts = projections.into_prepared_layouts();
                 stats.applied = scene.apply_synchronous_metadata_role_results(results);
-                let mut layouts = scene.prepare_frame_projection_layouts(self.size);
-                scene.update_visible_slot_pools_for_projection_layouts(&mut layouts);
                 projections = scene.pane_projections_from_layouts(layouts);
             }
             if crate::tensor_files_log_enabled() && (stats.visible > 0 || stats.applied > 0) {
@@ -229,19 +253,21 @@ impl TensorFilesRenderer {
                 true,
             );
         }
-        let mut layers = scene.build_native_frame_layers(self.size, projections.projections());
+        let mut layers = std::mem::take(&mut self.native_layers_staging);
+        scene.fill_native_frame_layers(&mut layers, self.size, projections.projections());
 
         self.text_engine.begin_frame();
-        let text_pixels = self.text_engine.take_staging_pixels();
-        let mut text_builder = TextFrameBuilder::new(
+        let text_staging = self.text_engine.take_frame_staging();
+        let mut text_builder = TextFrameBuilder::new_with_staging(
             TextFrameResources::from_engine(&mut self.text_engine),
             self.size,
             scene.ui_scale(),
-            text_pixels,
+            text_staging,
         );
-        let resident_icons = self.gpu.icon_resident_index();
-        let mut icon_builder = IconFrameBuilder::new(
-            IconFrameResources::from_engine(&mut self.icon_engine, resident_icons),
+        let resident_icons = self.gpu.icon_resident_lookup();
+        let icon_staging = self.icon_engine.take_frame_staging();
+        let mut icon_builder = IconFrameBuilder::new_with_staging(
+            IconFrameResources::from_engine_borrowed(&mut self.icon_engine, resident_icons),
             IconFrameConfig {
                 surface_size: self.size,
                 ui_scale: scene.ui_scale(),
@@ -255,6 +281,7 @@ impl TensorFilesRenderer {
                     ready_bytes: scene.folder_preview_roles.borrow().ready_bytes(),
                 },
             },
+            icon_staging,
         );
         scene.push_native_frame_text(&mut text_builder, projections.projections(), self.size);
         scene.push_native_location_bar_carets(
@@ -269,11 +296,12 @@ impl TensorFilesRenderer {
             self.size,
             text_builder.file_manager_midline_shift(),
         );
-        let mut colors = Vec::with_capacity(192);
+        let mut colors = std::mem::take(&mut self.colors_staging);
+        colors.clear();
         scene.push_native_overlays(&mut colors, &mut text_builder, &mut icon_builder, self.size);
         let mut text_frame = text_builder.finish();
         let mut icon_frame = icon_builder.finish();
-        drop(projections);
+        self.projection_staging = projections.recycle();
 
         self.render_work_pending = text_frame.stats.deferred > 0
             || icon_frame.stats.deferred > 0
@@ -282,7 +310,7 @@ impl TensorFilesRenderer {
         if crate::tensor_files_log_enabled() {
             log_frame_stats(&icon_frame.stats, &text_frame.stats);
         }
-        self.gpu.present_layers(
+        let present_result = self.gpu.present_layers(
             event_loop,
             window,
             PresentLayers {
@@ -291,19 +319,26 @@ impl TensorFilesRenderer {
                 layers: layers.as_refs(),
                 icons: &mut icon_frame,
                 text: &mut text_frame,
+                colors_are_overlay: true,
                 semantics: crate::vulkan_frame::TensorFilesFrameSemantics::direct_ui(),
             },
-        )?;
-        self.text_engine.staging_pixels = std::mem::take(&mut text_frame.pixels);
-        self.text_engine.staging_pixels.clear();
+        );
+        self.native_layers_staging = layers;
+        self.text_engine.recycle_frame(&mut text_frame);
+        self.icon_engine.recycle_frame(&mut icon_frame);
+        colors.clear();
+        self.colors_staging = colors;
         self.text_engine.trim_caches();
+        let present_outcome = present_result?;
         self.size = self.gpu.size();
         self.frame_count = self.gpu.frame_count();
-        self.rendered_view_switches = scene.view_switches;
+        if present_outcome == VulkanPresentOutcome::Presented {
+            self.rendered_view_switches = scene.view_switches;
+        }
         if self.render_work_pending {
             window.request_redraw();
         }
-        Ok(())
+        Ok(present_outcome)
     }
 
     fn render_detached_dialog(
@@ -316,18 +351,21 @@ impl TensorFilesRenderer {
             PhysicalSize<u32>,
         ),
     ) -> ShellRenderOutcome {
-        let mut colors = Vec::with_capacity(192);
+        let mut colors = std::mem::take(&mut self.colors_staging);
+        colors.clear();
+        let _ = self.icon_engine.resolver.drain_results();
         self.text_engine.begin_frame();
-        let text_pixels = self.text_engine.take_staging_pixels();
-        let mut text_builder = TextFrameBuilder::new(
+        let text_staging = self.text_engine.take_frame_staging();
+        let mut text_builder = TextFrameBuilder::new_with_staging(
             TextFrameResources::from_engine(&mut self.text_engine),
             self.size,
             request.viewport.scale,
-            text_pixels,
+            text_staging,
         );
-        let resident_icons = self.gpu.icon_resident_index();
-        let mut icon_builder = IconFrameBuilder::new(
-            IconFrameResources::from_engine(&mut self.icon_engine, resident_icons),
+        let resident_icons = self.gpu.icon_resident_lookup();
+        let icon_staging = self.icon_engine.take_frame_staging();
+        let mut icon_builder = IconFrameBuilder::new_with_staging(
+            IconFrameResources::from_engine_borrowed(&mut self.icon_engine, resident_icons),
             IconFrameConfig {
                 surface_size: self.size,
                 ui_scale: request.viewport.scale,
@@ -336,6 +374,7 @@ impl TensorFilesRenderer {
                 icon_size_update_pending: false,
                 folder_preview_cache: FolderPreviewCacheStats::default(),
             },
+            icon_staging,
         );
         paint(
             &mut colors,
@@ -346,7 +385,8 @@ impl TensorFilesRenderer {
         let mut text_frame = text_builder.finish();
         let mut icon_frame = icon_builder.finish();
         self.render_work_pending = text_frame.stats.deferred > 0 || icon_frame.stats.deferred > 0;
-        let layers = NativeFrameLayers::default();
+        let mut layers = std::mem::take(&mut self.native_layers_staging);
+        layers.clear();
         let result = self.gpu.present_layers(
             request.event_loop,
             request.window,
@@ -356,19 +396,27 @@ impl TensorFilesRenderer {
                 layers: layers.as_refs(),
                 icons: &mut icon_frame,
                 text: &mut text_frame,
+                colors_are_overlay: false,
                 semantics: crate::vulkan_frame::TensorFilesFrameSemantics::direct_ui(),
             },
         );
-        self.text_engine.staging_pixels = std::mem::take(&mut text_frame.pixels);
-        self.text_engine.staging_pixels.clear();
+        self.native_layers_staging = layers;
+        self.text_engine.recycle_frame(&mut text_frame);
+        self.icon_engine.recycle_frame(&mut icon_frame);
+        colors.clear();
+        self.colors_staging = colors;
         self.text_engine.trim_caches();
         match result {
-            Ok(()) => {
+            Ok(VulkanPresentOutcome::Presented) => {
                 self.frame_count = self.gpu.frame_count();
                 if self.render_work_pending {
                     request.window.request_redraw();
                 }
                 ShellRenderOutcome::Presented
+            }
+            Ok(VulkanPresentOutcome::RetryRequired) => {
+                request.window.request_redraw();
+                ShellRenderOutcome::NotReady
             }
             Err(error) => {
                 eprintln!(

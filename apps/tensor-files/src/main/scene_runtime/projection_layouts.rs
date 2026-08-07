@@ -2,32 +2,28 @@ impl ShellScene {
 
     fn pane_projection_from_prepared(
         &self,
-        prepared: ShellPreparedPaneProjection,
+        mut prepared: ShellPreparedPaneProjection,
     ) -> Option<ShellPaneProjection<'_>> {
         let view = self.pane_view(prepared.geometry.kind)?;
         let slots = self.visible_slots.get(prepared.geometry.kind);
-        let visible_items = prepared
-            .visible_items
-            .into_iter()
-            .map(|item| {
-                let slot_id = if item.slot_id != 0 {
-                    item.slot_id
-                } else {
-                    item.path
-                        .as_deref()
-                        .and_then(|path| slots.slot_for_path(path))
-                        .unwrap_or_default()
-                };
-                ShellPaneVisibleItem {
-                    layout: item.layout,
-                    slot_id,
-                }
-            })
-            .collect();
+        for item in &mut prepared.visible_items {
+            debug_assert_eq!(
+                item.entry_index,
+                view.filtered_indexes.get(item.layout.model_index).copied(),
+                "prepared projection cannot cross a structural pane update"
+            );
+            if item.slot_id == 0 {
+                item.slot_id = item
+                    .entry_index
+                    .and_then(|index| view.entries.get(index))
+                    .and_then(|entry| slots.slot_for_entry(entry))
+                    .unwrap_or_default();
+            }
+        }
         Some(ShellPaneProjection {
             view,
             geometry: prepared.geometry,
-            visible_items,
+            visible_items: prepared.visible_items,
             scroll_metrics: prepared.scroll_metrics,
         })
     }
@@ -36,12 +32,24 @@ impl ShellScene {
         &self,
         layouts: ShellPreparedFrameProjectionLayouts,
     ) -> SceneFrameProjections<'_> {
-        let projections = layouts
-            .layouts
-            .into_iter()
-            .filter_map(|prepared| self.pane_projection_from_prepared(prepared))
-            .collect();
-        SceneFrameProjections::new(projections, layouts.layout_us)
+        let ShellPreparedFrameProjectionLayouts {
+            mut layouts,
+            recycled_visible_items,
+        } = layouts;
+        let mut projections = arrayvec::ArrayVec::new();
+        for prepared in layouts.drain(..) {
+            projections.push(
+                self.pane_projection_from_prepared(prepared)
+                    .expect("prepared pane remains open while building frame projections"),
+            );
+        }
+        SceneFrameProjections::new(
+            projections,
+            ShellFrameProjectionStaging {
+                layouts,
+                visible_items: recycled_visible_items,
+            },
+        )
     }
 
     pub(crate) fn update_visible_slot_pools_for_projection_layouts(
@@ -50,16 +58,25 @@ impl ShellScene {
     ) -> ShellVisibleItemSlotStats {
         let mut stats = ShellVisibleItemSlotStats::default();
         let mut prepared_panes = [false; 2];
+        let panes = &self.panes;
+        let visible_slots = &mut self.visible_slots;
         for prepared in &mut layouts.layouts {
             let kind = prepared.geometry.kind;
             prepared_panes[kind.index()] = true;
-            let pool = self.visible_slots.get_mut(kind);
-            let pane_stats = pool.update_visible_item_slots(&mut prepared.visible_items);
+            let Some(pane) = panes.get(kind) else {
+                continue;
+            };
+            let pool = visible_slots.get_mut(kind);
+            let pane_stats = pool.update_visible_item_slots(
+                pane.display_path(),
+                &pane.entries,
+                &mut prepared.visible_items,
+            );
             stats = stats.merged(pane_stats);
         }
         for kind in ShellPaneId::ALL {
             if !prepared_panes[kind.index()] {
-                self.visible_slots.clear(kind);
+                visible_slots.clear(kind);
             }
         }
         self.visible_slot_stats = stats;
@@ -389,19 +406,31 @@ impl ShellScene {
 
     /// Builds structural quad layers independent of glyph-atlas, sampled-icon,
     /// and decode work for the native Vulkan frame.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn build_native_frame_layers(
         &self,
         size: PhysicalSize<u32>,
         projections: &[ShellPaneProjection<'_>],
     ) -> crate::vulkan_rect::NativeFrameLayers {
         let mut layers = crate::vulkan_rect::NativeFrameLayers::with_capacities(192, 0);
+        self.fill_native_frame_layers(&mut layers, size, projections);
+        layers
+    }
+
+    pub(crate) fn fill_native_frame_layers(
+        &self,
+        layers: &mut crate::vulkan_rect::NativeFrameLayers,
+        size: PhysicalSize<u32>,
+        projections: &[ShellPaneProjection<'_>],
+    ) {
+        layers.clear();
         let width = size.width.max(1) as f32;
         let height = size.height.max(1) as f32;
         let Some(slot0_projection) = projections
             .iter()
             .find(|projection| projection.geometry.kind == ShellPaneId::SLOT_0)
         else {
-            return layers;
+            return;
         };
         let paint = ShellPaintPalettes::from_shell_theme(self.theme());
         let theme = paint.shell;
@@ -422,6 +451,7 @@ impl ShellScene {
         self.push_native_app_toolbar(&mut layers.base_rects, size, theme);
         self.push_native_places_chrome(&mut layers.base_rects, size, theme);
         self.push_native_places_rows_chrome(&mut layers.base_rects, size, paint);
+        self.push_native_places_task_area_chrome(&mut layers.base_rects, size, theme);
         if let Some(metrics) = self.split_pane_metrics(size) {
             push_native_rect_fill(
                 &mut layers.base_rects,
@@ -512,7 +542,6 @@ impl ShellScene {
                 size,
             );
         }
-        layers
     }
 
     /// Populates the R8 atlas stage for native Vulkan directly from retained
@@ -527,6 +556,7 @@ impl ShellScene {
     ) {
         let theme = ShellPaintPalettes::from_shell_theme(self.theme()).shell;
         self.push_places_sidebar_text(text, size, theme);
+        self.push_places_task_area_text(text, size, theme);
         for projection in projections {
             self.push_native_location_bar_text(
                 text,
@@ -580,6 +610,50 @@ impl ShellScene {
             theme.divider(),
             size,
         );
+    }
+
+    fn push_native_places_task_area_chrome(
+        &self,
+        instances: &mut Vec<crate::vulkan_rect::VulkanRectInstance>,
+        size: PhysicalSize<u32>,
+        theme: ShellTheme,
+    ) {
+        let Some(rect) = self.places_task_area_rect(size) else {
+            return;
+        };
+        push_native_rounded_rect_fill(
+            instances,
+            rect,
+            rect,
+            self.scale_metric(8.0),
+            theme.field(),
+            size,
+        );
+        push_native_rect_outline(
+            instances,
+            rect,
+            rect,
+            self.scale_metric(8.0),
+            self.scale_metric(1.0).max(1.0),
+            theme.divider(),
+            size,
+        );
+        if let Some(status) = self.task_statuses.front() {
+            let marker = ViewRect {
+                x: rect.x + self.scale_metric(12.0),
+                y: rect.y + self.scale_metric(42.0),
+                width: self.scale_metric(4.0),
+                height: (rect.height - self.scale_metric(56.0)).max(self.scale_metric(18.0)),
+            };
+            push_native_rounded_rect_fill(
+                instances,
+                marker,
+                rect,
+                marker.width * 0.5,
+                theme.task_status_color(status.kind),
+                size,
+            );
+        }
     }
 
     fn push_native_pane_body_border(

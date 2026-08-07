@@ -178,6 +178,18 @@ fn path_index_reuses_entry_name_storage() {
 }
 
 #[test]
+fn local_path_lookup_uses_name_index_without_target_scan() {
+    let mut model = DirectoryModel::for_directory(PathBuf::from("/tmp"));
+    model.replace_listing(
+        PathBuf::from("/tmp"),
+        listing(vec![entry("b.txt", false), entry("a.txt", false)]),
+    );
+
+    assert_eq!(model.index_of_path(Path::new("/tmp/a.txt")), Some(0));
+    assert_eq!(model.index_of_path(Path::new("/tmp/b.txt")), Some(1));
+}
+
+#[test]
 fn item_id_index_survives_metadata_role_updates() {
     let mut model = DirectoryModel::for_directory(PathBuf::from("/tmp"));
     model.replace_listing(

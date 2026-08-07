@@ -79,6 +79,13 @@ Because `default-run` is `tensor-files`, this also starts the current shell:
 cargo run -p tensor-files -- /etc
 ```
 
+## Configuration
+
+Tensor Files reads and atomically updates the typed KDL document at
+`$XDG_CONFIG_HOME/tensor/files.kdl`. Set `TENSOR_FILES_CONFIG` to use another
+path. See [CONFIGURATION.md](../../docs/tensor-files/CONFIGURATION.md) and the
+[complete example](examples/config.kdl).
+
 ## Architecture Notes
 
 - Pane state is routed by stable pane identity and stored through reusable pane

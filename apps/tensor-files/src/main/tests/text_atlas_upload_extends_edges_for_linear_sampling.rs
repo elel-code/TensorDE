@@ -1,6 +1,6 @@
 
     #[test]
-    fn text_atlas_upload_extends_edges_for_linear_sampling() {
+fn text_atlas_upload_extends_edges_for_linear_sampling() {
         let (pixels, width, height) =
             padded_text_atlas_pixels(Arc::from(vec![10, 40, 70, 100]), 2, 2);
 
@@ -11,13 +11,69 @@
         assert_eq!(pixels[3], 40);
         assert_eq!(pixels[(3 * width) as usize], 70);
         assert_eq!(pixels[(3 * width + 3) as usize], 100);
-    }
+}
+
+#[test]
+fn indexed_pending_text_vertices_match_direct_order() {
+    let draw = PendingTextDraw {
+        key: LabelCacheKey {
+            text: Arc::from("entry"),
+            width: 32,
+            height: 12,
+            alignment: LabelAlignment::Center,
+            wrap: LabelWrap::None,
+        },
+        pixels: Arc::from([255_u8]),
+        atlas_upload_required: false,
+        screen: ViewRect {
+            x: 4.0,
+            y: 8.0,
+            width: 32.0,
+            height: 12.0,
+        },
+        rect: ViewRect {
+            x: 4.0,
+            y: 8.0,
+            width: 32.0,
+            height: 12.0,
+        },
+        label_width: 32,
+        label_height: 12,
+        color: TextColor::rgba(255, 255, 255, 255),
+        layer: TextDrawLayer::Content,
+    };
+    let atlas = AtlasRect {
+        x: 2.0,
+        y: 3.0,
+        width: 32.0,
+        height: 12.0,
+    };
+    let direct = text_vertices_for_pending(
+        std::slice::from_ref(&draw),
+        std::slice::from_ref(&atlas),
+        128,
+        64,
+        PhysicalSize::new(128, 64),
+    );
+    let indexed = text_vertices_for_pending_indices(
+        std::slice::from_ref(&draw),
+        &[0],
+        std::slice::from_ref(&atlas),
+        128,
+        64,
+        PhysicalSize::new(128, 64),
+    );
+    assert_eq!(
+        bytemuck::cast_slice::<TextVertex, u8>(&direct),
+        bytemuck::cast_slice::<TextVertex, u8>(&indexed)
+    );
+}
 
     #[test]
     fn text_frame_vertices_sample_inside_atlas_guard() {
         let draw = PendingTextDraw {
             key: LabelCacheKey {
-                text: "alpha".to_string(),
+                text: Arc::from("alpha"),
                 width: 2,
                 height: 2,
                 alignment: LabelAlignment::Center,
@@ -40,6 +96,7 @@
             label_width: 2,
             label_height: 2,
             color: TextColor::rgb(36, 41, 47),
+            layer: TextDrawLayer::Content,
         };
         let atlas = AtlasRect {
             x: 4.0,

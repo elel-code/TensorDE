@@ -83,4 +83,75 @@ impl ShellScene {
             previous_group = Some(place.group);
         }
     }
+
+    fn push_places_task_area_text(
+        &self,
+        text: &mut TextFrameBuilder<'_>,
+        size: PhysicalSize<u32>,
+        theme: ShellTheme,
+    ) {
+        let Some(rect) = self.places_task_area_rect(size) else {
+            return;
+        };
+        let Some(status) = self.task_statuses.front() else {
+            return;
+        };
+        let padding = self.scale_metric(12.0);
+        let marker_gap = self.scale_metric(12.0);
+        let text_x = rect.x + padding + self.scale_metric(4.0) + marker_gap;
+        let text_width = (rect.right() - text_x - padding).max(1.0);
+        text.push_label_aligned_no_wrap(
+            "Tasks",
+            ViewRect {
+                x: rect.x + padding,
+                y: rect.y + self.scale_metric(10.0),
+                width: (rect.width - padding * 2.0).max(1.0),
+                height: self.small_text_line_height(),
+            },
+            rect,
+            theme.section_text(),
+            LabelAlignment::Start,
+        );
+        text.push_label_aligned_no_wrap(
+            &status.label,
+            ViewRect {
+                x: text_x,
+                y: rect.y + self.scale_metric(40.0),
+                width: text_width,
+                height: self.text_line_height(),
+            },
+            rect,
+            theme.primary_text(),
+            LabelAlignment::Start,
+        );
+        text.push_label_aligned_no_wrap(
+            status.detail_label().as_ref(),
+            ViewRect {
+                x: text_x,
+                y: rect.y + self.scale_metric(66.0),
+                width: text_width,
+                height: self.small_text_line_height(),
+            },
+            rect,
+            theme.muted_text(),
+            LabelAlignment::Start,
+        );
+        let summary = format!(
+            "{} | {}",
+            status.kind.label(),
+            count_label(self.task_statuses.len(), "task", "tasks")
+        );
+        text.push_label_aligned_no_wrap(
+            &summary,
+            ViewRect {
+                x: text_x,
+                y: rect.bottom() - self.scale_metric(30.0),
+                width: text_width,
+                height: self.small_text_line_height(),
+            },
+            rect,
+            theme.muted_text(),
+            LabelAlignment::Start,
+        );
+    }
 }

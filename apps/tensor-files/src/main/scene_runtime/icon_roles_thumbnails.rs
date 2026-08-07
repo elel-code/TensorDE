@@ -35,17 +35,9 @@ impl ShellScene {
         item: ShellPaneVisibleItem,
     ) -> Option<PreparedPaneItem> {
         let layout = item.layout;
-        let entry_index = projection
-            .view
-            .filtered_indexes
-            .get(layout.model_index)
-            .copied()?;
+        let entry_index = item.entry_index?;
         projection.view.entries.get(entry_index)?;
-        let entry_path = self.entry_path_for_pane_view(projection.view, entry_index);
-        let (reflow_dx, reflow_dy) = entry_path
-            .as_deref()
-            .and_then(|path| self.item_reflow_offset_for_path(projection.geometry.kind, path))
-            .unwrap_or((0.0, 0.0));
+        let (reflow_dx, reflow_dy) = item.reflow_offset;
         Some(PreparedPaneItem {
             entry_index,
             item_rect: translated_rect(
@@ -213,17 +205,22 @@ impl ShellScene {
                 let Some(entry) = projection.view.entries.get(entry_index) else {
                     continue;
                 };
-                self.enqueue_icon_role_read_ahead(projection.view.path, entry, icon_size);
+                let path = icon_path_for_entry(
+                    &self.visible_slots,
+                    projection.geometry.kind,
+                    projection.view.path,
+                    entry,
+                );
+                self.enqueue_icon_role_read_ahead(path.as_ref(), entry, icon_size);
                 queued = true;
             }
         }
         queued
     }
 
-    fn enqueue_icon_role_read_ahead(&self, directory: &Path, entry: &Entry, icon_size: f32) {
-        let path = directory.join(entry.name.as_ref());
+    fn enqueue_icon_role_read_ahead(&self, path: &Path, entry: &Entry, icon_size: f32) {
         let key = file_icon_path_cache_key_with_stamp(
-            &path,
+            path,
             entry.is_dir,
             entry.mime_type.clone(),
             entry.mime_magic_checked,
@@ -289,25 +286,56 @@ impl ShellScene {
                         alignment: LabelAlignment::Start,
                         wrap: LabelWrap::None,
                     },
+                    TextDrawLayer::Content,
                 );
             }
             ShellViewMode::Details => {
-                text.push_filename_label_aligned_no_wrap_with_layout(
+                let line_height = self.text_line_height();
+                let font_size = (TEXT_FONT_SIZE * line_height / TEXT_LINE_HEIGHT).max(1.0);
+                let display = self.text_hit_tests.borrow_mut().details_filename_display(
                     entry.name.as_ref(),
-                    item.text_rect,
-                    untransformed_text_rect,
-                    item.content_clip,
-                    text_color,
-                    LabelAlignment::Start,
+                    untransformed_text_rect.width,
+                    font_size,
+                    line_height,
+                );
+                text.push_label_aligned_wrapped_with_layout(
+                    display.as_ref(),
+                    TextLabelLayout {
+                        draw: item.text_rect,
+                        layout: untransformed_text_rect,
+                        clip: item.content_clip,
+                    },
+                    TextLabelStyle {
+                        color: text_color,
+                        alignment: LabelAlignment::Start,
+                        wrap: LabelWrap::None,
+                    },
+                    TextDrawLayer::Content,
                 );
             }
             ShellViewMode::Icons => {
-                text.push_filename_label_wrapped_with_layout(
+                let line_height = self.text_line_height();
+                let font_size = (TEXT_FONT_SIZE * line_height / TEXT_LINE_HEIGHT).max(1.0);
+                let display = self.text_hit_tests.borrow_mut().icons_filename_display(
                     entry.name.as_ref(),
-                    item.text_rect,
-                    untransformed_text_rect,
-                    item.content_clip,
-                    text_color,
+                    untransformed_text_rect.width,
+                    FILE_MANAGER_ICONS_MAX_TEXT_LINES,
+                    font_size,
+                    line_height,
+                );
+                text.push_label_aligned_wrapped_with_layout(
+                    display.as_ref(),
+                    TextLabelLayout {
+                        draw: item.text_rect,
+                        layout: untransformed_text_rect,
+                        clip: item.content_clip,
+                    },
+                    TextLabelStyle {
+                        color: text_color,
+                        alignment: LabelAlignment::Center,
+                        wrap: LabelWrap::WordOrGlyph,
+                    },
+                    TextDrawLayer::Content,
                 );
             }
         }
@@ -324,8 +352,9 @@ impl ShellScene {
                 width: self.details_size_width() - self.scale_metric(16.0),
                 height: text_height,
             };
+            let size_label = text.details_size_label_text(entry);
             text.push_label_aligned_no_wrap(
-                &details_size_label(entry),
+                size_label.as_ref(),
                 size_rect,
                 item.content_clip,
                 muted_text,
@@ -342,8 +371,9 @@ impl ShellScene {
                 width: self.details_modified_width() - self.scale_metric(16.0),
                 height: text_height,
             };
+            let modified_label = text.details_modified_label_text(entry.modified_secs);
             text.push_label_aligned_no_wrap(
-                &format_modified_secs(entry.modified_secs),
+                modified_label.as_ref(),
                 modified_rect,
                 item.content_clip,
                 muted_text,

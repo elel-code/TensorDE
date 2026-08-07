@@ -564,7 +564,7 @@ cat > "$tmpdir/layout.log" <<'EOF'
 [tensor-files autosmoke] places action=layout-resize width=320.0 visible=true target_width=320.0 changed=true
 [tensor-files autosmoke] places action=layout-reset width=220.0 visible=true changed=true
 [tensor-files autosmoke] places action=layout-restore width=220.0 visible=true changed=false
-[tensor-files autosmoke] places action=layout-verify-saved width=220.0 visible=true saved_width=220.0 saved_visible=true ok=true path=/tmp/tensor-files-settings/settings.tsv
+[tensor-files autosmoke] places action=layout-verify-saved width=220.0 visible=true saved_width=220.0 saved_visible=true ok=true path=/tmp/tensor-files-settings/files.kdl
 [tensor-files autosmoke] places complete scenario=Layout
 EOF
 
@@ -745,7 +745,7 @@ cat > "$tmpdir/bad-layout.log" <<'EOF'
 [tensor-files autosmoke] places action=layout-resize width=320.0 visible=true target_width=320.0 changed=true
 [tensor-files autosmoke] places action=layout-reset width=220.0 visible=true changed=true
 [tensor-files autosmoke] places action=layout-restore width=220.0 visible=true changed=false
-[tensor-files autosmoke] places action=layout-verify-saved width=220.0 visible=true saved_width=220.0 saved_visible=true ok=false path=/tmp/tensor-files-settings/settings.tsv
+[tensor-files autosmoke] places action=layout-verify-saved width=220.0 visible=true saved_width=220.0 saved_visible=true ok=false path=/tmp/tensor-files-settings/files.kdl
 [tensor-files autosmoke] places complete scenario=Layout
 EOF
 

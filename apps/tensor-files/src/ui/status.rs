@@ -50,6 +50,7 @@ impl ShellPaneStatus {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn qualifier_text(&self) -> &str {
         &self.qualifier
     }

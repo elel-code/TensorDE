@@ -77,7 +77,7 @@ impl TensorFilesApp {
 
     fn apply_settings_action(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
         action: ShellSettingsAction,
     ) {
         let Some(size) = self.renderer.as_ref().map(|renderer| renderer.size) else {
@@ -87,11 +87,8 @@ impl TensorFilesApp {
             ShellSettingsAction::ToggleHiddenFiles => {
                 let changed = self.toggle_user_hidden_visibility(size);
                 if changed {
-                    self.apply_action_outcome(
-                        event_loop,
-                        crate::app_actions::ShellActionOutcome::Present(
-                            "settings-toggle-hidden",
-                        ),
+                    self.apply_window_action_outcome(
+                        crate::app_actions::ShellActionOutcome::Present("settings-toggle-hidden"),
                     );
                 }
                 changed
@@ -108,8 +105,7 @@ impl TensorFilesApp {
             ShellSettingsAction::ToggleDarkMode => {
                 let changed = self.toggle_user_dark_mode();
                 if changed {
-                    self.apply_action_outcome(
-                        event_loop,
+                    self.apply_window_action_outcome(
                         crate::app_actions::ShellActionOutcome::Present(
                             "settings-toggle-dark-mode",
                         ),

@@ -79,7 +79,7 @@ impl TensorFilesApp {
         self.reconcile_open_with_dialog_lifecycle();
     }
 
-    fn drive_directory_watchers(&mut self, event_loop: &ActiveEventLoop) {
+    fn drive_directory_watchers(&mut self, _event_loop: &ActiveEventLoop) {
         self.directory_watchers.sync_with_scene(&self.scene);
         self.directory_watchers.drain_events(&self.scene);
 
@@ -108,10 +108,9 @@ impl TensorFilesApp {
         }
         self.directory_watchers.sync_with_scene(&self.scene);
         if changed {
-            self.apply_action_outcome(
-                event_loop,
-                crate::app_actions::ShellActionOutcome::Present("directory-watch"),
-            );
+            self.apply_window_action_outcome(crate::app_actions::ShellActionOutcome::Present(
+                "directory-watch",
+            ));
         }
     }
 
@@ -302,7 +301,7 @@ impl TensorFilesApp {
     }
 
     fn drive_autosmoke_zoom(&mut self, size: PhysicalSize<u32>) {
-        if !(self.autosmoke_zoom_allow_pending_redraw || self.pending_redraw_frames == 0)
+        if !(self.autosmoke_zoom_allow_pending_redraw || !self.scene_present.pending())
             || Instant::now() < self.next_autosmoke_zoom
         {
             return;
@@ -313,14 +312,14 @@ impl TensorFilesApp {
         if self.scene.zoom(action, size) {
             tensor_files_log!("[tensor-files] autosmoke-zoom action={}", action.as_str());
             self.next_autosmoke_zoom = Instant::now() + self.autosmoke_zoom_interval;
-            self.queue_scene_change("autosmoke-zoom", ZOOM_REDRAW_FRAMES);
+            self.queue_scene_change("autosmoke-zoom");
         } else {
             self.next_autosmoke_zoom = Instant::now() + self.autosmoke_zoom_interval;
         }
     }
 
     fn drive_autosmoke_scroll(&mut self, size: PhysicalSize<u32>) {
-        if !(self.autosmoke_scroll_allow_pending_redraw || self.pending_redraw_frames == 0)
+        if !(self.autosmoke_scroll_allow_pending_redraw || !self.scene_present.pending())
             || Instant::now() < self.next_autosmoke_scroll
         {
             return;
@@ -351,7 +350,7 @@ impl TensorFilesApp {
             );
             self.next_autosmoke_scroll = Instant::now() + self.autosmoke_scroll_interval;
             if changed {
-                self.queue_scene_change("autosmoke-scroll", SCROLL_REDRAW_FRAMES);
+                self.queue_scene_change("autosmoke-scroll");
                 break;
             }
         }
@@ -377,7 +376,7 @@ impl TensorFilesApp {
         if !self.autosmoke_zoom_actions.is_empty() || !self.autosmoke_scroll_actions.is_empty() {
             return;
         }
-        if self.pending_redraw_frames > 0 {
+        if self.scene_present.pending() {
             return;
         }
         if self.visible_role_updates.pending() {

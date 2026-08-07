@@ -53,6 +53,7 @@ mod scaling_tests {
             scale_factor: 1.5,
             configured: true,
             redraw_requested: false,
+            destroy_requested: false,
         };
 
         let (next_physical, surface_state_changed, resized) =
@@ -73,6 +74,7 @@ mod scaling_tests {
             scale_factor: 1.5,
             configured: false,
             redraw_requested: false,
+            destroy_requested: false,
         };
 
         let (_, surface_state_changed, resized) =
@@ -86,6 +88,21 @@ mod scaling_tests {
         assert_eq!(physical, PhysicalSize::new(1350, 1050));
         assert!(surface_state_changed);
         assert!(resized);
+    }
+
+    #[test]
+    fn native_surface_destroy_request_is_idempotent() {
+        let mut state = WindowState {
+            logical_size: LogicalSize::new(800, 640),
+            physical_size: PhysicalSize::new(1200, 960),
+            scale_factor: 1.5,
+            configured: true,
+            redraw_requested: false,
+            destroy_requested: false,
+        };
+
+        assert!(state.mark_destroy_requested());
+        assert!(!state.mark_destroy_requested());
     }
 
     #[test]

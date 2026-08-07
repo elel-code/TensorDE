@@ -31,6 +31,37 @@
     }
 
     #[test]
+    fn location_label_borrows_stable_path_and_plain_draft_text() {
+        let mut scene = test_scene(vec![test_entry("alpha", false)], ShellViewMode::Icons);
+        scene.panes[ShellPaneId::SLOT_0].path = PathBuf::from("/tmp/location-label");
+
+        let stable = scene.location_label_for_pane(ShellPaneId::SLOT_0);
+        assert!(matches!(stable, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(stable.as_ref(), "/tmp/location-label");
+
+        let size = PhysicalSize::new(420, 260);
+        assert!(scene.apply_location_command(LocationCommand::Activate, size));
+        let draft = scene.location_label_for_pane(ShellPaneId::SLOT_0);
+        assert!(matches!(draft, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(draft.as_ref(), "/tmp/location-label");
+
+        assert!(
+            scene
+                .apply_location_text_input(
+                    ShellTextInputBatch {
+                        preedit: ShellTextPreedit::new("中".to_string(), None),
+                        ..ShellTextInputBatch::default()
+                    },
+                    size,
+                )
+                .visual_changed
+        );
+        let composed = scene.location_label_for_pane(ShellPaneId::SLOT_0);
+        assert!(matches!(composed, std::borrow::Cow::Owned(_)));
+        assert_eq!(composed.as_ref(), "中");
+    }
+
+    #[test]
     fn location_draft_cursor_edits_at_caret() {
         let mut scene = test_scene(vec![test_entry("alpha", false)], ShellViewMode::Icons);
         scene.panes[ShellPaneId::SLOT_0].path = PathBuf::from("/tmp");
@@ -493,7 +524,7 @@
             cache.begin_frame();
             cache.insert(
                 LabelCacheKey {
-                    text: format!("label-{index}"),
+                    text: Arc::from(format!("label-{index}")),
                     width: 8,
                     height: 8,
                     alignment: LabelAlignment::Start,
@@ -506,14 +537,14 @@
         assert!(cache.evict_to_recent_entry_limit(TEXT_LABEL_RECYCLE_CACHE_ENTRIES));
         assert_eq!(cache.len(), TEXT_LABEL_RECYCLE_CACHE_ENTRIES);
         assert!(!cache.contains_key(&LabelCacheKey {
-            text: "label-0".to_string(),
+            text: Arc::from("label-0"),
             width: 8,
             height: 8,
             alignment: LabelAlignment::Start,
             wrap: LabelWrap::None,
         }));
         assert!(cache.contains_key(&LabelCacheKey {
-            text: "label-149".to_string(),
+            text: Arc::from("label-149"),
             width: 8,
             height: 8,
             alignment: LabelAlignment::Start,

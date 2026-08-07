@@ -102,6 +102,102 @@
     }
 
     #[test]
+    fn text_measure_cache_reuses_icons_shaping_across_content_filter_and_zoom_rebuilds() {
+        let entries = vec![
+            test_entry("alpha-one.txt", false),
+            test_entry("alpha-two.txt", false),
+            test_entry("beta.txt", false),
+            test_entry("gamma.txt", false),
+        ];
+        let mut scene = TestShellSceneBuilder::new()
+            .with_path("/measure-cache")
+            .with_entries(entries.clone())
+            .with_view_mode(ShellViewMode::Icons)
+            .with_places_visible(false)
+            .build();
+        let size = PhysicalSize::new(720, 360);
+
+        let _ = scene.layout(size);
+        let initial = scene.text_hit_tests.borrow().measure_cache_stats();
+        assert_eq!(initial.entries, 4);
+        assert_eq!(initial.icons_hits, 0);
+        assert_eq!(initial.icons_misses, 4);
+
+        let mut replacement = entries;
+        replacement.push(test_entry("delta.txt", false));
+        let before_reload = scene.text_hit_tests.borrow().measure_cache_stats();
+        scene.apply_loaded_path_to_pane(
+            ShellPaneId::SLOT_0,
+            PathBuf::from("/measure-cache"),
+            replacement,
+            size,
+        );
+        let after_reload = scene.text_hit_tests.borrow().measure_cache_stats();
+        assert_eq!(after_reload.entries, 5);
+        assert_eq!(
+            after_reload.icons_hits - before_reload.icons_hits,
+            4,
+            "unchanged names should reuse shaping after directory replacement"
+        );
+        assert_eq!(after_reload.icons_misses - before_reload.icons_misses, 1);
+        let _ = scene.layout(size);
+        assert_eq!(scene.text_hit_tests.borrow().measure_cache_stats(), after_reload);
+
+        let before_filter = after_reload;
+        assert!(scene.apply_filter_command(
+            FilterCommand::Insert("alpha".to_string()),
+            size,
+        ));
+        let after_filter = scene.text_hit_tests.borrow().measure_cache_stats();
+        assert_eq!(after_filter.entries, 5);
+        assert_eq!(after_filter.icons_hits - before_filter.icons_hits, 2);
+        assert_eq!(after_filter.icons_misses, before_filter.icons_misses);
+
+        let before_zoom = after_filter;
+        assert!(scene.set_zoom_level(ShellPaneId::SLOT_0, 5, size, true));
+        let after_zoom = scene.text_hit_tests.borrow().measure_cache_stats();
+        assert_eq!(after_zoom.entries, 5);
+        assert_eq!(after_zoom.icons_hits, before_zoom.icons_hits);
+        assert_eq!(after_zoom.icons_misses - before_zoom.icons_misses, 2);
+        assert_eq!(scene.text_hit_tests.borrow().measure_cache_stats(), after_zoom);
+        let _ = scene.layout(size);
+        assert_eq!(scene.text_hit_tests.borrow().measure_cache_stats(), after_zoom);
+    }
+
+    #[test]
+    fn text_measure_cache_reuses_compact_widths_across_zoom_and_remeasures_scale_style() {
+        let entries = vec![
+            test_entry("alpha.txt", false),
+            test_entry("bravo.txt", false),
+            test_entry("charlie.txt", false),
+        ];
+        let mut scene = TestShellSceneBuilder::new()
+            .with_entries(entries)
+            .with_view_mode(ShellViewMode::Compact)
+            .with_places_visible(false)
+            .build();
+        let size = PhysicalSize::new(720, 360);
+
+        let _ = scene.layout(size);
+        let initial = scene.text_hit_tests.borrow().measure_cache_stats();
+        assert_eq!(initial.entries, 3);
+        assert_eq!(initial.no_wrap_hits, 0);
+        assert_eq!(initial.no_wrap_misses, 3);
+
+        assert!(scene.set_zoom_level(ShellPaneId::SLOT_0, 4, size, true));
+        let after_zoom = scene.text_hit_tests.borrow().measure_cache_stats();
+        assert_eq!(after_zoom.entries, 3);
+        assert_eq!(after_zoom.no_wrap_hits - initial.no_wrap_hits, 3);
+        assert_eq!(after_zoom.no_wrap_misses, initial.no_wrap_misses);
+
+        assert!(scene.set_scale_factor(1.5, size));
+        let after_scale = scene.text_hit_tests.borrow().measure_cache_stats();
+        assert_eq!(after_scale.entries, 3);
+        assert_eq!(after_scale.no_wrap_misses - after_zoom.no_wrap_misses, 3);
+        assert_eq!(after_scale.no_wrap_hits, after_zoom.no_wrap_hits);
+    }
+
+    #[test]
     fn file_manager_filename_elision_preserves_extension() {
         let mut font_system = FontSystem::new();
         let mut buffer = Buffer::new_empty(Metrics::new(TEXT_FONT_SIZE, TEXT_LINE_HEIGHT));
@@ -265,7 +361,12 @@
         scene.push_native_frame_text(&mut text, std::slice::from_ref(&projection), size);
         let _ = text.finish();
 
-        assert!(label_cache.entries.keys().any(|key| key.text == long_name));
+        assert!(
+            label_cache
+                .entries
+                .keys()
+                .any(|key| key.text.as_ref() == long_name)
+        );
         assert!(
             !label_cache
                 .entries

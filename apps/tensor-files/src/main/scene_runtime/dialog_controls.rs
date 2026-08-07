@@ -357,6 +357,17 @@ impl ShellScene {
         }
     }
 
+    fn scrollbar_drag_resizes_places(&self) -> bool {
+        matches!(
+            self.scrollbar_drag.map(|drag| drag.target),
+            Some(ScrollbarDragTarget::PlacesResize)
+        )
+    }
+
+    fn places_sidebar_width_setting(&self) -> f32 {
+        self.places_width
+    }
+
     fn scrollbar_drag_visible_role_update_kind(
         &self,
     ) -> Option<crate::ui::prewarm::VisibleRoleUpdateKind> {
