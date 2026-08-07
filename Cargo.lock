@@ -3872,6 +3872,7 @@ name = "tensor-wallpaper"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "harfrust",
  "image",
  "intel_tex_2",
  "jiff",

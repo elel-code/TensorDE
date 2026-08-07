@@ -4,10 +4,11 @@
 //! text mutation will replace this retained fallback with a dirty atlas update, without adding a
 //! text-specific branch to the Vulkan command path.
 mod dynamic_atlas;
+mod shaping;
 
 pub(super) use dynamic_atlas::{DynamicTextAtlasEntry, DynamicTextAtlasKey};
 
-use ab_glyph::{Font, FontArc, FontRef, PxScale, ScaleFont, point};
+use ab_glyph::{Font, FontArc, FontRef, PxScale};
 use serde_json::Value;
 
 use crate::engine::scene::SceneVec3;
@@ -306,15 +307,25 @@ pub(super) fn rasterize_text_layer(
     text: &str,
     font_bytes: Vec<u8>,
 ) -> Result<WeTextLayerRaster, String> {
-    let font = FontArc::try_from_vec(font_bytes)
+    let font = FontArc::try_from_vec(font_bytes.clone())
         .map_err(|_| "font payload is not a supported OpenType/TrueType face".to_owned())?;
-    rasterize_text_layer_with_font(object, text, &font)
+    rasterize_text_layer_with_font_and_shaping(object, text, &font, Some(&font_bytes))
 }
 
+#[cfg(test)]
 fn rasterize_text_layer_with_font(
     object: &Value,
     text: &str,
     font: &impl Font,
+) -> Result<WeTextLayerRaster, String> {
+    rasterize_text_layer_with_font_and_shaping(object, text, font, None)
+}
+
+fn rasterize_text_layer_with_font_and_shaping(
+    object: &Value,
+    text: &str,
+    font: &impl Font,
+    font_bytes: Option<&[u8]>,
 ) -> Result<WeTextLayerRaster, String> {
     let size = parse_vec3(object.get("size")).ok_or("text layer is missing a valid size")?;
     let authored_width = checked_dimension(size.x, "width")?;
@@ -329,18 +340,38 @@ fn rasterize_text_layer_with_font(
     let spacing = parse_vec3(object.get("spacing")).unwrap_or_default();
     let scale = ab_glyph_scale_for_font(font, pixels_per_em)?;
     let layout_padding = authored_text_layout_padding(object.get("padding"));
-    let glyphs = layout_glyphs(
-        font,
-        text,
-        scale,
-        [spacing.x, spacing.y],
-        [
-            bound_string(object.get("horizontalalign")).as_deref(),
-            bound_string(object.get("verticalalign")).as_deref(),
-        ],
-        [authored_width as f32, authored_height as f32],
-        layout_padding,
-    );
+    let horizontal_align = bound_string(object.get("horizontalalign"));
+    let vertical_align = bound_string(object.get("verticalalign"));
+    let alignment = [horizontal_align.as_deref(), vertical_align.as_deref()];
+    let canvas_extent = [authored_width as f32, authored_height as f32];
+    let glyphs = if let Some(font_bytes) = font_bytes {
+        shaping::layout_glyphs_with_shaping(
+            font,
+            text,
+            font_bytes,
+            pixels_per_em,
+            scale,
+            [spacing.x, spacing.y],
+            alignment,
+            canvas_extent,
+            layout_padding,
+        )?
+    } else {
+        #[cfg(test)]
+        {
+            shaping::layout_glyphs(
+                font,
+                text,
+                scale,
+                [spacing.x, spacing.y],
+                alignment,
+                canvas_extent,
+                layout_padding,
+            )
+        }
+        #[cfg(not(test))]
+        return Err("production text layout requires the authored font payload".to_owned());
+    };
     let outline_enabled = bound_bool(object.get("outline")).unwrap_or(false);
     let outline_radius = if outline_enabled {
         value_f32(object.get("outlinethickness")).unwrap_or(1.0)
@@ -349,7 +380,12 @@ fn rasterize_text_layer_with_font(
     }
     .round()
     .clamp(0.0, 16.0);
-    let width = authored_width;
+    let width = retained_text_canvas_width(
+        font,
+        &glyphs,
+        authored_width,
+        bound_string(object.get("horizontalalign")).as_deref(),
+    );
     let height = authored_height;
     let mut glyph_alpha = vec![0u8; width as usize * height as usize];
     for glyph in glyphs {
@@ -407,6 +443,24 @@ fn rasterize_text_layer_with_font(
     })
 }
 
+fn retained_text_canvas_width(
+    font: &impl Font,
+    glyphs: &[ab_glyph::Glyph],
+    authored_width: u32,
+    horizontal_align: Option<&str>,
+) -> u32 {
+    if horizontal_align != Some("right") {
+        return authored_width;
+    }
+    glyphs
+        .iter()
+        .filter_map(|glyph| font.outline_glyph(glyph.clone()))
+        .map(|glyph| glyph.px_bounds().max.x.ceil().max(0.0) as u32)
+        .max()
+        .unwrap_or(authored_width)
+        .max(authored_width)
+}
+
 fn authored_text_layout_padding(value: Option<&Value>) -> (f32, f32) {
     if let Some(padding) = parse_vec3(value) {
         return (padding.x.max(0.0), padding.y.max(0.0));
@@ -423,78 +477,6 @@ fn retained_text_padding(value: Option<&Value>) -> (f32, f32) {
     }
     let padding = value_f32(value).unwrap_or(32.0).clamp(0.0, 1.0);
     (padding, padding)
-}
-
-fn layout_glyphs(
-    font: &impl Font,
-    text: &str,
-    scale: PxScale,
-    spacing: [f32; 2],
-    alignment: [Option<&str>; 2],
-    canvas_extent: [f32; 2],
-    padding: (f32, f32),
-) -> Vec<ab_glyph::Glyph> {
-    let scaled = font.as_scaled(scale);
-    let mut glyphs = Vec::with_capacity(text.chars().count());
-    let mut lines = Vec::new();
-    let line_advance = scaled.height() + scaled.line_gap() + spacing[1];
-    for (line_index, line) in text.split('\n').enumerate() {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        let glyph_start = glyphs.len();
-        let mut cursor_x = 0.0;
-        let mut previous = None;
-        for character in line.chars() {
-            let id = font.glyph_id(character);
-            if let Some(previous) = previous {
-                cursor_x += scaled.kern(previous, id);
-            }
-            glyphs.push(
-                id.with_scale_and_position(
-                    scale,
-                    point(cursor_x, line_index as f32 * line_advance),
-                ),
-            );
-            cursor_x += scaled.h_advance(id) + spacing[0];
-            previous = Some(id);
-        }
-        lines.push((glyph_start, glyphs.len(), cursor_x));
-    }
-    let maximum_line_width = lines
-        .iter()
-        .map(|(_, _, width)| *width)
-        .fold(0.0_f32, f32::max);
-    let padding_x = padding.0.min(canvas_extent[0] * 0.5);
-    let padding_y = padding.1.min(canvas_extent[1] * 0.5);
-    let block_x = match alignment[0] {
-        Some("left") => padding_x,
-        Some("right") => {
-            // WE keeps an over-wide right-aligned run in the authored text target instead of
-            // shifting its first glyph into negative texture coordinates. The run may overflow
-            // the right edge (the verified capture reaches x=761 for a 746-wide canvas), but the
-            // leading glyph remains visible. Padding still applies while the run fits.
-            (canvas_extent[0] - padding_x - maximum_line_width).max(0.0)
-        }
-        _ => (canvas_extent[0] - maximum_line_width) * 0.5,
-    };
-    let block_height = scaled.height() + lines.len().saturating_sub(1) as f32 * line_advance;
-    let block_y = match alignment[1] {
-        Some("top") => padding_y,
-        Some("bottom") => canvas_extent[1] - padding_y - block_height,
-        _ => (canvas_extent[1] - block_height) * 0.5,
-    };
-    let baseline_y = block_y + scaled.ascent();
-    for (start, end, width) in lines {
-        let line_offset_x = match alignment[0] {
-            Some("left") => 0.0,
-            Some("right") => maximum_line_width - width,
-            _ => (maximum_line_width - width) * 0.5,
-        };
-        for glyph in &mut glyphs[start..end] {
-            glyph.position.x += block_x + line_offset_x;
-            glyph.position.y += baseline_y;
-        }
-    }
-    glyphs
 }
 
 fn font_is_missing_visible_text_glyphs(font_bytes: &[u8], text: &str) -> bool {
@@ -577,60 +559,46 @@ fn ab_glyph_text_height_scale(
     }
     Ok(PxScale::from(scale))
 }
-
 fn color_byte(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine::scene::{SceneTextureSamplerAddressMode, SceneTextureSamplerFilter};
-    use ab_glyph::{GlyphId, Outline, OutlineCurve, Rect};
-
+    use ab_glyph::{GlyphId, Outline, OutlineCurve, Rect, point};
     struct TestFont;
-
     impl Font for TestFont {
         fn units_per_em(&self) -> Option<f32> {
             Some(1_000.0)
         }
-
         fn ascent_unscaled(&self) -> f32 {
             800.0
         }
-
         fn descent_unscaled(&self) -> f32 {
             -200.0
         }
-
         fn line_gap_unscaled(&self) -> f32 {
             0.0
         }
-
         fn glyph_id(&self, character: char) -> GlyphId {
             GlyphId(u16::from(!character.is_whitespace()))
         }
-
         fn h_advance_unscaled(&self, _id: GlyphId) -> f32 {
             500.0
         }
-
         fn h_side_bearing_unscaled(&self, _id: GlyphId) -> f32 {
             0.0
         }
-
         fn v_advance_unscaled(&self, _id: GlyphId) -> f32 {
             1_000.0
         }
-
         fn v_side_bearing_unscaled(&self, _id: GlyphId) -> f32 {
             0.0
         }
-
         fn kern_unscaled(&self, _first: GlyphId, _second: GlyphId) -> f32 {
             0.0
         }
-
         fn outline(&self, id: GlyphId) -> Option<Outline> {
             (id.0 != 0).then(|| {
                 let top_left = point(0.0, 800.0);
@@ -651,15 +619,12 @@ mod tests {
                 }
             })
         }
-
         fn glyph_count(&self) -> usize {
             2
         }
-
         fn codepoint_ids(&self) -> ab_glyph::CodepointIdIter<'_> {
             unimplemented!("layout does not enumerate the test font")
         }
-
         fn glyph_raster_image2(
             &self,
             _id: GlyphId,
@@ -668,42 +633,35 @@ mod tests {
             None
         }
     }
-
     #[test]
     fn text_value_reads_bound_default() {
         let object = serde_json::json!({"text": {"user": "title", "value": "DREAM"}});
         assert_eq!(text_layer_value(&object).as_deref(), Some("DREAM"));
     }
-
     #[test]
     fn system_font_uses_wallpaper_engine_installed_arial() {
         let object = serde_json::json!({"font": "systemfont_arial"});
         assert_eq!(text_layer_font_path(&object), "fonts/arial.ttf");
     }
-
     #[test]
     fn unknown_system_font_is_not_silently_replaced_by_another_family() {
         let object = serde_json::json!({"font": "systemfont_consolas"});
         assert_eq!(text_layer_font_path(&object), "systemfont_consolas");
     }
-
     #[test]
     fn wallpaper_engine_point_size_uses_freetype_300_dpi_semantics() {
         assert_eq!(text_point_size_pixels_per_em(96.0), 400.0);
         assert!((text_point_size_pixels_per_em(16.0) - 66.666_664).abs() < 0.000_01);
     }
-
     #[test]
     fn freetype_pixels_per_em_are_converted_to_ab_glyph_text_height_scale() {
         let pixels_per_em = text_point_size_pixels_per_em(35.0);
         let scale = ab_glyph_text_height_scale(pixels_per_em, 1_200.0, 1_000.0)
             .expect("valid font metrics");
-
         assert!((pixels_per_em - 145.833_33).abs() < 0.000_1);
         assert!((scale.x - 175.0).abs() < 0.000_1);
         assert!((scale.y - 175.0).abs() < 0.000_1);
     }
-
     #[test]
     fn wallpaper_engine_spacing_is_already_in_layout_pixels() {
         let object = serde_json::json!({"spacing": "202.00000 202.00000"});
@@ -712,17 +670,14 @@ mod tests {
             202.0
         );
     }
-
     #[test]
     fn retained_text_padding_matches_we_one_pixel_cap() {
         let vector = serde_json::json!({"padding": "32.00000 0.50000"});
         assert_eq!(retained_text_padding(vector.get("padding")), (1.0, 0.5));
-
         let scalar = serde_json::json!({"padding": 0.25});
         assert_eq!(retained_text_padding(scalar.get("padding")), (0.25, 0.25));
         assert_eq!(retained_text_padding(None), (1.0, 1.0));
     }
-
     #[test]
     fn retained_text_preserves_the_authored_canvas_instead_of_ink_tightening() {
         let object = serde_json::json!({
@@ -732,17 +687,26 @@ mod tests {
             "horizontalalign": "center",
             "verticalalign": "center",
         });
-
         let raster = rasterize_text_layer_with_font(&object, "A", &TestFont).expect("text raster");
-
         assert_eq!([raster.width, raster.height], [400, 200]);
     }
-
+    #[test]
+    fn right_aligned_overflow_expands_the_retained_canvas() {
+        let object = serde_json::json!({
+            "size": "100 200 0",
+            "pointsize": 24,
+            "horizontalalign": "right",
+            "verticalalign": "center",
+        });
+        let raster = rasterize_text_layer_with_font(&object, "AAAA", &TestFont)
+            .expect("overwide text raster");
+        assert!(raster.width > 100);
+    }
     #[test]
     fn authored_padding_and_line_metrics_place_multiline_text_inside_the_canvas() {
         let scale = ab_glyph_scale_for_font(&TestFont, text_point_size_pixels_per_em(24.0))
             .expect("test scale");
-        let glyphs = layout_glyphs(
+        let glyphs = shaping::layout_glyphs(
             &TestFont,
             "A\nAA",
             scale,
@@ -751,7 +715,6 @@ mod tests {
             [400.0, 300.0],
             authored_text_layout_padding(Some(&serde_json::json!("32 32"))),
         );
-
         assert_eq!(
             retained_text_padding(Some(&serde_json::json!("32 32"))),
             (1.0, 1.0)
@@ -760,12 +723,11 @@ mod tests {
         assert_eq!(glyphs[1].position, point(150.0, 230.0));
         assert_eq!(glyphs[2].position, point(200.0, 230.0));
     }
-
     #[test]
     fn right_aligned_overwide_text_keeps_the_leading_glyph_in_the_canvas() {
         let scale = ab_glyph_scale_for_font(&TestFont, text_point_size_pixels_per_em(24.0))
             .expect("text scale");
-        let glyphs = layout_glyphs(
+        let glyphs = shaping::layout_glyphs(
             &TestFont,
             "AAA",
             scale,
@@ -774,7 +736,6 @@ mod tests {
             [100.0, 200.0],
             (32.0, 32.0),
         );
-
         assert_eq!(glyphs[0].position.x, 0.0);
         assert_eq!(glyphs[2].position.x, 100.0);
     }
@@ -787,7 +748,6 @@ mod tests {
             rgba: vec![255; 4],
         })
         .expect("generated glyph sampler contract");
-
         assert_eq!(
             upload.metadata.sampler_filter,
             SceneTextureSamplerFilter::Linear
