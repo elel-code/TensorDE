@@ -6,11 +6,19 @@ use rquickjs::{CatchResultExt, Context, Function, Module, Runtime};
 use serde_json::{Map, Value};
 
 use super::super::script_analysis::analyze_scene_script;
-use super::normalize_we_path;
+use super::{json_value::value_u32, normalize_we_path};
 use crate::engine::scene::script::standard_library;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct TextFontOverrides {
+    pub(super) by_object: BTreeMap<u32, String>,
+    pub(super) by_name: BTreeMap<String, String>,
+}
 
 const FONT_HOST: &str = r#"
 globalThis.__tensor_wallpaperLayers = Object.create(null);
+globalThis.__tensor_wallpaperObjectFonts = Object.create(null);
+globalThis.__tensor_wallpaperCurrentLayerId = null;
 globalThis.shared = Object.create(null);
 globalThis.engine = {
     registerAsset(path) { return path; },
@@ -28,8 +36,16 @@ globalThis.thisScene = {
     },
     destroyLayer() {},
 };
-globalThis.__tensor_wallpaperSetLayer = (name) => {
+globalThis.__tensor_wallpaperSetLayer = (name, objectId) => {
+    globalThis.__tensor_wallpaperCurrentLayerId = String(objectId);
     globalThis.thisLayer = thisScene.getLayer(name);
+};
+globalThis.__tensor_wallpaperRecordCurrentLayerFont = () => {
+    if (globalThis.__tensor_wallpaperCurrentLayerId !== null
+        && typeof globalThis.thisLayer?.font === 'string') {
+        globalThis.__tensor_wallpaperObjectFonts[globalThis.__tensor_wallpaperCurrentLayerId]
+            = globalThis.thisLayer.font;
+    }
 };
 globalThis.createScriptProperties = () => {
     const values = Object.create(null);
@@ -43,20 +59,21 @@ globalThis.createScriptProperties = () => {
     };
     return builder;
 };
-globalThis.__tensor_wallpaperFontResult = () => JSON.stringify(Object.fromEntries(
-    Object.entries(__tensor_wallpaperLayers)
+globalThis.__tensor_wallpaperFontResult = () => JSON.stringify({
+    objects: Object.fromEntries(Object.entries(__tensor_wallpaperObjectFonts)),
+    names: Object.fromEntries(Object.entries(__tensor_wallpaperLayers)
         .filter(([, layer]) => typeof layer.font === 'string')
-        .map(([name, layer]) => [name, layer.font])
-));
+        .map(([name, layer]) => [name, layer.font])),
+});
 "#;
 
 pub(super) fn text_font_overrides(
     scene: &Value,
     project: &Value,
-) -> Result<BTreeMap<String, String>, String> {
+) -> Result<TextFontOverrides, String> {
     let scripts = user_property_scripts(scene)?;
     if scripts.is_empty() {
-        return Ok(BTreeMap::new());
+        return Ok(TextFontOverrides::default());
     }
     let runtime = Runtime::new().map_err(|error| error.to_string())?;
     runtime.set_memory_limit(32 * 1024 * 1024);
@@ -76,7 +93,7 @@ pub(super) fn text_font_overrides(
                 .get("__tensor_wallpaperSetLayer")
                 .map_err(|error| error.to_string())?;
             set_layer
-                .call::<_, ()>((script.layer,))
+                .call::<_, ()>((script.layer, script.object_id))
                 .catch(&ctx)
                 .map_err(|error| error.to_string())?;
             let module = Module::declare(
@@ -106,23 +123,51 @@ pub(super) fn text_font_overrides(
                 .call::<_, ()>((properties.clone(),))
                 .catch(&ctx)
                 .map_err(|error| error.to_string())?;
+            let record: Function = ctx
+                .globals()
+                .get("__tensor_wallpaperRecordCurrentLayerFont")
+                .map_err(|error| error.to_string())?;
+            record
+                .call::<_, ()>(())
+                .catch(&ctx)
+                .map_err(|error| error.to_string())?;
         }
         let result: Function = ctx
             .globals()
             .get("__tensor_wallpaperFontResult")
             .map_err(|error| error.to_string())?;
         let json: String = result.call(()).map_err(|error| error.to_string())?;
-        let bindings: BTreeMap<String, String> =
+        let bindings: RawTextFontOverrides =
             serde_json::from_str(&json).map_err(|error| error.to_string())?;
-        Ok(bindings
-            .into_iter()
-            .map(|(layer, path)| (layer, normalize_we_path(&path)))
-            .collect())
+        Ok(TextFontOverrides {
+            by_object: bindings
+                .objects
+                .into_iter()
+                .filter_map(|(object, path)| {
+                    object
+                        .parse()
+                        .ok()
+                        .map(|object| (object, normalize_we_path(&path)))
+                })
+                .collect(),
+            by_name: bindings
+                .names
+                .into_iter()
+                .map(|(name, path)| (name, normalize_we_path(&path)))
+                .collect(),
+        })
     })
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RawTextFontOverrides {
+    objects: BTreeMap<String, String>,
+    names: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct FontPropertyScript<'a> {
+    object_id: u32,
     layer: &'a str,
     source: &'a str,
     properties: &'a Value,
@@ -136,11 +181,13 @@ fn user_property_scripts(scene: &Value) -> Result<Vec<FontPropertyScript<'_>>, S
         .into_iter()
         .flatten()
     {
+        let object_id = value_u32(object.get("id")).unwrap_or(scripts.len() as u32);
         let layer = object.get("name").and_then(Value::as_str).unwrap_or("");
         visit_scripts(object, &mut |binding, source| {
             let analysis = analyze_scene_script(source).map_err(|error| error.to_string())?;
             if analysis.handles_user_properties && analysis.may_assign_font {
                 scripts.push(FontPropertyScript {
+                    object_id,
                     layer,
                     source,
                     properties: binding.get("scriptproperties").unwrap_or(&Value::Null),
@@ -243,10 +290,13 @@ mod tests {
         });
         assert_eq!(
             text_font_overrides(&scene, &project).expect("font overrides"),
-            BTreeMap::from([
-                ("年".to_owned(), "fonts/中文.otf".to_owned()),
-                ("时间".to_owned(), "fonts/中文.otf".to_owned()),
-            ])
+            TextFontOverrides {
+                by_object: BTreeMap::new(),
+                by_name: BTreeMap::from([
+                    ("年".to_owned(), "fonts/中文.otf".to_owned()),
+                    ("时间".to_owned(), "fonts/中文.otf".to_owned()),
+                ]),
+            }
         );
     }
 
@@ -255,10 +305,9 @@ mod tests {
         let scene = serde_json::json!({
             "objects": [{"script": "engine.registerAsset('fonts/a.ttf')"}]
         });
-        assert!(
-            text_font_overrides(&scene, &serde_json::json!({}))
-                .expect("font overrides")
-                .is_empty()
+        assert_eq!(
+            text_font_overrides(&scene, &serde_json::json!({})).expect("font overrides"),
+            TextFontOverrides::default()
         );
     }
 
@@ -275,10 +324,10 @@ mod tests {
                 "#}
             }]
         });
-        assert!(
+        assert_eq!(
             text_font_overrides(&scene, &serde_json::json!({}))
-                .expect("non-font callback does not enter the font resolver")
-                .is_empty()
+                .expect("non-font callback does not enter the font resolver"),
+            TextFontOverrides::default()
         );
     }
 
@@ -300,7 +349,52 @@ mod tests {
         });
         assert_eq!(
             text_font_overrides(&scene, &project).expect("font overrides"),
-            BTreeMap::from([("日期".to_owned(), "fonts/date.ttf".to_owned())])
+            TextFontOverrides {
+                by_object: BTreeMap::from([(0, "fonts/date.ttf".to_owned())]),
+                by_name: BTreeMap::from([("日期".to_owned(), "fonts/date.ttf".to_owned())]),
+            }
+        );
+    }
+
+    #[test]
+    fn anonymous_current_layer_font_assignments_keep_object_identity() {
+        let scene = serde_json::json!({
+            "objects": [
+                {
+                    "id": 3465,
+                    "name": "",
+                    "text": {"script": r#"
+                        const font = engine.registerAsset('fonts/DouyinSansBold.ttf');
+                        export function applyUserProperties(properties) {
+                            if (properties.text3 === '32') thisLayer.font = font;
+                        }
+                    "#}
+                },
+                {
+                    "id": 955,
+                    "name": "",
+                    "text": {"script": r#"
+                        const font = engine.registerAsset('fonts/Atami-Regular.otf');
+                        export function applyUserProperties(properties) {
+                            if (properties.text4 === '2') thisLayer.font = font;
+                        }
+                    "#}
+                }
+            ]
+        });
+        let project = serde_json::json!({
+            "general": {"properties": {"text3": {"value": "32"}, "text4": {"value": "2"}}}
+        });
+
+        assert_eq!(
+            text_font_overrides(&scene, &project).expect("font overrides"),
+            TextFontOverrides {
+                by_object: BTreeMap::from([
+                    (3465, "fonts/DouyinSansBold.ttf".to_owned()),
+                    (955, "fonts/Atami-Regular.otf".to_owned()),
+                ]),
+                by_name: BTreeMap::from([("".to_owned(), "fonts/Atami-Regular.otf".to_owned())]),
+            }
         );
     }
 
@@ -322,7 +416,10 @@ mod tests {
         });
         assert_eq!(
             text_font_overrides(&scene, &serde_json::json!({})).expect("font overrides"),
-            BTreeMap::from([("时间".to_owned(), "fonts/retained.ttf".to_owned())])
+            TextFontOverrides {
+                by_object: BTreeMap::new(),
+                by_name: BTreeMap::from([("时间".to_owned(), "fonts/retained.ttf".to_owned())]),
+            }
         );
     }
 }

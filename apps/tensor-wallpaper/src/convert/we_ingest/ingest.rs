@@ -40,7 +40,7 @@ mod transform_animation;
 mod user_property_binding;
 mod utility_layer;
 mod waterwaves_displacement;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
@@ -93,11 +93,10 @@ use shader_texture_default::{
     ShaderSamplerCombo, ShaderTextureDefault, apply_shader_texture_defaults,
     parse_shader_sampler_combos, parse_shader_texture_defaults,
 };
-use text_font_binding::text_font_overrides;
+use text_font_binding::{TextFontOverrides, text_font_overrides};
 use text_layer::{
     DynamicTextAtlasEntry, DynamicTextAtlasKey, ingest_text_layer,
-    retained_text_effect_is_supported, retained_text_effect_requires_dependency_composite,
-    text_layer_value,
+    retained_text_effect_is_supported, text_layer_value,
 };
 use texture_resolver::texture_candidates;
 use transform_animation::ingest_object_transform_tracks;
@@ -218,13 +217,14 @@ struct WeIrBuilder {
     shader_combo_defaults_by_shader: BTreeMap<String, BTreeMap<String, i64>>,
     shader_texture_defaults_by_shader: BTreeMap<String, Vec<ShaderTextureDefault>>,
     effect_fbos: Vec<WeIrEffectFbo>,
+    authored_image_layer_composite_targets: BTreeSet<String>,
     render_graphs: Vec<crate::engine::render_graph::RenderGraph>,
     image_targets: Vec<WeIrImageTarget>,
     shader_contracts: Vec<WeIrShaderContract>,
     // Exact package stages whose semantics are consumed by a proven engine-owned final fusion.
     // Keep their native-Slang programs in the scene as source evidence, never as a fallback path.
     fused_authored_source_materials: Vec<usize>,
-    text_font_overrides: BTreeMap<String, String>,
+    text_font_overrides: TextFontOverrides,
     unsupported: Vec<WeIrUnsupported>,
     effect_visibility_mutation_policy: SceneEffectVisibilityMutationPolicy,
 }
@@ -236,7 +236,7 @@ impl WeIrBuilder {
         project: WeProjectIr,
         scene: WeSceneRootIr,
         project_property_defaults: Map<String, Value>,
-        text_font_overrides: BTreeMap<String, String>,
+        text_font_overrides: TextFontOverrides,
         effect_visibility_mutation_policy: SceneEffectVisibilityMutationPolicy,
     ) -> Self {
         Self {
@@ -290,6 +290,7 @@ impl WeIrBuilder {
             shader_combo_defaults_by_shader: BTreeMap::new(),
             shader_texture_defaults_by_shader: BTreeMap::new(),
             effect_fbos: Vec::new(),
+            authored_image_layer_composite_targets: BTreeSet::new(),
             render_graphs: Vec::new(),
             image_targets: Vec::new(),
             shader_contracts: Vec::new(),
@@ -478,7 +479,12 @@ impl WeIrBuilder {
             material = Some(particle_material);
         } else if let Some(text) = text_value.as_deref() {
             kind = SceneAbiObjectKind::Text;
-            let selected_font = self.text_font_overrides.get(&name).cloned();
+            let selected_font = self
+                .text_font_overrides
+                .by_object
+                .get(&we_id)
+                .cloned()
+                .or_else(|| self.text_font_overrides.by_name.get(&name).cloned());
             match ingest_text_layer(
                 self,
                 handle,
@@ -573,14 +579,14 @@ impl WeIrBuilder {
         }
 
         let effect_instances = self.add_object_effect_instances(handle, value)?;
+        image_layer_composite::collect_authored_targets(
+            value.get("effects"),
+            &mut self.authored_image_layer_composite_targets,
+        );
 
         let color_blend_mode = value_i32(value.get("colorBlendMode")).unwrap_or(0);
         let retained_text_effect_instances;
-        let retained_text_requires_dependency_composite;
         let render_effect_instances = if kind == SceneAbiObjectKind::Text {
-            retained_text_requires_dependency_composite = effect_instances.iter().any(|instance| {
-                retained_text_effect_requires_dependency_composite(self, instance.effect)
-            });
             retained_text_effect_instances = effect_instances
                 .iter()
                 .filter(|instance| retained_text_effect_is_supported(self, instance.effect))
@@ -598,20 +604,10 @@ impl WeIrBuilder {
             }
             retained_text_effect_instances.as_slice()
         } else {
-            retained_text_requires_dependency_composite = false;
             effect_instances.as_slice()
         };
         let render_graph = if kind == SceneAbiObjectKind::ParticleEmitter {
             material.map(|_| self.add_particle_render_graph(handle, color_blend_mode))
-        } else if retained_text_requires_dependency_composite {
-            self.unsupported.push(WeIrUnsupported {
-                object: Some(handle),
-                pass_index: None,
-                feature: "text-clipping-mask-needs-dependency-composite".to_owned(),
-                expected_subsystem: "scene RenderingDevice dependency composite".to_owned(),
-                containment: "masked-text-hidden-instead-of-unmasked-solid-fallback".to_owned(),
-            });
-            None
         } else if let Some(material_handle) = material {
             let static_black_output = value
                 .get("color")

@@ -3,7 +3,6 @@
 //! The generated texture is an ordinary typed-IR texture/material input. Runtime script-driven
 //! text mutation will replace this retained fallback with a dirty atlas update, without adding a
 //! text-specific branch to the Vulkan command path.
-
 mod dynamic_atlas;
 
 pub(super) use dynamic_atlas::{DynamicTextAtlasEntry, DynamicTextAtlasKey};
